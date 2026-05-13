@@ -29,6 +29,7 @@
   },
   "files": [
     "index.ts",
+    "web-tools.ts",
     "README.md",
     "LICENSE"
   ],
