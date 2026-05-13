@@ -1,5 +1,5 @@
 ---
-title: "Getting Started"
+title: "Install rpiv-pi"
 description: "Install rpiv-pi, wire its siblings, and run your first pipeline session."
 section: "getting-started"
 order: 0
