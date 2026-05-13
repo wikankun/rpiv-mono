@@ -258,34 +258,44 @@ const isHome = Astro.url.pathname === "/";
 
 	/* ── Mobile (≤720px) ── */
 	@media (max-width: 720px) {
+		/* Three-row stack: masthead → utility → section links. Utility gets
+		   its own full-width row because merging it into the brand-group via
+		   display:contents collided with the inner grid's auto-flow (links
+		   landed in implicit rows with stray middots and hairlines), and
+		   hiding it entirely orphaned /docs from the home page (footer only
+		   carries blog · npm · github). */
 		.nav__inner {
 			grid-template-columns: 1fr auto;
 			grid-template-areas:
-				"brand cta"
-				"links links";
+				"brand   cta"
+				"utility counter"
+				"links   links";
 			column-gap: var(--space-3);
 			row-gap: 0;
 			padding-bottom: 0;
 		}
 
-		/* Utility links move into the brand group on mobile.
-		   Brand | counter | github · blog on one row, CTA on the right. */
 		.nav__brand-group {
 			display: flex;
 			align-items: baseline;
 			gap: var(--space-3);
 		}
 
-		/* On mobile the utility links (github · docs · blog) overflow the
-		   brand-group flex row by ~127px. They're available in the footer,
-		   so hide them entirely rather than merging via display:contents. */
 		.nav__utility {
-			display: none;
+			justify-self: start;
+			gap: var(--space-3);
+			padding-top: var(--space-3);
 		}
 
 		.nav__version { display: none; }
 
-		.nav__counter { display: inline-flex; }
+		.nav__counter {
+			display: inline-flex;
+			grid-area: counter;
+			justify-self: end;
+			align-self: center;
+			padding-top: var(--space-3);
+		}
 
 		.nav__cta {
 			align-self: center;

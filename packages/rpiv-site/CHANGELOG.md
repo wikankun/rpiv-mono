@@ -8,7 +8,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
-- Mobile header nav no longer renders the utility links (`github · docs · blog`) as a broken vertical stack with stray hairlines and middots. They are hidden at ≤720px (still reachable in the footer) instead of being merged into the brand row via `display: contents`, which collided with the inner grid's implicit row flow.
+- Mobile header nav at ≤720px now lays out as three full-width rows (masthead, utility, section links). The utility cluster (`github · docs · blog`) previously used `display: contents` to merge into the brand row, which collided with the inner grid's auto-flow and rendered the links as a stacked block with stray middots and hairlines.
 - Mobile `/docs` layout no longer keeps the 3-column desktop grid alive on articles that have a table of contents. The media-query override now matches both `.docs-layout` and `.docs-layout.has-toc`, and the right-rail TOC is hidden at ≤720px instead of being shoved beneath the article body.
 
 ## [1.5.2] - 2026-05-13
