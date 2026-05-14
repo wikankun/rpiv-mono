@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-pi` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-05-14
 
 ### Added
 - `discover` skill frames shape-tier questions as explicit tradeoff tensions with three scope-drift guardrails and a new Suggested Follow-ups section in the FRD output.
