@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Bundled agents sync to `~/.pi/agent/agents/` globally instead of per-working-directory, with automatic migration of existing per-cwd installs and crash-safe manifest writes.
+
+### Breaking / Upgrade Notes
+- Internal: `syncBundledAgents` signature drops the `cwd` parameter (no user action required; only in-package consumers).
+
 ## [1.6.1] - 2026-05-14
 
 ## [1.6.0] - 2026-05-14

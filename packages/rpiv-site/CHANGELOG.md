@@ -7,6 +7,17 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Blog post on testing skill prompt changes with blinded LLM judges.
+- Blog post on the discover vs SAGE A/B comparison study.
+- Blog roll hero strip with sumi-ink backdrop and proper page heading.
+- RSS feed link on the blog listing page.
+- Post author displayed on blog index and in RSS `dc:creator`.
+- Agent reference schema expanded with purpose, trigger condition, and dispatching skills.
+
+### Changed
+- Release notes blog post for v1.6.0 and v1.6.1.
+
 ## [1.6.1] - 2026-05-14
 
 ## [1.6.0] - 2026-05-14

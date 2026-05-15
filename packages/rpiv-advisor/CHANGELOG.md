@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Per-executor-model blocklist in `advisor.json` — name executor models that should keep the advisor tool inactive, avoiding prompt-cache and tool-schema cost for strong models.
+
 ## [1.6.1] - 2026-05-14
 
 ### Fixed
