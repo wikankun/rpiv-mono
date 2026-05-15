@@ -32,6 +32,8 @@ const count = String(posts.length).padStart(2, "0");
 									})}
 								</time>
 								<span class="post-item__sep" aria-hidden="true">·</span>
+								<span>{post.data.author}</span>
+								<span class="post-item__sep" aria-hidden="true">·</span>
 								<span>{post.readingTime} min</span>
 							</div>
 							<p class="post-item__desc">{post.data.description}</p>
