@@ -84,6 +84,10 @@ const msgAdvisorEnabled = (label: string, effort: ThinkingLevel | undefined) =>
 	`Advisor: ${label}${effort ? `, ${effort}` : ""}`;
 const msgAdvisorRestored = (label: string, effort: ThinkingLevel | undefined) =>
 	`Advisor restored: ${label}${effort ? `, ${effort}` : ""}`;
+const msgAdvisorRestoredInactive = (label: string, effort: ThinkingLevel | undefined) =>
+	`Advisor restored: ${label}${effort ? `, ${effort}` : ""} (inactive for current executor)`;
+const msgAdvisorEnabledInactive = (label: string, effort: ThinkingLevel | undefined) =>
+	`Advisor: ${label}${effort ? `, ${effort}` : ""} (inactive for current executor)`;
 const msgConsulting = (label: string, effort: ThinkingLevel | undefined) =>
 	`Consulting advisor (${label}${effort ? `, ${effort}` : ""})…`;
 
@@ -100,6 +104,7 @@ interface AdvisorConfig {
 	modelKey?: string;
 	effort?: ThinkingLevel;
 	guidance?: GuidanceFields;
+	disabledForModels?: string[];
 }
 
 export function loadAdvisorConfig(): AdvisorConfig {
@@ -126,6 +131,11 @@ function validateGuidanceFields(fields: unknown): GuidanceFields {
 		result.promptGuidelines = g.promptGuidelines;
 	}
 	return result;
+}
+
+function validateDisabledForModels(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
 export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel | undefined): void {
@@ -297,12 +307,21 @@ export function setAdvisorEffort(effort: ThinkingLevel | undefined): void {
 	selectedAdvisorEffort = effort;
 }
 
+let disabledForModelsCache: string[] = [];
+
+export function setDisabledForModels(models: string[]): void {
+	disabledForModelsCache = models;
+}
+
 // ---------------------------------------------------------------------------
 // Session restoration — called from index.ts session_start handler
 // ---------------------------------------------------------------------------
 
 export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	const config = loadAdvisorConfig();
+
+	setDisabledForModels(validateDisabledForModels(config.disabledForModels));
+
 	if (!config.modelKey) return;
 
 	const parsed = parseModelKey(config.modelKey);
@@ -319,6 +338,14 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 	setAdvisorModel(model);
 	if (config.effort) {
 		setAdvisorEffort(config.effort);
+	}
+
+	if (isExecutorBlocked(ctx)) {
+		if (ctx.hasUI) {
+			const advisorLabel = `${model.provider}:${model.id}`;
+			ctx.ui.notify(msgAdvisorRestoredInactive(advisorLabel, config.effort), "info");
+		}
+		return;
 	}
 
 	const active = pi.getActiveTools();
@@ -511,11 +538,44 @@ export function registerAdvisorTool(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
-	pi.on("before_agent_start", async () => {
-		if (!getAdvisorModel()) {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const shouldStrip = !getAdvisorModel() || isExecutorBlocked(ctx);
+		if (shouldStrip) {
 			const active = pi.getActiveTools();
 			if (active.includes(ADVISOR_TOOL_NAME)) {
 				pi.setActiveTools(active.filter((n) => n !== ADVISOR_TOOL_NAME));
+			}
+		}
+	});
+}
+
+// ---------------------------------------------------------------------------
+// model_select handler — mid-session model switches strip/re-add advisor
+// ---------------------------------------------------------------------------
+
+export function registerModelSelectHandler(pi: ExtensionAPI): void {
+	pi.on("model_select", async (event, ctx) => {
+		// session_start restore path is owned by restoreAdvisorState — it already
+		// activates the tool and notifies. Skipping "restore" here prevents a
+		// duplicate notification on initial model load.
+		if (event.source === "restore") return;
+
+		const advisor = getAdvisorModel();
+		if (!advisor) return;
+
+		const blocked = isModelBlocked(event.model);
+		const active = pi.getActiveTools();
+		const hasTool = active.includes(ADVISOR_TOOL_NAME);
+
+		if (blocked && hasTool) {
+			pi.setActiveTools(active.filter((n) => n !== ADVISOR_TOOL_NAME));
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Advisor disabled for ${modelKey(event.model)}`, "info");
+			}
+		} else if (!blocked && !hasTool) {
+			pi.setActiveTools([...active, ADVISOR_TOOL_NAME]);
+			if (ctx.hasUI) {
+				ctx.ui.notify(msgAdvisorRestored(modelKey(advisor), getAdvisorEffort()), "info");
 			}
 		}
 	});
@@ -527,6 +587,15 @@ export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
 
 function modelKey(m: { provider: string; id: string }): string {
 	return `${m.provider}:${m.id}`;
+}
+
+function isModelBlocked(model: Model<Api> | undefined): boolean {
+	if (!model) return false;
+	return disabledForModelsCache.includes(modelKey(model));
+}
+
+function isExecutorBlocked(ctx: ExtensionContext): boolean {
+	return isModelBlocked(ctx?.model);
 }
 
 export function registerAdvisorCommand(pi: ExtensionAPI): void {
@@ -602,10 +671,20 @@ export function registerAdvisorCommand(pi: ExtensionAPI): void {
 			setAdvisorEffort(effortChoice);
 			setAdvisorModel(picked);
 			saveAdvisorConfig(modelKey(picked), effortChoice);
-			if (!activeHas) {
-				pi.setActiveTools([...activeTools, ADVISOR_TOOL_NAME]);
+
+			// Re-read after the effort-picker await — the snapshot taken before
+			// `showEffortPicker` is stale once execution yields.
+			const activeToolsNow = pi.getActiveTools();
+			const activeHasNow = activeToolsNow.includes(ADVISOR_TOOL_NAME);
+			const blocked = isExecutorBlocked(ctx);
+			if (!activeHasNow && !blocked) {
+				pi.setActiveTools([...activeToolsNow, ADVISOR_TOOL_NAME]);
 			}
-			ctx.ui.notify(msgAdvisorEnabled(modelKey(picked), effortChoice), "info");
+			if (blocked) {
+				ctx.ui.notify(msgAdvisorEnabledInactive(modelKey(picked), effortChoice), "info");
+			} else {
+				ctx.ui.notify(msgAdvisorEnabled(modelKey(picked), effortChoice), "info");
+			}
 		},
 	});
 }

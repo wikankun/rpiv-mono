@@ -115,3 +115,25 @@ describe("saveAdvisorConfig — preserves guidance field", () => {
 		expect(config.guidance).toEqual({ promptSnippet: "Custom" });
 	});
 });
+
+describe("saveAdvisorConfig — preserves disabledForModels field", () => {
+	it("preserves disabledForModels when saving model selection", () => {
+		writeConfig({ disabledForModels: ["anthropic:claude-opus-4-7"] });
+		saveAdvisorConfig("anthropic:sonnet", "high");
+		const config = loadAdvisorConfig();
+		expect(config.modelKey).toBe("anthropic:sonnet");
+		expect(config.effort).toBe("high");
+		expect(config.disabledForModels).toEqual(["anthropic:claude-opus-4-7"]);
+	});
+
+	it("preserves disabledForModels when resetting advisor", () => {
+		writeConfig({
+			modelKey: "anthropic:sonnet",
+			disabledForModels: ["anthropic:claude-opus-4-7", "openai:o3"],
+		});
+		saveAdvisorConfig(undefined, undefined);
+		const config = loadAdvisorConfig();
+		expect(config.modelKey).toBeUndefined();
+		expect(config.disabledForModels).toEqual(["anthropic:claude-opus-4-7", "openai:o3"]);
+	});
+});

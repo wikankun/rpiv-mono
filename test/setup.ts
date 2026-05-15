@@ -49,6 +49,7 @@ beforeEach(async () => {
 	const advisor = await import("../packages/rpiv-advisor/advisor.js");
 	advisor.setAdvisorModel(undefined);
 	advisor.setAdvisorEffort(undefined);
+	advisor.setDisabledForModels([]);
 
 	const args = await import("../packages/rpiv-args/args.js");
 	args.invalidateSkillIndex();
