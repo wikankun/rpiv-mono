@@ -99,8 +99,9 @@ section[id] {
 /* `main > section` (NOT bare `section`) so the 96px "ma" rhythm only applies
    to top-level page composers (Hero, Pipeline, docs-hero, blog listing, etc.
    — all direct <main> children). Nested <section> elements inside prose
-   bodies (e.g. `.ref-section` on skill detail pages) own their own rhythm
-   via local rules and should not inherit the page-level padding. */
+   bodies (e.g. `.ref-section` on skill / agent detail pages) own their own
+   rhythm via the `.ref-section` rules below and should not inherit the
+   page-level padding. */
 main > section {
 	padding: var(--space-9) 0;
 	position: relative;
@@ -167,6 +168,45 @@ main > section {
 .chip--muted {
 	color: var(--text-distant);
 	border-color: var(--rule);
+}
+
+/* ─── Reference detail page rhythm (skill / agent /[slug] pages) ───
+   Coupled rhythm system: `.ref-meta` is the bordered hairline band that
+   carries chips for arguments / tier / tools / isolated indicators;
+   `.ref-section` is the numbered editorial section block that follows.
+   When `.ref-meta` directly precedes the first `.ref-section`, the
+   combinator at the bottom collapses the doubled hairline so the meta
+   strip's bottom rule owns the single transition. Move them together —
+   the combinator is load-bearing. */
+.ref-meta {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--space-3);
+	padding: var(--space-4) 0;
+	margin-bottom: var(--space-7);
+	border-top: 1px solid var(--rule);
+	border-bottom: 1px solid var(--rule);
+}
+.ref-meta__label {
+	font-size: var(--type-tiny);
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--text-distant);
+}
+
+.ref-section {
+	border-top: 1px solid var(--rule);
+	padding-top: var(--space-6);
+}
+/* When .ref-meta directly precedes the first .ref-section, its closing
+   border-bottom already separates the band from what follows — the
+   section's own border-top doubles the hairline and brackets ~80px of
+   empty space. Collapse the redundant edge so the meta strip's bottom
+   rule owns the single transition. */
+.ref-meta + .ref-section {
+	border-top: none;
+	padding-top: 0;
 }
 
 .card {

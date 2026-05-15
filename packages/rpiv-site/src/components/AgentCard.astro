@@ -1,6 +1,6 @@
 ---
 import type { AgentEntry } from "../lib/agents";
-import { siteDescription, DISPATCHER_COUNT } from "../lib/agents";
+import { siteDescription } from "../lib/agents";
 
 interface Props {
 	agent: AgentEntry;
@@ -8,7 +8,7 @@ interface Props {
 
 const { agent } = Astro.props;
 const desc = siteDescription(agent);
-const dispatched = DISPATCHER_COUNT[agent.slug] ?? 0;
+const dispatched = agent.copy?.dispatched_by?.length ?? 0;
 const tools = agent.data.tools?.split(",").map((t) => t.trim()).filter(Boolean) ?? [];
 ---
 

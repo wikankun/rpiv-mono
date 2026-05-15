@@ -2,6 +2,7 @@
 import type { GetStaticPaths } from "astro";
 import { getCollection, render } from "astro:content";
 import DocsLayout from "../../../../layouts/DocsLayout.astro";
+import { inlineMd } from "../../../../lib/inlineMd";
 import { getSkill, getSkillSpec } from "../../../../lib/skills";
 
 export const getStaticPaths: GetStaticPaths = async () => {
@@ -14,20 +15,6 @@ export const getStaticPaths: GetStaticPaths = async () => {
 
 const { name } = Astro.props;
 const skill = await getSkill(name);
-
-/** Render a tiny subset of inline Markdown (`` `code` `` + `**bold**`) so frontmatter
- * strings that contain code spans match the look of the surrounding prose.
- * HTML-escapes the rest of the input — never bypass without escaping. */
-function inlineMd(input: string | undefined): string {
-	if (!input) return "";
-	const escaped = input
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-	return escaped
-		.replace(/`([^`]+)`/g, "<code>$1</code>")
-		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-}
 
 // Structured docs page if any of the new frontmatter is populated.
 // Otherwise fall back to rendering the SKILL.md spec body (legacy, un-migrated).
@@ -220,38 +207,9 @@ const structuredHeadings = hasStructured
 <style>
 	/* ─── Header block ───
 	   .docs-lede lives in src/styles/prose.css — shared across every docs
-	   detail/index page. No local override needed here. */
-
-	.ref-meta {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-4) 0;
-		margin-bottom: var(--space-7);
-		border-top: 1px solid var(--rule);
-		border-bottom: 1px solid var(--rule);
-	}
-	.ref-meta__label {
-		font-size: var(--type-tiny);
-		letter-spacing: 0.18em;
-		text-transform: uppercase;
-		color: var(--text-distant);
-	}
-
-	/* ─── Section rhythm ─── */
-	.ref-section {
-		border-top: 1px solid var(--rule);
-		padding-top: var(--space-6);
-	}
-	/* When .ref-meta directly precedes the first .ref-section, its closing
-	   border-bottom already separates the band from what follows — the
-	   section's own border-top doubles the hairline and brackets ~80px of
-	   empty space. Collapse the redundant edge so the meta strip's bottom
-	   rule owns the single transition. */
-	.ref-meta + .ref-section {
-		border-top: none;
-		padding-top: 0;
-	}
+	   detail/index page. No local override needed here.
+	   .ref-meta + .ref-section rhythm lives in src/styles/global.css —
+	   shared across this page + agents/[slug].astro. */
 
 	/* ─── Input notes — definition list below the table ─── */
 	.input-notes {

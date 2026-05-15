@@ -1,17 +1,25 @@
 import { type CollectionEntry, getCollection } from "astro:content";
 
 type SpecEntry = CollectionEntry<"agentSpecs">;
+type CopyEntry = CollectionEntry<"agents">;
 
 export type AgentEntry = {
 	slug: string;
 	tagline: string;
 	body: string | undefined;
+	/** Frontmatter from the upstream agent spec (`tools`, `isolated`, etc.). */
 	data: SpecEntry["data"];
+	/** Frontmatter from the site-side visitor copy (`src/content/agents/<slug>.md`).
+	 *  Holds the human-facing doc structure: purpose, when_to_use, dispatched_by. */
+	copy: CopyEntry["data"] | undefined;
 };
 
 export type CapabilityTier = "locator" | "analyzer" | "external" | "specialist";
 
-const TIER_BY_NAME: Record<string, CapabilityTier> = {
+/** The 13 named agents that ship as built docs pages. Exported so
+ *  `getStaticPaths` (agents/[slug].astro) can filter `agentSpecs` against it,
+ *  keeping `artifact-reviewer` / `slice-verifier` invisible per FRD Non-Goals. */
+export const TIER_BY_NAME: Record<string, CapabilityTier> = {
 	"codebase-locator": "locator",
 	"thoughts-locator": "locator",
 	"test-case-locator": "locator",
@@ -25,23 +33,6 @@ const TIER_BY_NAME: Record<string, CapabilityTier> = {
 	"claim-verifier": "specialist",
 	"diff-auditor": "specialist",
 	"peer-comparator": "specialist",
-};
-
-/** Counts from research §7 dispatcher table. Single-source-of-truth. */
-export const DISPATCHER_COUNT: Record<string, number> = {
-	"claim-verifier": 1,
-	"codebase-analyzer": 9,
-	"codebase-locator": 7,
-	"codebase-pattern-finder": 5,
-	"diff-auditor": 1,
-	"integration-scanner": 4,
-	"peer-comparator": 1,
-	"precedent-locator": 3,
-	"scope-tracer": 1,
-	"test-case-locator": 2,
-	"thoughts-analyzer": 2,
-	"thoughts-locator": 3,
-	"web-search-researcher": 5,
 };
 
 /** Specialists + already-single-sentence locators get the full description. Others trim to first sentence. */
@@ -77,17 +68,32 @@ export function tier(agent: AgentEntry): CapabilityTier {
 
 const TIER_ORDER: CapabilityTier[] = ["locator", "analyzer", "specialist", "external"];
 
+function merge(spec: SpecEntry, copies: CopyEntry[]): AgentEntry {
+	const copy = copies.find((c) => c.data.slug === spec.data.name);
+	return {
+		slug: spec.data.name,
+		tagline: copy?.data.tagline ?? fallbackTagline(spec),
+		body: copy?.body,
+		data: spec.data,
+		copy: copy?.data,
+	};
+}
+
+/** Direct lookup by agent slug. Mirrors `getSkill(name)` at `lib/skills.ts:42-48`.
+ *  Throws if the slug isn't in `TIER_BY_NAME` — defensive net for future drift
+ *  between `agentSpecs` and `TIER_BY_NAME` even though `getStaticPaths` filters
+ *  to the same allowlist. */
+export async function getAgent(name: string): Promise<AgentEntry> {
+	if (!(name in TIER_BY_NAME)) throw new Error(`agent not in TIER_BY_NAME: ${name}`);
+	const [specs, copies] = await Promise.all([getCollection("agentSpecs"), getCollection("agents")]);
+	const spec = specs.find((s) => s.data.name === name);
+	if (!spec) throw new Error(`agent spec not found: ${name}`);
+	return merge(spec, copies);
+}
+
 export async function getAgentsByTier(): Promise<Array<{ tier: CapabilityTier; agents: AgentEntry[] }>> {
 	const [specs, copies] = await Promise.all([getCollection("agentSpecs"), getCollection("agents")]);
-	const all: AgentEntry[] = specs.map((spec) => {
-		const copy = copies.find((c) => c.data.slug === spec.data.name);
-		return {
-			slug: spec.data.name,
-			tagline: copy?.data.tagline ?? fallbackTagline(spec),
-			body: copy?.body,
-			data: spec.data,
-		};
-	});
+	const all: AgentEntry[] = specs.filter((spec) => spec.data.name in TIER_BY_NAME).map((spec) => merge(spec, copies));
 	const groups = new Map<CapabilityTier, AgentEntry[]>(TIER_ORDER.map((t) => [t, []]));
 	for (const a of all) groups.get(tier(a))!.push(a);
 	for (const list of groups.values()) {

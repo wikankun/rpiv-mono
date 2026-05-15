@@ -76,6 +76,14 @@ const agents = defineCollection({
 	schema: z.object({
 		slug: z.string(),
 		tagline: z.string(),
+		/** Why this agent exists. 1–2 sentences. Markdown allowed. */
+		purpose: z.string().optional(),
+		/** Single-sentence trigger statement. Markdown allowed.
+		 *  Scalar (not array) — rendered as a single <p>, not a <ul>. */
+		when_to_use: z.string().optional(),
+		/** Skill slugs (in `src/content/skills/*.md`) that dispatch this agent.
+		 *  Flat array — dispatch is one-directional, no upstream/downstream split. */
+		dispatched_by: z.array(z.string()).optional(),
 	}),
 });
 

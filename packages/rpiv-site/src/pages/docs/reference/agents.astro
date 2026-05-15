@@ -1,6 +1,6 @@
 ---
 import DocsLayout from "../../../layouts/DocsLayout.astro";
-import { type CapabilityTier, DISPATCHER_COUNT, getAgentsByTier } from "../../../lib/agents";
+import { type CapabilityTier, getAgentsByTier } from "../../../lib/agents";
 
 const tiers = await getAgentsByTier();
 
@@ -22,17 +22,20 @@ const TIER_LABELS: Record<CapabilityTier, string> = {
 				<div class="ref-tier">
 					<h2 class="ref-tier__title">{TIER_LABELS[t]}</h2>
 					<div class="ref-list">
-						{agents.map((agent) => (
-							<article class="ref-item">
-								<a href={`/docs/reference/agents/${agent.slug}`} class="ref-item__title">
-									<h3 class="mono">{agent.slug}</h3>
-								</a>
-								<p class="ref-item__desc">{agent.tagline}</p>
-								{DISPATCHER_COUNT[agent.slug] !== undefined && (
-									<span class="chip chip--muted">{DISPATCHER_COUNT[agent.slug]} dispatches</span>
-								)}
-							</article>
-						))}
+						{agents.map((agent) => {
+							const dispatchCount = agent.copy?.dispatched_by?.length ?? 0;
+							return (
+								<article class="ref-item">
+									<a href={`/docs/reference/agents/${agent.slug}`} class="ref-item__title">
+										<h3 class="mono">{agent.slug}</h3>
+									</a>
+									<p class="ref-item__desc">{agent.tagline}</p>
+									{dispatchCount > 0 && (
+										<span class="chip chip--muted">{dispatchCount} dispatches</span>
+									)}
+								</article>
+							);
+						})}
 					</div>
 				</div>
 			);
