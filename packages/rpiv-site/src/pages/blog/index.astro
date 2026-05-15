@@ -14,9 +14,19 @@ const count = String(posts.length).padStart(2, "0");
 >
 	<Nav />
 	<main>
-		<section>
+		<section class="blog-hero">
+			<SumiInk variant="backdrop" />
+			<div class="container blog-hero__inner">
+				<p class="kicker blog-hero__kicker">§ rpiv-pi · blog</p>
+				<h1 class="blog-hero__title">Field notes.</h1>
+				<p class="blog-hero__lede">
+					Updates, deep dives, and release notes for the rpiv-pi pipeline.
+				</p>
+			</div>
+		</section>
+
+		<section class="blog-list">
 			<div class="container">
-				<p class="kicker">blog</p>
 				<div class="post-count-row">
 					<p class="post-count mono">{count} posts</p>
 					<a
@@ -58,6 +68,37 @@ const count = String(posts.length).padStart(2, "0");
 </Base>
 
 <style>
+	.blog-hero {
+		position: relative;
+		overflow: hidden;
+		padding: var(--space-9) 0 var(--space-7);
+	}
+	.blog-hero__inner {
+		position: relative;
+		z-index: 1;
+	}
+	.blog-hero__kicker {
+		margin-bottom: var(--space-4);
+	}
+	.blog-hero__title {
+		font-size: var(--type-h2);
+		line-height: var(--leading-tight);
+		margin-bottom: var(--space-5);
+		max-width: 20ch;
+	}
+	.blog-hero__lede {
+		font-family: var(--font-serif);
+		font-size: var(--type-lead);
+		line-height: var(--leading-body);
+		color: var(--text-quiet);
+		max-width: 56ch;
+		margin: 0;
+	}
+
+	.blog-list {
+		padding: var(--space-4) 0 var(--space-9);
+	}
+
 	.post-count-row {
 		display: flex;
 		align-items: baseline;
