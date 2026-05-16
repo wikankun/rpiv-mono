@@ -471,17 +471,27 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const selectedLabel = await ctx.ui.select(
-				"Search provider",
-				PROVIDERS.map((p) => p.label),
-				{},
-			);
+			const activeProvider = current.provider ?? DEFAULT_PROVIDER_NAME;
+			const orderedMetas = [
+				...PROVIDERS.filter((p) => p.name === activeProvider),
+				...PROVIDERS.filter((p) => p.name !== activeProvider),
+			];
+			const hasKey = (p: (typeof PROVIDERS)[number]) => resolveProviderApiKey(p.name, current) !== undefined;
+			const labelOf = (p: (typeof PROVIDERS)[number]) => {
+				const markers: string[] = [];
+				if (p.name === activeProvider) markers.push("✓");
+				if (hasKey(p)) markers.push("(configured)");
+				return markers.length > 0 ? `${p.label} ${markers.join(" ")}` : p.label;
+			};
+
+			const selectedLabel = await ctx.ui.select("Search provider", orderedMetas.map(labelOf), {});
 			if (selectedLabel === undefined || selectedLabel === null) {
 				ctx.ui.notify("Web search config unchanged", "info");
 				return;
 			}
 
-			const selectedMeta = PROVIDERS.find((p) => p.label === selectedLabel);
+			const cleanLabel = selectedLabel.replace(/\s*(?:✓|\(configured\))\s*/g, " ").trim();
+			const selectedMeta = PROVIDERS.find((p) => p.label === cleanLabel);
 			if (!selectedMeta) {
 				ctx.ui.notify("Web search config unchanged", "info");
 				return;
@@ -492,7 +502,7 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 				current.apiKeys?.[selectedProvider] ?? (selectedProvider === "brave" ? current.apiKey : undefined);
 			const input = await ctx.ui.input(
 				`${selectedLabel} API key`,
-				existingKey ? "(leave empty to keep existing)" : "...",
+				existingKey ? `Press Enter to keep current (${maskApiKey(existingKey)}), or type new key` : "...",
 			);
 
 			if (input === undefined || input === null) {
@@ -501,7 +511,8 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 			}
 
 			const trimmed = input.trim();
-			if (!trimmed) {
+			const keyToWrite = trimmed || existingKey;
+			if (!keyToWrite) {
 				ctx.ui.notify("Web search config unchanged", "info");
 				return;
 			}
@@ -509,11 +520,16 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 			const toSave: WebToolsConfig = {
 				...current,
 				provider: selectedProvider,
-				apiKeys: { ...current.apiKeys, [selectedProvider]: trimmed },
+				apiKeys: { ...current.apiKeys, [selectedProvider]: keyToWrite },
 			};
 			delete (toSave as { apiKey?: string }).apiKey;
 			saveConfig(toSave);
-			ctx.ui.notify(`Saved ${selectedLabel} API key to ${CONFIG_PATH}`, "info");
+			ctx.ui.notify(
+				trimmed
+					? `Saved ${selectedLabel} API key to ${CONFIG_PATH}`
+					: `Active provider set to ${selectedLabel}; existing key kept`,
+				"info",
+			);
 		},
 	});
 }

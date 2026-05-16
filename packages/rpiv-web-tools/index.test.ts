@@ -769,15 +769,31 @@ describe("/web-search-config command", () => {
 		expect(saved.apiKey).toBe("existing");
 	});
 
-	it("empty input after select leaves config untouched", async () => {
+	it("empty input after select leaves config untouched when no existing key", async () => {
 		writeConfig({ apiKey: "existing" });
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
+		// Selecting Exa: no apiKeys.exa, no env var, legacy apiKey only applies to brave.
+		// existingKey for Exa = undefined, so empty input falls through to cancel.
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("   ");
 		await captured.commands.get("web-search-config")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.apiKey).toBe("existing");
+		expect(saved.provider).toBeUndefined();
+	});
+
+	it("empty input keeps existing key and persists provider switch", async () => {
+		writeConfig({ provider: "brave", apiKeys: { brave: "brave-key", exa: "exa-key" } });
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa");
+		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("");
+		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		expect(saved.provider).toBe("exa");
+		expect(saved.apiKeys.exa).toBe("exa-key");
+		expect(saved.apiKeys.brave).toBe("brave-key");
 	});
 
 	it("migrates legacy apiKey to apiKeys on save", async () => {
@@ -792,5 +808,61 @@ describe("/web-search-config command", () => {
 		expect(saved.apiKeys).toEqual({ brave: "new-key" });
 		expect(saved.apiKey).toBeUndefined();
 		expect(saved.otherField).toBe("keep");
+	});
+
+	it("lists active provider first with a ✓ marker", async () => {
+		writeConfig({ provider: "exa", apiKeys: { exa: "exa-key" } });
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa ✓ (configured)");
+		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-exa-key");
+		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+
+		const selectCall = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0];
+		const labels = selectCall[1] as string[];
+		expect(labels[0]).toBe("Exa ✓ (configured)");
+		expect(labels.slice(1)).toEqual(["Brave", "Tavily", "Serper", "Jina", "Firecrawl"]);
+		expect(labels.filter((l) => l.includes("✓"))).toHaveLength(1);
+
+		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		expect(saved.provider).toBe("exa");
+		expect(saved.apiKeys.exa).toBe("new-exa-key");
+	});
+
+	it("marks every provider with a saved key as (configured)", async () => {
+		writeConfig({
+			provider: "exa",
+			apiKeys: { exa: "exa-key", brave: "brave-key", tavily: "tavily-key" },
+		});
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+		expect(labels[0]).toBe("Exa ✓ (configured)");
+		expect(labels).toContain("Brave (configured)");
+		expect(labels).toContain("Tavily (configured)");
+		expect(labels).toContain("Serper");
+		expect(labels).toContain("Jina");
+		expect(labels).toContain("Firecrawl");
+	});
+
+	it("marks provider as (configured) when key is in env var", async () => {
+		process.env.JINA_API_KEY = "env-jina-key";
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+		expect(labels).toContain("Jina (configured)");
+	});
+
+	it("defaults to brave-first when no provider is configured", async () => {
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+		expect(labels[0]).toBe("Brave ✓");
 	});
 });
