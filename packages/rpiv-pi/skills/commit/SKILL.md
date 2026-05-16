@@ -9,9 +9,9 @@ allowed-tools: Bash(git *), Read, Glob, Grep
 
 You are tasked with creating git commits for repository changes.
 
-## Commit hint
+## Input
 
-`$ARGUMENTS` (empty/literal → infer from history and `git diff`)
+`$ARGUMENTS` — optional commit message hint. Empty/literal → infer from history and `git diff`.
 
 ## Context:
 - **In-session**: If there's conversation history, use it to understand what was built/changed

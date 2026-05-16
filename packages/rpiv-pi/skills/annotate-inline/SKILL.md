@@ -5,13 +5,13 @@ argument-hint: [target-directory]
 allowed-tools: Agent, Read, Write, Glob, Grep
 ---
 
-# Annotate Project
+# Annotate Inline
 
 You are tasked with generating CLAUDE.md files across a brownfield project. You will map the project structure, auto-detect its architecture, analyze each architectural layer, and batch-write compact CLAUDE.md files at the root and relevant subdirectories.
 
-## Initial Setup:
+## Input
 
-Use the current working directory as the target project by default. If the user provides a specific directory path as an argument, use that instead.
+`$ARGUMENTS` — optional target directory. Defaults to the current working directory.
 
 ## Steps to follow:
 

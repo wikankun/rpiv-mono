@@ -6,25 +6,23 @@ argument-hint: "[scope]"
 
 # Code Review
 
-Scope: $ARGUMENTS
-
 Review changes across **Quality**, **Security**, **Dependencies** lenses with optional advisor adjudication. Valid scopes: `commit` | `staged` | `working` | hash | `A..B` | PR branch. **Empty scope defaults to feature-branch-vs-default-branch first-parent review** (default branch auto-detected; see Step 1).
 
-**How it works**:
-- Step 1 — resolve scope, read diff (with `-U30` context), derive flags, build semantic file map
-- Step 2 — dispatch Wave-1: integration + precedents + (deps/CVE) + (peer-mirror); integration & peer-mirror gate Wave-2, precedents gates Step 5
-- Step 3 — dispatch Wave-2: Quality + Security lenses, file-oriented
-- Step 4 — dispatch Wave-3: Predicate-Trace + Interaction Sweep + Gap-Finder, all gated
-- Step 5 — reconcile via advisor or inline dimension-sweep (blocks on precedents)
-- Step 6 — verify findings: re-read each cited file:line; drop/demote unverified
-- Step 7 — write artifact
-- Steps 8–9 — present and handle follow-ups
+## Input
+
+`$ARGUMENTS` — scope: `commit` | `staged` | `working` | a commit hash | `A..B` range | PR branch name. Empty defaults to feature-branch-vs-default-branch (first-parent).
+
+## Flow
+
+1. Input → 2. Wave-1 dispatch → 3. Wave-2 dispatch → 4. Wave-3 dispatch → 5. Reconcile → 6. Verify → 7. Write artifact → 8. Present → 9. Follow-ups
 
 **File-orientation contract**: agents reason about *files* as coherent units. Hunks are evidence *within* a file's analysis, never the unit of analysis. The `-U30` patch (Step 1) inlines function-level context so agents rarely need extra `Read` calls.
 
 Every Wave-2 agent prompt contains EXACTLY: (a) `Known Context:` followed by the Discovery Map verbatim, and (b) the literal string `.git/code-review-patch.diff` as the patch path. Nothing else from Wave-1 outputs — NOT the raw integration-scanner dump, NOT precedent-locator output, NOT Dependencies/CVE output. See "Wave-2 context isolation" in Step 3 for the failure mode when this is violated. Wave-1 agents that do not consume the Discovery Map (precedents, dependencies, CVE) get `ChangedFiles` / manifest-diff only.
 
-## Step 1: Resolve Scope and Assemble the Diff
+## Steps
+
+### Step 1: Resolve Scope and Assemble the Diff
 
 1. **Detect default branch**: `DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')`. Fallback: probe `main` then `master` (`git rev-parse --verify --quiet <name>`); if neither resolves, ask the user which branch is the integration target before proceeding. Use `$DEFAULT_BRANCH` wherever the parser below says `<default>`.
 
@@ -67,7 +65,7 @@ Every Wave-2 agent prompt contains EXACTLY: (a) `Known Context:` followed by the
 
      Drop a pair only when the peer doesn't exist at HEAD, no heuristic matches, or both files were added in this diff. Empty list ⇒ skip the peer-mirror agent. Co-modified peers are KEPT — the agent Reads them at HEAD (post-diff tree state), so any invariant present at HEAD counts as peer evidence regardless of whether the peer was edited in this diff.
 
-## Step 2: Dispatch Wave-1 — Integration + Precedents + Deps/CVE + Peer-Mirror
+### Step 2: Dispatch Wave-1 — Integration + Precedents + Deps/CVE + Peer-Mirror
 
 Spawn ALL of the following in parallel at T=0 in a **single message with multiple Agent tool calls**. Do NOT wait for integration-scanner before dispatching precedents / dependencies / CVE — they do not consume Discovery-Map output, only `ChangedFiles` and the manifest diff (both orchestrator-produced in Step 1).
 
@@ -117,7 +115,7 @@ While these agents run, the orchestrator produces the rest of the Discovery Map 
 **Synthesize the Discovery Map** — a compact block that Wave-2 agents receive verbatim as `Known Context`. Each file line carries a *role tag* and a *symbols-touched hint*; files are clustered by shared directory prefix so agents orient without re-reading the patch.
 
 ```
-## Discovery Map
+#### Discovery Map
 
 Review type: {ReviewType}
 Scope: {scope argument}
@@ -150,9 +148,9 @@ Peer mirrors: {peer-mirror agent output verbatim — Missing/Diverged rows only;
 
 **Symbols-touched hint**: extract top 1–3 top-level definitions from the diff's `+` lines using a heuristic appropriate to the file's language (class/function/def/fn/struct/trait/interface/type/export). Cap at ~80 chars. Leave blank if ambiguous — orientation, not completeness.
 
-## Step 3: Dispatch Wave-2 — Quality + Security Lenses
+### Step 3: Dispatch Wave-2 — Quality + Security Lenses
 
-Spawn Quality + Security in parallel using the Agent tool. Each receives the `## Discovery Map` block inline as `Known Context` above its task, and a pointer to `.git/code-review-patch.diff` for the diff itself. Precedents / Dependencies / CVE are already running from Wave-1 — do NOT re-dispatch them here; the prompts below document what those Wave-1 agents received, they are not re-issued.
+Spawn Quality + Security in parallel using the Agent tool. Each receives the Discovery Map block inline as `Known Context` above its task, and a pointer to `.git/code-review-patch.diff` for the diff itself. Precedents / Dependencies / CVE are already running from Wave-1 — do NOT re-dispatch them here; the prompts below document what those Wave-1 agents received, they are not re-issued.
 
 **Wave-2 context isolation (LOAD-BEARING — violations cause silent quality collapse)**: Each Wave-2 agent receives EXACTLY two things, nothing else: (1) the Discovery Map (digested form) and (2) the literal path string `.git/code-review-patch.diff`.
 
@@ -251,7 +249,7 @@ Spawn Quality + Security in parallel using the Agent tool. Each receives the `##
 
 **Wait for Quality + Security to complete** before proceeding. Precedents / Dependencies / CVE from Wave-1 may still be running; gather them before Step 5, not before Step 4.
 
-## Step 4: Dispatch Wave-3 — Predicate-Trace + Interaction Sweep + Gap-Finder
+### Step 4: Dispatch Wave-3 — Predicate-Trace + Interaction Sweep + Gap-Finder
 
 Once Wave-2 (Quality + Security) completes, dispatch 4a and 4b as parallel agents **in a single message**; compute 4c inline (orchestrator-side set arithmetic — no agent). They do NOT consume each other's output:
 
@@ -259,7 +257,7 @@ Once Wave-2 (Quality + Security) completes, dispatch 4a and 4b as parallel agent
 - **Gap-Finder (4c)** is coverage arithmetic: `{in-scope files} − {files with ≥1 Quality/Security finding} = {uncovered files}`. Orchestrator already holds both sets post-Wave-2 — an agent would discard context only to re-receive it via prompt. Inline is strictly cheaper and deterministic.
 - If Predicate-Trace (4a) surfaces a row that was not visible in Quality's table, append it via a Step 9 follow-up — cheaper than a serial gate.
 
-### Step 4a: Predicate-Trace
+#### Step 4a: Predicate-Trace
 
 **Gate**: SKIP this sub-step (do not dispatch 4a) unless `HasGatingPredicate` is true AND the Quality lens returned ≥2 rows in its `Predicate-set coherence` table referencing the same enum/type. If skipped, 4b and 4c still dispatch.
 
@@ -279,7 +277,7 @@ Otherwise spawn ONE `codebase-analyzer` in parallel with 4b:
 
 Do NOT wait — 4b (Interaction Sweep) dispatches in the same message as 4a; 4c runs inline in the orchestrator.
 
-### Step 4b: Interaction Sweep
+#### Step 4b: Interaction Sweep
 
 **Gate**: SKIP this sub-step (do not dispatch 4b) when EITHER `len(ChangedFiles) < 2` OR the Quality lens returned fewer than 4 total observations across all files. Emergent interactions need surface area; tiny diffs cannot structurally produce them.
 
@@ -308,7 +306,7 @@ Otherwise spawn ONE `codebase-analyzer` in parallel with 4a:
   For findings involving ordering/races/concurrency across processes or handlers, name the ordering primitive that would prevent the race (distributed lock, exclusive-key wrapper, ordered partition, transaction, idempotency key, etc.) and explain why it does NOT apply here. Drop the finding if the primitive exists in the diff or nearby and your argument against it is speculative.
   ```
 
-### Step 4c: Gap-Finder (orchestrator-side coverage arithmetic)
+#### Step 4c: Gap-Finder (orchestrator-side coverage arithmetic)
 
 **Gate**: SKIP when `len(ChangedFiles) < 2`. Tiny diffs cannot structurally have coverage gaps.
 
@@ -324,7 +322,7 @@ No agent dispatch. Compute inline while 4a / 4b run:
 
 **Wait for ALL of 4a / 4b AND the Precedents agent from Wave-1 to complete** before proceeding to Step 5 (Reconciliation). Precedents is a **hard gate** — severity weighting in Step 5 reads its follow-up-within-30-days counts. Dependencies / CVE (when dispatched) also merge in here but are not individually hard-gated; wait for them too unless they clearly exceed the review SLA, in which case omit `## Dependencies` and note it in the artifact. 4c has no wait — it completes synchronously with the orchestrator.
 
-## Step 5: Reconcile Findings
+### Step 5: Reconcile Findings
 
 **Barrier**: Step 5 MUST NOT begin until the Precedents agent has returned. Severity weighting depends on historical follow-up counts; starting reconciliation without them produces mis-weighted severities that the verification pass (Step 6) cannot correct.
 
@@ -363,7 +361,7 @@ No agent dispatch. Compute inline while 4a / 4b run:
        • *{spec A accepts Y} + {spec B rejects Y} + {workflow depends on both}* = **contradictory-predicate deadlock**
      Also check `thoughts/shared/reviews/*.md` and Precedents: if a prior review names a cascade whose constituents appear in current findings, cite it and assert reproduction. Missed cascades are the biggest historical quality regression; prefer false positives here.
 
-## Step 6: Verify Findings
+### Step 6: Verify Findings
 
 Before writing the artifact, spawn ONE `claim-verifier` whose sole job is to ground every reconciled finding in the actual code at its cited `file:line`. This catches two classes of error the lenses cannot self-detect: (a) *confident assertions* the agent never opened a file to confirm, and (b) *rationalisations* ("intentional-by-design", "pre-existing", "not a real deadlock") that contradict what the code does. Lens agents reason from the patch; the verifier reasons from the file.
 
@@ -407,7 +405,7 @@ Before writing the artifact, spawn ONE `claim-verifier` whose sole job is to gro
 
 **Do not skip this step** — it is the only mechanism that stops confident-but-unread lens assertions from reaching the artifact.
 
-## Step 7: Write the Review Document
+### Step 7: Write the Review Document
 
 1. **Determine metadata**:
    - Filename: `thoughts/shared/reviews/YYYY-MM-DD_HH-MM-SS_{scope-kebab}.md`
@@ -437,7 +435,7 @@ Before writing the artifact, spawn ONE `claim-verifier` whose sole job is to gro
 
 **Template shape**: Read the full template at `templates/review.md` (house pattern per `.rpiv/guidance/skills/architecture.md:66` — `templates/` subfolder, runtime-read, never inlined). At emission time: Read `templates/review.md`, fill every `{placeholder}` with reconciled-and-verified values from Steps 5 and 6, apply the section-omission rules above (delete the whole section AND its trailing separator line when its input is empty), strip the leading `<!-- -->` comment, and Write the result to the target path.
 
-## Step 8: Present Summary
+### Step 8: Present Summary
 
 ```
 Review written to:
@@ -465,7 +463,7 @@ Ask follow-ups, or chain forward.
 > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
 ```
 
-## Step 9: Handle Follow-ups
+### Step 9: Handle Follow-ups
 
 - **Append, never rewrite.** Edit the artifact to add a `## Follow-up {ISO 8601 timestamp}` section. The section heading's timestamp is the append-time record — no frontmatter update needed.
 - **Re-dispatch narrowly.** Spawn a single targeted `codebase-analyzer` on the area in question (1 agent max).

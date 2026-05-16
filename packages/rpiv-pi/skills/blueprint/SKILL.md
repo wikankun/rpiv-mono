@@ -1,28 +1,26 @@
 ---
 name: blueprint
 description: Plan complex features by decomposing them into vertical slices (one slice equals one phase) with developer micro-checkpoints between phases, producing an implement-ready phased plan in thoughts/shared/plans/. Use for complex multi-component features touching 6+ files across multiple layers when iterative review between slices is valuable. Requires a research artifact or a solutions artifact (from explore). Prefer blueprint over plan when mid-flight micro-checkpoints matter, and prefer plan when a straightforward phased breakdown is enough.
-argument-hint: [research artifact path]
+argument-hint: "[research artifact path]"
 ---
 
-# Plan
+# Blueprint
 
 You are tasked with planning how code will be shaped for a feature or change AND emitting an implement-ready phased plan. Decompose the feature into vertical slices (one slice = one phase), generate code slice-by-slice with developer micro-checkpoints between slices, and write the final artifact directly into `thoughts/shared/plans/` for `/skill:implement` to consume.
 
-**How it works**:
-- Read input and key source files into context (Step 1)
-- Spawn targeted research agents for depth analysis (Step 2)
-- Identify ambiguities — triage into simple decisions and genuine ambiguities (Step 3)
-- Holistic self-critique — review the combined design for gaps and contradictions (Step 4)
-- Developer checkpoint — resolve genuine ambiguities one at a time (Step 5)
-- Decompose into vertical slices holistically before generating code (Step 6)
-- Generate code slice-by-slice with developer micro-checkpoints (Step 7)
-- Verify cross-slice integration consistency (Step 8 — internal, folded into final 7.3)
-- Finalize the design artifact (Step 9)
-- Review and iterate with the developer (Step 10)
+## Input
+
+`$ARGUMENTS` — path to a research artifact (`thoughts/shared/research/*.md`) or a solutions artifact (`thoughts/shared/solutions/*.md`).
+
+## Flow
+
+1. Input → 2. Research → 3. Dimension sweep → 4. Self-critique → 5. Checkpoint → 6. Decompose → 7. Generate slices → 8. Integration verify → 9. Finalize → 10. Independent review → 11. Triage & iterate → 12. Follow-ups
 
 The final artifact is implement-ready.
 
-## Step 1: Input Handling
+## Steps
+
+### Step 1: Input Handling
 
 When this command is invoked:
 
@@ -47,7 +45,7 @@ When this command is invoked:
 
 2. **Read any additional files mentioned** — tickets, related designs, existing implementations. Read them FULLY before proceeding.
 
-## Step 2: Targeted Research
+### Step 2: Targeted Research
 
 This is NOT a discovery sweep. Focus on DEPTH (how things work, what patterns to follow) not BREADTH (where things are).
 
@@ -76,7 +74,7 @@ This is NOT a discovery sweep. Focus on DEPTH (how things work, what patterns to
    - Note assumptions that need verification
    - Determine true scope based on codebase reality
 
-## Step 3: Identify Ambiguities — Dimension Sweep
+### Step 3: Identify Ambiguities — Dimension Sweep
 
 Walk Step 2 findings, inherited research Q/As, and carried Open Questions through six architectural dimensions that map 1:1 to the plan artifact's section coverage — the sweep guarantees downstream completeness. Add **migration** as a seventh dimension only if the feature changes persisted schema.
 
@@ -91,7 +89,7 @@ For each dimension, classify findings as **simple decisions** (one valid option,
 
 **Pre-validate every option** before queuing it against research constraints and runtime code behavior. Eliminate or caveat options that contradict Steps 1-2 evidence. **Coverage check**: every Step 2 file read appears in at least one decision or ambiguity; every dimension is addressed (silently-resolved valid, skipped-unchecked not).
 
-## Step 4: Holistic Self-Critique
+### Step 4: Holistic Self-Critique
 
 Before presenting ambiguities to the developer, review the combined design picture holistically. Step 3 triages findings individually — this step checks whether they fit together as a coherent whole.
 
@@ -111,7 +109,7 @@ Before presenting ambiguities to the developer, review the combined design pictu
 - Issues that need developer input: add as new genuine ambiguities to the Step 5 checkpoint queue.
 - If no issues found: proceed to Step 5 with the existing ambiguity set.
 
-## Step 5: Developer Checkpoint
+### Step 5: Developer Checkpoint
 
 Use the grounded-questions-one-at-a-time pattern. Use a **❓ Question:** prefix so the developer knows their input is needed. Each question must:
 - Reference real findings with `file:line` evidence
@@ -171,7 +169,7 @@ Files: {N} new, {M} modified
 
 Use the `ask_user_question` tool to confirm before proceeding. Question: "{Summary from design brief above}. Ready to proceed to decomposition?". Header: "Design". Options: "Proceed (Recommended)" (Decompose into vertical slices, then generate code slice-by-slice); "Adjust decisions" (Revisit one or more architectural decisions above); "Change scope" (Add or remove items from the building/not-building lists).
 
-## Step 6: Feature Decomposition
+### Step 6: Feature Decomposition
 
 After the design summary is confirmed, decompose the feature into vertical slices. Each slice is a self-contained unit: types + implementation + wiring for one concern.
 
@@ -237,7 +235,7 @@ After the design summary is confirmed, decompose the feature into vertical slice
    - **NEW files**: `#### N. path/to/file.ext` + `**File**: path` + `**Changes**: NEW — {purpose}` + empty code fence (filled with full implementation in Step 7.4)
    - **MODIFY files**: `#### N. path/to/file.ext:line-range` + `**File**: path` + `**Changes**: MODIFY — {summary}` + empty code fence (filled with only the modified code in Step 7.4 — no "Current" block, the original is on disk)
 
-## Step 7: Generate Slices (Iterative)
+### Step 7: Generate Slices (Iterative)
 
 Generate code one slice at a time. Each slice sees the fixed code from all previous slices.
 
@@ -245,7 +243,7 @@ Generate code one slice at a time. Each slice sees the fixed code from all previ
 
 **For each slice in the decomposition (sequential order):**
 
-### 7.1. Generate slice code (internal)
+#### 7.1. Generate slice code (internal)
 
 Generate complete, copy-pasteable code for every file in this slice — but **hold it for the artifact, do NOT present full code to the developer**. The developer sees a condensed review in 7.3; the full code goes into the artifact in 7.4.
 
@@ -260,7 +258,7 @@ No pseudocode, no TODOs, no placeholders — the code must be copy-pasteable by 
 
 **Context grounding** (after slice 2): Before generating, re-read the artifact's prior `## Phase N` sections for files this slice touches (a file may appear in earlier phases; if so, this phase extends or revisits it). The artifact is the source of truth — generate code that extends what's already emitted, not what you remember from conversation.
 
-### 7.2. Verify slice
+#### 7.2. Verify slice
 
 Mandatory for every slice — no skipping, no shortcuts. Dispatch the `slice-verifier` agent with:
 - `artifact_path`: the Step-6 Write `file_path` (contains the skeleton plus locked prior phases; the current slice's code fence is still empty per 7.1/7.4 timing)
@@ -275,7 +273,7 @@ The agent emits a 3-row summary (`Decisions / Cross-slice / Research`). On any V
 
 Never proceed to 7.3 with a VIOLATION absent from the presentation.
 
-### 7.3. Developer micro-checkpoint
+#### 7.3. Developer micro-checkpoint
 
 Present a **condensed review** of the slice — NOT the full generated code. The developer reviews the design shape, not every line. For each file in the slice, show:
 
@@ -294,7 +292,7 @@ Use the `ask_user_question` tool to confirm. Question: "Slice {N/M}: {slice name
 
 **Checkpoint cadence**: One slice per checkpoint. Present each slice individually, regardless of slice count.
 
-### 7.4. Incorporate feedback
+#### 7.4. Incorporate feedback
 
 **Approve**: Lock this slice's code and **Edit the artifact immediately**:
 1. For each file in this slice, Edit the skeleton artifact to replace the empty code fence under that file's `#### N. path/...` subsection inside this slice's `## Phase N: {slice name}` section with the full generated code from 7.1
@@ -325,7 +323,7 @@ Update decomposition (add/remove/reorder remaining slices) and confirm before co
 
 **Revisit a decision**: Re-run Step 5 for the flagged ambiguity (one question). If decomposition is unaffected, update `## Decisions` and resume 7.1. If affected, cascade like Rethink — for each invalidated approved phase, ask reopen vs. annotate Plan History, then update remaining slices. Re-run 7.2 before re-presenting 7.3; artifact untouched until approval.
 
-## Step 8: Integration Verification (internal)
+### Step 8: Integration Verification (internal)
 
 Runs during the final slice's 7.2 — no separate developer round-trip. Result feeds the final 7.3 question text.
 
@@ -333,7 +331,7 @@ Runs during the final slice's 7.2 — no separate developer round-trip. Result f
 2. **Constraint check**: every `## Verification Notes` and Precedent & Lesson entry from research is satisfied somewhere in the generated code.
 3. **Emit summary** for final 7.3: `OK` or `violations: {brief}`. No `ask_user_question` here — Step 7.3 absorbs the approval.
 
-## Step 9: Finalize Plan Artifact
+### Step 9: Finalize Plan Artifact
 
 The artifact was created as a skeleton in Step 6 and filled progressively in Step 7.4 (code fences + Success Criteria). This step verifies and flips status.
 
@@ -353,7 +351,7 @@ The artifact was created as a skeleton in Step 6 and filled progressively in Ste
    - **NEW files**: `#### N. path/to/file.ext` + `**File**` + `**Changes**: NEW — {purpose}` + full implementation code block
    - **MODIFY files**: `#### N. path/to/file.ext:line-range` + `**File**` + `**Changes**: MODIFY — {summary}` + code block with only the modified/added code (no "Current" block — the original is on disk, implement reads it)
 
-## Step 10: Independent Plan Review
+### Step 10: Independent Plan Review
 
 After Step 9 finalizes the artifact, dispatch an independent review subagent
 to walk every Phase code fence against the live codebase. The subagent runs
@@ -362,7 +360,7 @@ criticism > generation asymmetry plus fresh-context isolation. Inherits the
 orchestrator's model (no model upgrade required); the value comes from the
 fresh dispatch, not from a stronger model.
 
-### 10.1. Dispatch the artifact-reviewer subagent
+#### 10.1. Dispatch the artifact-reviewer subagent
 
 Reuse the exact `file_path` string passed to `Write` at Step 6 — the runtime already resolved it for this platform; do not rebuild it from `pwd`. `ls` to verify it still exists; abort dispatch on miss.
 
@@ -376,7 +374,7 @@ Review the finalized plan against the live codebase at HEAD. Walk every Phase co
 })
 ```
 
-### 10.2. Persist the review table to the artifact
+#### 10.2. Persist the review table to the artifact
 
 The agent returns a markdown table with columns `plan-loc | codebase-loc | severity | dimension | finding | recommendation`. Append it to the plan artifact as a new section, with a `resolution` column appended (initially blank, filled progressively at Step 11):
 
@@ -394,7 +392,7 @@ _Independent post-finalization review by artifact-reviewer subagent. Findings tr
 
 If the agent emits zero rows, still emit the section with a single line: `_No findings — artifact-reviewer cleared the artifact._`. Persistence is mandatory regardless of finding count — the section is the durable audit trail.
 
-### 10.3. Tally findings for Step 11's prompt
+#### 10.3. Tally findings for Step 11's prompt
 
 Count rows by severity. Store the counts in main context for Step 11's developer prompt:
 
@@ -404,7 +402,7 @@ Count rows by severity. Store the counts in main context for Step 11's developer
 
 Do NOT auto-apply any finding. The orchestrator never makes the apply / defer / dismiss judgment alone — that lives with the developer at Step 11. The reviewer's role is to surface; the developer's role is to triage.
 
-### 10.4. Failure handling
+#### 10.4. Failure handling
 
 If artifact-reviewer errors out (subprocess crash, malformed output, timeout):
 - Skip Step 10's findings; do not block on the failure.
@@ -414,7 +412,7 @@ If artifact-reviewer errors out (subprocess crash, malformed output, timeout):
 
 The developer review path at Step 11 absorbs the cost — that is how planning worked before this step existed.
 
-## Step 11: Review & Iterate
+### Step 11: Review & Iterate
 
 1. **Triage artifact-reviewer findings first** (skip if Step 10 returned no findings):
 
@@ -459,7 +457,7 @@ The developer review path at Step 11 absorbs the cost — that is how planning w
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-## Step 12: Handle Follow-ups
+### Step 12: Handle Follow-ups
 
 - **Edit in-place.** Use the Edit tool to update the plan artifact directly — phase code stays one source of truth.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "Updated <brief description>"`.

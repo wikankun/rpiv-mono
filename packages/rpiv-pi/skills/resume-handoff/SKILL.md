@@ -4,11 +4,21 @@ description: Resume work from a handoff document produced by create-handoff. Rea
 argument-hint: [handoff-path]
 ---
 
-# Resume work from a handoff document
+# Resume Handoff
 
 You are tasked with resuming work from a handoff document through an interactive process. These handoffs contain critical context, learnings, and next steps from previous work sessions that need to be understood and continued.
 
-## Initial Response
+## Input
+
+`$ARGUMENTS` — path to a handoff document under `thoughts/shared/handoffs/`. If omitted, the skill lists available handoffs and asks which to resume from.
+
+## Flow
+
+1. Input → 2. Read & analyze handoff → 3. Synthesize & present → 4. Create action plan → 5. Begin implementation
+
+## Steps
+
+### Step 1: Input Handling
 
 When this command is invoked:
 
@@ -30,9 +40,7 @@ Tip: You can invoke this command directly with a handoff path: `/skill:resume-ha
 
 Then wait for the user's input.
 
-## Process Steps
-
-### Step 1: Read and Analyze Handoff
+### Step 2: Read and Analyze Handoff
 
 1. **Read handoff document completely**:
    - Use the Read tool WITHOUT limit/offset parameters
@@ -67,7 +75,7 @@ Then wait for the user's input.
    - Re-read implementation files mentioned to confirm current state matches handoff expectations
    - Read any new related files discovered during research
 
-### Step 2: Synthesize and Present Analysis
+### Step 3: Synthesize and Present Analysis
 
 1. **Present comprehensive analysis**:
    ```
@@ -103,7 +111,7 @@ Then wait for the user's input.
 
    Use the `ask_user_question` tool to confirm the approach. Question: "{Summary of recommended next action}. Proceed?". Header: "Resume". Options: "Proceed (Recommended)" (Begin with {recommended action 1}); "Adjust approach" (Change the order or scope of next steps); "Re-analyze" (The codebase has changed — re-verify state first).
 
-### Step 3: Create Action Plan
+### Step 4: Create Action Plan
 
 1. **Create a task list**:
    - Convert action items from handoff into todos
@@ -119,7 +127,7 @@ Then wait for the user's input.
    Ready to begin with the first task: {task description}?
    ```
 
-### Step 4: Begin Implementation
+### Step 5: Begin Implementation
 
 1. **Start with the first approved task**
 2. **Reference learnings from handoff** throughout implementation

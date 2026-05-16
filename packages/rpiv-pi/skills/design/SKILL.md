@@ -1,28 +1,26 @@
 ---
 name: design
 description: Design complex features by decomposing them into vertical slices and producing a design artifact (architecture decisions, slice breakdown, file map) in thoughts/shared/designs/. The design feeds the plan or blueprint skill. Use for complex multi-component features touching 6+ files across multiple layers, when the user wants a feature designed before implementation. Requires a research artifact or a solutions artifact (from explore). Prefer design over plan or blueprint when the focus is architecture and decomposition rather than phased execution steps.
-argument-hint: [research artifact path]
+argument-hint: "[research artifact path]"
 ---
 
 # Design
 
 You are tasked with designing how code will be shaped for a feature or change. This iterative variant decomposes features into vertical slices and generates code slice-by-slice with developer micro-checkpoints between slices. The design artifact feeds directly into plan, which sequences it into phases.
 
-**How it works**:
-- Read input and key source files into context (Step 1)
-- Spawn targeted research agents for depth analysis (Step 2)
-- Identify ambiguities — triage into simple decisions and genuine ambiguities (Step 3)
-- Holistic self-critique — review the combined design for gaps and contradictions (Step 4)
-- Developer checkpoint — resolve genuine ambiguities one at a time (Step 5)
-- Decompose into vertical slices holistically before generating code (Step 6)
-- Generate code slice-by-slice with developer micro-checkpoints (Step 7)
-- Verify cross-slice integration consistency (Step 8)
-- Finalize the design artifact (Step 9)
-- Review and iterate with the developer (Step 10)
+## Input
+
+`$ARGUMENTS` — path to a research artifact (`thoughts/shared/research/*.md`) or a solutions artifact (`thoughts/shared/solutions/*.md`).
+
+## Flow
+
+1. Input → 2. Research → 3. Dimension sweep → 4. Self-critique → 5. Checkpoint → 6. Decompose → 7. Generate slices → 8. Integration verify → 9. Finalize → 10. Review → 11. Follow-ups
 
 The final artifact is plan-compatible.
 
-## Step 1: Input Handling
+## Steps
+
+### Step 1: Input Handling
 
 When this command is invoked:
 
@@ -47,7 +45,7 @@ When this command is invoked:
 
 2. **Read any additional files mentioned** — tickets, related designs, existing implementations. Read them FULLY before proceeding.
 
-## Step 2: Targeted Research
+### Step 2: Targeted Research
 
 This is NOT a discovery sweep. Focus on DEPTH (how things work, what patterns to follow) not BREADTH (where things are).
 
@@ -79,7 +77,7 @@ This is NOT a discovery sweep. Focus on DEPTH (how things work, what patterns to
    - Note assumptions that need verification
    - Determine true scope based on codebase reality
 
-## Step 3: Identify Ambiguities — Dimension Sweep
+### Step 3: Identify Ambiguities — Dimension Sweep
 
 Walk Step 2 findings, inherited research Q/As, and carried Open Questions through six architectural dimensions that map 1:1 to `plan` extract sections — the sweep guarantees downstream completeness. Add **migration** as a seventh dimension only if the feature changes persisted schema.
 
@@ -94,7 +92,7 @@ For each dimension, classify findings as **simple decisions** (one valid option,
 
 **Pre-validate every option** before queuing it against research constraints and runtime code behavior. Eliminate or caveat options that contradict Steps 1-2 evidence. **Coverage check**: every Step 2 file read appears in at least one decision or ambiguity; every dimension is addressed (silently-resolved valid, skipped-unchecked not).
 
-## Step 4: Holistic Self-Critique
+### Step 4: Holistic Self-Critique
 
 Before presenting ambiguities to the developer, review the combined design picture holistically. Step 3 triages findings individually — this step checks whether they fit together as a coherent whole.
 
@@ -114,7 +112,7 @@ Before presenting ambiguities to the developer, review the combined design pictu
 - Issues that need developer input: add as new genuine ambiguities to the Step 5 checkpoint queue.
 - If no issues found: proceed to Step 5 with the existing ambiguity set.
 
-## Step 5: Developer Checkpoint
+### Step 5: Developer Checkpoint
 
 Use the grounded-questions-one-at-a-time pattern. Use a **❓ Question:** prefix so the developer knows their input is needed. Each question must:
 - Reference real findings with `file:line` evidence
@@ -174,7 +172,7 @@ Files: {N} new, {M} modified
 
 Use the `ask_user_question` tool to confirm before proceeding. Question: "{Summary from design brief above}. Ready to proceed to decomposition?". Header: "Design". Options: "Proceed (Recommended)" (Decompose into vertical slices, then generate code slice-by-slice); "Adjust decisions" (Revisit one or more architectural decisions above); "Change scope" (Add or remove items from the building/not-building lists).
 
-## Step 6: Feature Decomposition
+### Step 6: Feature Decomposition
 
 After the design summary is confirmed, decompose the feature into vertical slices. Each slice is a self-contained unit: types + implementation + wiring for one concern.
 
@@ -238,13 +236,13 @@ After the design summary is confirmed, decompose the feature into vertical slice
    - **NEW files**: heading + empty code fence (filled with full implementation in Step 7d)
    - **MODIFY files**: heading with `file:line-range` + empty code fence (filled with only the modified code in Step 7d — no "Current" block, the original is on disk)
 
-## Step 7: Generate Slices (Iterative)
+### Step 7: Generate Slices (Iterative)
 
 Generate code one slice at a time. Each slice sees the fixed code from all previous slices.
 
 **For each slice in the decomposition (sequential order):**
 
-### 7a. Generate slice code (internal)
+#### 7a. Generate slice code (internal)
 
 Generate complete, copy-pasteable code for every file in this slice — but **hold it for the artifact, do NOT present full code to the developer**. The developer sees a condensed review in 7c; the full code goes into the artifact in 7d.
 
@@ -259,7 +257,7 @@ No pseudocode, no TODOs, no placeholders — the code must be copy-pasteable by 
 
 **Context grounding** (after slice 2): Before generating, re-read the artifact's Architecture section for files this slice touches. The artifact is the source of truth — generate code that extends what's already there, not what you remember from conversation.
 
-### 7b. Self-verify slice
+#### 7b. Self-verify slice
 
 Before presenting to the developer, cross-check this slice and produce a structured summary:
 
@@ -272,7 +270,7 @@ Self-verify Slice N:
 
 If violations found: fix in-place before presenting. Include the self-verify summary in the 7c checkpoint presentation.
 
-### 7c. Developer micro-checkpoint
+#### 7c. Developer micro-checkpoint
 
 Present a **condensed review** of the slice — NOT the full generated code. The developer reviews the design shape, not every line. For each file in the slice, show:
 
@@ -290,7 +288,7 @@ Use the `ask_user_question` tool to confirm. Question: "Slice {N/M}: {slice name
 **Checkpoint cadence**: Slices 1-2: always individual. Slices 3+: individual if (a) mid-generation agent spawn was needed, (b) MODIFY touches an undiscussed file, or (c) self-verify fixed a violation.
 Otherwise batch 2-3 slices (max 3).
 
-### 7d. Incorporate feedback
+#### 7d. Incorporate feedback
 
 **Approve**: Lock this slice's code and **Edit the artifact immediately**:
 1. For each file in this slice, Edit the skeleton artifact to replace the empty code fence under that file's Architecture heading with the full generated code from 7a
@@ -304,7 +302,7 @@ Otherwise batch 2-3 slices (max 3).
 **Rethink**: Developer spotted a design issue. If a previously approved slice is affected, flag the conflict and offer cascade revision — developer decides whether to reopen (if yes, Edit artifact entry).
 Update decomposition (add/remove/reorder remaining slices) and confirm before continuing.
 
-## Step 8: Integration Verification
+### Step 8: Integration Verification
 
 After all slices are complete, review cross-slice consistency:
 
@@ -321,7 +319,7 @@ After all slices are complete, review cross-slice consistency:
 
 3. **Confirm using the `ask_user_question` tool**. Question: "{N} slices complete, {M} files total. Cross-slice consistency verified. Proceed to design artifact?". Header: "Verify". Options: "Proceed (Recommended)" (Finalize the design artifact (verify completeness, update status)); "Revisit slice" (Reopen a specific slice for revision — Edit the artifact after); "Add missing" (A file or integration point is missing — add to artifact).
 
-## Step 9: Finalize Design Artifact
+### Step 9: Finalize Design Artifact
 
 The artifact was created as a skeleton in Step 6 and filled progressively in Step 7d. This step verifies completeness and finalizes.
 
@@ -337,7 +335,7 @@ The artifact was created as a skeleton in Step 6 and filled progressively in Ste
    - **NEW files**: `### path/to/file.ext — NEW` + one-line purpose + full implementation code block
    - **MODIFY files**: `### path/to/file.ext:line-range — MODIFY` + code block with only the modified/added code (no "Current" block — the original is on disk, implement reads it)
 
-## Step 10: Review & Iterate
+### Step 10: Review & Iterate
 
 1. **Present the design artifact location**:
    ```
@@ -361,7 +359,7 @@ The artifact was created as a skeleton in Step 6 and filled progressively in Ste
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-## Step 11: Handle Follow-ups
+### Step 11: Handle Follow-ups
 
 - **Edit in-place.** Use the Edit tool to update the design artifact directly — sliced design code stays one source of truth.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "Updated <brief description>"`.

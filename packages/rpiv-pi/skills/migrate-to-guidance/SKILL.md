@@ -11,6 +11,10 @@ You are tasked with migrating a project's existing `CLAUDE.md` files (typically 
 
 The migration relocates files from in-place `CLAUDE.md` to `.rpiv/guidance/{path}/architecture.md` and transforms internal cross-references.
 
+## Input
+
+`$ARGUMENTS` — optional `--delete-originals` flag to remove the source CLAUDE.md files after migration.
+
 ## Steps to follow:
 
 1. **Pre-flight check:**

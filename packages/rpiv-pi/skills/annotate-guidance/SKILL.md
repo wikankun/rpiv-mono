@@ -5,13 +5,13 @@ argument-hint: [target-directory]
 allowed-tools: Agent, Read, Write, Glob, Grep
 ---
 
-# Annotate Project
+# Annotate Guidance
 
 You are tasked with generating architecture guidance files for a brownfield project. You will map the project structure, auto-detect its architecture, analyze each architectural layer, and batch-write compact architecture.md files under `.rpiv/guidance/` mirroring the project's directory structure.
 
-## Initial Setup:
+## Input
 
-Use the current working directory as the target project by default. If the user provides a specific directory path as an argument, use that instead.
+`$ARGUMENTS` — optional target directory. Defaults to the current working directory.
 
 ## Steps to follow:
 

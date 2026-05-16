@@ -8,18 +8,22 @@ argument-hint: "[feature name, component path, feature slug, or _meta.md path] [
 
 You are tasked with generating manual test case specifications for a single feature by analyzing code in parallel and producing flow-based test case documents for QA teams.
 
-## Initial Setup
+## Input
+
+`$ARGUMENTS` — `[feature name, component path, feature slug, or _meta.md path] [additional instructions]`.
+
+## Flow
+
+1. Input → 2. Discover code → 3. Analyze code → 4. Synthesize → 5. Checkpoint → 6. Generate test cases → 7. Write files → 8. Follow-ups
+
+## Steps
+
+### Step 1: Input Handling
 
 When this command is invoked, respond with:
 ```
 I'll generate test cases for this feature. Let me discover the relevant code and analyze it.
 ```
-
-Then proceed to Step 1.
-
-## Steps
-
-### Step 1: Determine Feature Scope
 
 Parse the user's input to determine the feature under test. Handle these input forms:
 

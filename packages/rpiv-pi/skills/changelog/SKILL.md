@@ -9,9 +9,9 @@ allowed-tools: Bash(git *), Read, Edit
 
 You are tasked with regenerating the `## [Unreleased]` section of every affected `CHANGELOG.md` in the repository so it reflects all change since the last release tag — committed and uncommitted alike.
 
-## Range hint
+## Input
 
-`$ARGUMENTS` (empty/literal → range starts at the last release tag from `git describe --tags --abbrev=0`)
+`$ARGUMENTS` — optional `--since <ref>` flag. Empty/literal → range starts at the last release tag from `git describe --tags --abbrev=0`.
 
 ## Workflow
 
@@ -30,7 +30,7 @@ You are tasked with regenerating the `## [Unreleased]` section of every affected
 
 ## Step 2: Determine the change range
 
-1. Parse `$ARGUMENTS` for a `--since <ref>` flag. If absent, set `SINCE=$(git describe --tags --abbrev=0)`.
+1. Parse the input for a `--since <ref>` flag. If absent, set `SINCE=$(git describe --tags --abbrev=0)`.
 2. The range is `$SINCE..HEAD` for committed changes, plus the current uncommitted+staged working tree.
 
 ## Step 3: Determine each CHANGELOG's scope, then collect commits + uncommitted hunks

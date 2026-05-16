@@ -1,36 +1,43 @@
 ---
 name: explore
 description: Analyze solution options for a feature or change, comparing approaches with pros, cons, trade-offs, and a recommended path. Use when the user is weighing approaches, asks "what are the options" or "how should we approach X", wants approaches compared, says "explore solutions", or faces a decision with multiple valid implementations. Produces solutions documents in thoughts/shared/solutions/, which can feed the design skill.
-argument-hint: [feature/change description]
+argument-hint: "[feature/change description]"
 ---
 
-# Research Solutions
+# Explore
 
 You are tasked with analyzing solution options for new features or changes by invoking parallel skills and synthesizing their findings into actionable recommendations optimized for design consumption.
 
-## Initial Setup:
+## Input
 
-When this command is invoked, respond with:
-```
-I'm ready to research solution options. Please provide:
-- What feature/change you want to explore
-- Any requirements or constraints you know about
-- Reference to relevant ticket or research documents if available
+`$ARGUMENTS` — feature/change description, optionally with paths to tickets or research docs.
 
-I'll analyze the current codebase, generate solution options, and provide recommendations.
-```
+## Flow
 
-Then wait for the user's request.
+1. Input → 2. Generate candidates → 3. Candidate checkpoint → 4. Per-candidate fit → 5. Synthesize → 6. Metadata → 7. Write doc → 8. Present → 9. Follow-ups
+
+The final artifact feeds design.
 
 ## Steps
 
-### Step 1: Read Mentioned Files
+### Step 1: Input Handling
 
-- If user mentions tickets, research docs, or other files, read them FULLY first
-- **IMPORTANT**: Use Read tool WITHOUT limit/offset parameters
-- **CRITICAL**: Read these files in main context before invoking skills
-- Extract requirements, constraints, and goals
-- Identify what problem we're solving
+1. **No argument provided** — respond with:
+   ```
+   I'm ready to research solution options. Please provide:
+   - What feature/change you want to explore
+   - Any requirements or constraints you know about
+   - Reference to relevant ticket or research documents if available
+
+   I'll analyze the current codebase, generate solution options, and provide recommendations.
+   ```
+   Then wait for the user's request.
+
+2. **Read any files mentioned** — tickets, research docs, related artifacts:
+   - Read them FULLY first using the Read tool WITHOUT limit/offset parameters
+   - Read these files in main context before invoking skills
+   - Extract requirements, constraints, and goals
+   - Identify what problem we're solving
 
 ### Step 2: Generate Candidates and Dimensions
 

@@ -14,15 +14,17 @@ Two invocation modes:
 - **Full checkpoint** (default): scan → 7-dimension interview → inject guidelines
 - **Headless** (`--headless`): scan → inject findings as guidelines → stop (no interview)
 
-**How it works**:
-- Parse input and detect invocation mode (Step 1)
-- Scan for existing style context via codebase-locator agent (Step 2)
-- Run adaptive aesthetic checkpoint via ask_user_question (Step 3)
-- Synthesize and inject tailored guidelines + anti-slop list (Step 4)
+## Input
 
-## Input: `$ARGUMENTS`
+`$ARGUMENTS` — optional `--headless` flag for scan-only mode; otherwise full aesthetic checkpoint. Inline design-intent phrasing (e.g., "editorial dark with copper accents") and referenced design files (DESIGN.md, style guides, brand decks) are also read.
 
-## Step 1: Input Handling
+## Flow
+
+1. Input → 2. Style discovery → 3. Aesthetic checkpoint → 4. Guideline synthesis
+
+## Steps
+
+### Step 1: Input Handling
 
 1. **No argument provided** — full checkpoint mode:
    ```
@@ -33,13 +35,13 @@ Two invocation modes:
    ```
    Then wait for input.
 
-2. **`$ARGUMENTS` contains `--headless`** — headless mode:
+2. **The input contains `--headless`** — headless mode:
    - Set mode to `headless`. Proceed to Step 2. After Step 2, skip Step 3 and go directly to Step 4.
 
 3. **Otherwise** — full checkpoint mode:
    - Set mode to `full`. Proceed to Step 2.
 
-4. **Extract design intent from `$ARGUMENTS` itself** — both files and inline phrasing.
+4. **Extract design intent from the input itself** — both files and inline phrasing.
    - **Read referenced files fully** (DESIGN.md, style guides, brand decks, tickets, named paths). Each dimension the file commits to (tone, color, type, motion, spatial, backgrounds, differentiation) counts as user-settled.
    - **Parse inline aesthetic commitments**: phrases like "editorial dark with copper accents", "brutalist serif on cream", "1985 terminal aesthetic". Record each named dimension as user-settled.
    - **Do not count vague adjectives.** "Modern", "clean", "fresh", "professional", "polished", "minimal-ish" are non-commitments — they do not settle any dimension. The user must name a specific direction for it to count.
@@ -49,7 +51,7 @@ Carry the resulting **user-settled dimensions** forward. They merge with scan fi
 
 **No agent dispatch in Step 1.** Only `Read` on user-named paths.
 
-## Step 2: Style Discovery (parallel agents)
+### Step 2: Style Discovery (parallel agents)
 
 Dispatch a single codebase-locator agent to scan for existing style context.
 
@@ -96,7 +98,7 @@ Read it FULLY using the Read tool. This is the primary style source — its deci
 
 Carry scan findings forward — they inform skip logic and pre-fill recommendations.
 
-## Step 3: Aesthetic Checkpoint
+### Step 3: Aesthetic Checkpoint
 
 Ask the developer about aesthetic direction across 7 dimensions. Use `ask_user_question` — one question at a time, wait for the answer before asking the next. Lead each question with the recommended option labeled `(Recommended)`.
 
@@ -212,7 +214,7 @@ After all 7 dimensions (or all unsettled dimensions if some were skipped), compi
 
 Carry this record to Step 4 for guideline synthesis.
 
-## Step 4: Guideline Synthesis
+### Step 4: Guideline Synthesis
 
 Combine scan findings (Step 2) and checkpoint answers (Step 3, or scan-only findings in headless mode) into tailored aesthetic guidelines. Emit as your own assistant message — this primes your context for all subsequent frontend code generation.
 

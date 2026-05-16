@@ -1,27 +1,26 @@
 ---
 name: discover
 description: Interview the developer one question at a time to extract feature intent and requirements, then synthesize into a Feature Requirements Document at thoughts/shared/discover/. The first question is intent-only and runs before any codebase probe; subsequent questions ground in evidence the probe surfaces. Use as the canonical entry point of the pipeline before research, or to stress-test a feature idea before codebase discovery. The FRD's Decisions block is consumed by `research` and propagates through Developer Context into `design`.
-argument-hint: [free-text feature description | existing artifact path]
+argument-hint: "[free-text feature description | existing artifact path]"
 ---
 
 # Discover
 
 You are tasked with extracting feature intent and requirements through a one-question-at-a-time interview, then writing a Feature Requirements Document (FRD) that downstream skills consume. Two principles shape the flow: (1) **intent before agents** — the foundational intent question runs before any probe, so stated intent shapes the probe scope; (2) **lazy + confirm** — build the decision tree one layer at a time, and surface evidence-based pre-resolutions for confirmation rather than silently recording them.
 
-**How it works**:
-- Read input (free-text or artifact path) (Step 1)
-- Foundational intent question — open, no recommendation, no `file:line` (Step 2)
-- Lightweight codebase probe shaped by stated intent (Step 3)
-- Build root + immediate children, batch-confirm pre-resolutions (Step 4)
-- Interview loop — tiered questions, lazy expansion, re-queue cross-cutting answers (Step 5)
-- Synthesize answers into FRD sections (Step 6)
-- Write artifact, present, chain to research (Step 7)
+## Input
+
+`$ARGUMENTS` — free-text feature description, or path to an existing FRD / ticket / doc for refinement.
+
+## Flow
+
+1. Input → 2. Intent question → 3. Codebase probe → 4. Lazy tree → 5. Interview loop → 6. Synthesize FRD → 7. Write artifact → 8. Follow-ups
 
 The final artifact is research-compatible — its Decisions block is translated into research's Developer Context and inherited by design.
 
-## Step 1: Input Handling
+## Steps
 
-Input: `$ARGUMENTS`
+### Step 1: Input Handling
 
 1. **No argument provided**:
    ```
@@ -32,7 +31,7 @@ Input: `$ARGUMENTS`
    ```
    Then wait for input.
 
-2. **Detect input shape** — parse `$ARGUMENTS`:
+2. **Detect input shape** — parse the input:
    - If the argument is an existing file path (resolves to a readable `.md` under `thoughts/`, or any path the user mentions for refinement context), read it FULLY using the Read tool WITHOUT limit/offset. Treat its content as baseline context — the interview surfaces gaps, missing requirements, and unstated assumptions relative to what's already documented.
    - Otherwise → fresh-feature mode: the entire argument is the free-text feature description.
 
@@ -42,7 +41,7 @@ Input: `$ARGUMENTS`
 
 Each invocation always writes a NEW timestamp-distinct artifact (Step 7) — there is no in-place stress-test append mode. To iterate on a prior FRD, either re-invoke discover (produces a fresh artifact) or manually Edit the prior artifact.
 
-## Step 2: Foundational Intent Question
+### Step 2: Foundational Intent Question
 
 Before any codebase probe, ask the foundational intent question. This is purely conversational — no agents, no recommendation, no `file:line` citations.
 
@@ -57,9 +56,9 @@ Before any codebase probe, ask the foundational intent question. This is purely 
 
 3. **Probe-readiness check**: does the stated intent support a *narrow* probe slice (one component, one seam)? If yes → proceed to Step 3. If no (answer is too vague, e.g., "I dunno, feels slow"), ask **one more `intent` question** to sharpen scope, then re-check. Step 2 ends on probe-readiness, not at fixed N=1. Cap: 3 `intent` questions before falling through to Step 3 with whatever scope you have.
 
-## Step 3: Lightweight Codebase Probe (parallel agents, intent-shaped)
+### Step 3: Lightweight Codebase Probe (parallel agents, intent-shaped)
 
-Goal: ground the upcoming interview in concrete codebase evidence, with the probe slice shaped by the developer's stated intent from Step 2 — not by raw `$ARGUMENTS`.
+Goal: ground the upcoming interview in concrete codebase evidence, with the probe slice shaped by the developer's stated intent from Step 2 — not by the raw input text.
 
 1. **Pick the agent set.** Dispatch `codebase-locator`, `codebase-analyzer`, or both — nothing else. Cap: 2 agents per Step 3 invocation.
 
@@ -79,7 +78,7 @@ Goal: ground the upcoming interview in concrete codebase evidence, with the prob
 
 5. **Empty results are not fatal.** If the probe returns thin/empty results (greenfield, no precedent), record "no codebase precedent" as evidence — `scope` interview questions still work (they don't need `file:line`), and `shape` questions will shift to ungrounded "pick A or B by convention" mode.
 
-## Step 4: Lazy Tree Setup + Pre-Resolution Confirmation
+### Step 4: Lazy Tree Setup + Pre-Resolution Confirmation
 
 Synthesize the **next layer** of questions internally before asking anything. Lazy expansion — build only root + immediate children at this stage, not the full tree. Each subsequent layer is built after its parent resolves.
 
@@ -97,7 +96,7 @@ Synthesize the **next layer** of questions internally before asking anything. La
 
 4. The lazy tree stays internal — do NOT present the tree to the developer unless asked.
 
-## Step 5: Interview Loop
+### Step 5: Interview Loop
 
 Walk the lazy tree depth-first, parent before child. Expand the next layer (build a node's children) only after the node resolves. For each unresolved node:
 
@@ -135,7 +134,7 @@ Walk the lazy tree depth-first, parent before child. Expand the next layer (buil
 
 **Total agent budget across the skill**: 2 (Step 3 initial probe) + N×1 (Step 5 corrections, typically 0-2) = 2-4 agent dispatches per FRD.
 
-## Step 6: Synthesize FRD Body
+### Step 6: Synthesize FRD Body
 
 Read `templates/frd.md` (relative to this skill folder) at runtime to confirm the section list and frontmatter shape — do not inline it from memory.
 
@@ -154,7 +153,7 @@ Compile interview output into the FRD. The interview's logical order (problem �
 - **Suggested Follow-ups** — related-but-out-of-scope items surfaced during the probe or interview that the developer did NOT add to scope (per the Step 5 scope-creep guardrail). One line per item: what was observed and where (`file:line` when applicable). Omit the section entirely if empty.
 - **References** — input files, mentioned tickets, related artifacts.
 
-## Step 7: Write Artifact, Present, Chain
+### Step 7: Write Artifact, Present, Chain
 
 1. **Determine metadata**:
    - Filename: `thoughts/shared/discover/<YYYY-MM-DD_HH-MM-SS>_<topic>.md`
@@ -185,7 +184,7 @@ Compile interview output into the FRD. The interview's logical order (problem �
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-## Step 8: Handle Follow-ups
+### Step 8: Handle Follow-ups
 
 - **Fresh artifact per call, no in-place append.** Discover deliberately writes a NEW timestamp-distinct FRD on every invocation — there is no `## Follow-up` append mode. The prior FRD stays unchanged on disk.
 - **Iterate by re-invoking.** Re-run `/skill:discover [path-to-prior-FRD]` (or `/skill:discover <free-text>`) to produce a fresh FRD informed by the prior one.
@@ -210,7 +209,7 @@ These reinforce the critical rules from the steps above — listed here so they 
 - **Critical ordering** — follow the numbered steps exactly:
   - ALWAYS read mentioned files before any agent dispatch (Step 1 → Step 2)
   - ALWAYS ask the `intent` question before probing (Step 2 → Step 3)
-  - ALWAYS shape the probe by stated intent, not raw `$ARGUMENTS` (Step 3)
+  - ALWAYS shape the probe by stated intent, not the raw input text (Step 3)
   - ALWAYS batch-confirm pre-resolutions instead of silent auto-record (Step 4)
   - ALWAYS expand the tree lazily during the interview (Step 5)
   - ALWAYS re-queue cross-cutting answers under each affected parent (Step 5)

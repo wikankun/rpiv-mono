@@ -1,26 +1,47 @@
 ---
 name: validate
 description: Verify that an implementation plan was correctly executed by running each phase's success criteria against the working tree and producing a validation report. Use after the implement skill completes, when the user asks to "validate the plan", wants a post-implementation audit, or needs to confirm a feature is fully shipped per its plan.
-argument-hint: [plan-path]
+argument-hint: "[plan-path]"
 allowed-tools: Read, Bash(git *), Bash(make *), Glob, Grep, Agent
 ---
 
-# Validate Plan
+# Validate
 
 You are tasked with validating that an implementation plan was correctly executed, verifying all success criteria and identifying any deviations or issues.
 
-## Initial Setup
+## Input
+
+`$ARGUMENTS` — optional path to a plan in `thoughts/shared/plans/`. If omitted, the skill searches recent commits for plan references or asks for the path.
+
+## Steps
+
+### Step 1: Input Handling and Context Discovery
 
 When invoked:
-1. **Determine context** - Are you in an existing conversation or starting fresh?
-   - If existing: Review what was implemented in this session
-   - If fresh: Need to discover what was done through git and codebase analysis
+
+1. **Determine context** — fresh or existing conversation?
+   - If existing: review what was implemented in this session, then proceed to Step 2.
+   - If fresh: continue with the substeps below.
 
 2. **Locate the plan**:
    - If plan path provided, use it
    - Otherwise, search recent commits for plan references or ask user
 
-3. **Gather implementation evidence**:
+3. **Read the implementation plan** completely
+
+4. **Identify what should have changed**:
+   - List all files that should be modified
+   - Note all success criteria (automated and manual)
+   - Identify key functionality to verify
+
+5. **Gather implementation evidence**:
+
+   **If the injected git context shows "not a git repo":**
+   - Skip git-based evidence gathering (git log, git diff)
+   - Validate via file inspection, automated test commands, and plan checklist
+   - Note in report: "Git history unavailable — validation based on file inspection only"
+
+   Otherwise, run:
    ```bash
    # Check recent commits
    git log --oneline -n 20
@@ -30,24 +51,7 @@ When invoked:
    cd $(git rev-parse --show-toplevel) && make check test
    ```
 
-## Validation Process
-
-### Step 1: Context Discovery
-
-If starting fresh or need more context:
-
-   **If the injected git context shows "not a git repo":**
-   - Skip git-based evidence gathering (git log, git diff)
-   - Validate via file inspection, automated test commands, and plan checklist
-   - Note in report: "Git history unavailable — validation based on file inspection only"
-
-1. **Read the implementation plan** completely
-2. **Identify what should have changed**:
-   - List all files that should be modified
-   - Note all success criteria (automated and manual)
-   - Identify key functionality to verify
-
-3. **Spawn parallel research agents** to verify implementation:
+6. **Spawn parallel research agents** to verify implementation:
 
    Spawn the agents below in parallel using the Agent tool. Wait for ALL agents to complete before proceeding.
    - **general-purpose** agent — Verify implementation details match plan specifications (analyzer role)
@@ -56,16 +60,6 @@ If starting fresh or need more context:
    Example agent prompts:
    - "Analyze {component} and verify it implements {plan requirement} correctly"
    - "Find patterns similar to {new code} and check if conventions are followed"
-
-   Also gather evidence directly:
-   ```bash
-   # Check recent commits
-   git log --oneline -n 20
-   git diff HEAD~N..HEAD  # Where N covers implementation commits
-
-   # Run comprehensive checks
-   cd $(git rev-parse --show-toplevel) && make check test
-   ```
 
 ### Step 2: Systematic Validation
 

@@ -1,14 +1,26 @@
 ---
 name: plan
 description: Convert a design artifact into a phased implementation plan with parallelized atomic phases and explicit success criteria, written to thoughts/shared/plans/. Use after the design skill when the user wants a design turned into an actionable, phase-by-phase plan to hand to the implement skill. Prefer plan when a straightforward phased breakdown is sufficient, and prefer blueprint when iterative vertical-slice micro-checkpoints between phases are needed.
-argument-hint: [design artifact path]
+argument-hint: "[design artifact path]"
 ---
 
-# Write Plan
+# Plan
 
 You are tasked with creating phased implementation plans from design artifacts. The design artifact contains all architectural decisions, full implementation code, and ordering constraints. Your job is to decompose that design into parallelized atomic phases with success criteria that implement can execute.
 
-## Step 1: Read Design Artifact
+## Input
+
+`$ARGUMENTS` — path to a design artifact (`thoughts/shared/designs/*.md`).
+
+## Flow
+
+1. Input → 2. Decompose into phases → 3. Write plan → 4. Review → 5. Follow-ups
+
+The final artifact is implement-ready.
+
+## Steps
+
+### Step 1: Read Design Artifact
 
 When this command is invoked:
 
@@ -33,7 +45,7 @@ When this command is invoked:
 
 2. **Read any additional files mentioned** in the design's References — research documents, tickets. Read them FULLY for context.
 
-## Step 2: Decompose into Phases
+### Step 2: Decompose into Phases
 
 Read the Ordering Constraints and File Map from the design artifact. Apply phasing rules:
 
@@ -65,7 +77,7 @@ Use the `ask_user_question` tool to confirm the phase structure. Question: "{N} 
 
 Get feedback on structure before writing details.
 
-## Step 3: Write Plan
+### Step 3: Write Plan
 
 After structure approval, write the plan **incrementally** — skeleton first, then fill each phase:
 
@@ -171,7 +183,7 @@ last_updated_by: {User from injected git context}
 - Original ticket: `thoughts/me/tickets/{file}.md`
 ```
 
-## Step 4: Review
+### Step 4: Review
 
 1. **Present the plan location**:
    ```
@@ -194,7 +206,7 @@ last_updated_by: {User from injected git context}
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-## Step 10: Handle Follow-ups
+### Step 5: Handle Follow-ups
 
 - **Edit in-place.** Use the Edit tool to update the plan artifact directly. Phase numbering stays stable when possible — renumber only when a phase is split or merged.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "<one-line summary>"`.

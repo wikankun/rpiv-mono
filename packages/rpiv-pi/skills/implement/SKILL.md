@@ -6,14 +6,15 @@ allowed-tools: Read, Edit, Write, Bash(*), Glob, Grep
 disable-model-invocation: true
 ---
 
-# Implement Plan
+# Implement
 
 You are tasked with implementing an approved technical plan from `thoughts/shared/plans/`. These plans contain phases with specific changes and success criteria.
 
-## Getting Started
+## Input
 
-- Plan path: `$1` (empty/literal → ask user)
-- Phase scope: `${@:2}` (empty → all phases sequentially; else scope to this phase only)
+`$1` is the plan path (empty/literal → ask user); `${@:2}` is the phase scope (empty → all phases sequentially; else scope to that phase only).
+
+## Getting Started
 
 With a plan path in hand:
 - Read the plan completely and check for any existing checkmarks (- [x])

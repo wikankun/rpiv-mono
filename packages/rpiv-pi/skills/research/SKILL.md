@@ -1,16 +1,26 @@
 ---
 name: research
 description: Answer structured research questions about a codebase using targeted parallel analysis agents, then synthesize findings into a research document in thoughts/shared/research/. Internally dispatches the scope-tracer agent to formulate trace-quality research questions, then answers them. Use when the user wants in-depth research on a codebase area, asks to "research X", or needs answers to architecture or behavior questions before designing changes.
-argument-hint: [free-text research prompt]
+argument-hint: "[free-text research prompt]"
 ---
 
 # Research
 
 You are tasked with answering structured research questions by spawning targeted analysis agents and synthesizing their findings into a comprehensive research document. This skill internally dispatches the `scope-tracer` agent to formulate trace-quality research questions, then answers them.
 
-Input: `$ARGUMENTS`
+## Input
 
-## Step 1: Trace the Investigation Scope
+`$ARGUMENTS` — free-text research prompt, or a `thoughts/shared/discover/*.md` path to chain from discover.
+
+## Flow
+
+1. Input → 2. Dispatch agents → 3. Synthesize & checkpoint → 4. Write doc → 5. Present & chain → 6. Follow-ups
+
+The final artifact feeds design or blueprint.
+
+## Steps
+
+### Step 1: Input Handling
 
 1. **Argument is empty:**
    ```
@@ -18,11 +28,11 @@ Input: `$ARGUMENTS`
    ```
    Then wait for input.
 
-2. **Detect chained discover artifact:** If `$ARGUMENTS` mentions a path matching `thoughts/shared/discover/.*\.md`, read it FULLY using the Read tool (no limit/offset) before scope-tracer dispatch:
+2. **Detect chained discover artifact:** If the input includes a path matching `thoughts/shared/discover/.*\.md`, read it FULLY using the Read tool (no limit/offset) before scope-tracer dispatch:
    - Translate each `### [Decision title]` block in the FRD's `## Decisions` section into a Developer Context entry: `**Q (discover: <Decision title>): <Question text>**` followed by `A: <Chosen text>`. Hold these entries in main context — they're recorded in the research artifact's Developer Context section in Step 4 (write document).
-   - Use the FRD's `## Recommended Approach` text (1-2 sentences naming the architectural shape) as the topic body for the next sub-step's scope-tracer prompt. The full discover artifact path stays in `$ARGUMENTS` so scope-tracer's "read mentioned files first" rule picks up the file naturally for additional context.
+   - Use the FRD's `## Recommended Approach` text (1-2 sentences naming the architectural shape) as the topic body for the next sub-step's scope-tracer prompt. The full discover artifact path stays in the input so scope-tracer's "read mentioned files first" rule picks up the file naturally for additional context.
    - Carry the FRD's Open Questions forward verbatim into the research artifact's Open Questions section in Step 4.
-   - If `$ARGUMENTS` is plain free-text or mentions a non-discover path, skip this sub-step and proceed directly to scope-tracer dispatch with `$ARGUMENTS` as the topic.
+   - If the input is plain free-text or includes a non-discover path, skip this sub-step and proceed directly to scope-tracer dispatch with the input as the topic.
 
 3. **Dispatch the scope-tracer agent** to formulate trace-quality research questions for the user's topic:
    ```
@@ -50,7 +60,7 @@ Input: `$ARGUMENTS`
    [Scoped]: ran scope-tracer. {N} questions in {G} groups, {M} shared files.
    ```
 
-## Step 2: Dispatch Analysis Agents
+### Step 2: Dispatch Analysis Agents
 
 Spawn analysis agents using the Agent tool. All agents run in parallel.
 
@@ -94,7 +104,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
 
 **Wait for ALL agents to complete** before proceeding.
 
-## Step 3: Synthesize and Checkpoint
+### Step 3: Synthesize and Checkpoint
 
 1. **Compile findings:**
    - Match each agent's response to the question(s) it answered
@@ -183,7 +193,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
 
    After incorporating all input, proceed to Step 4.
 
-## Step 4: Write Research Document
+### Step 4: Write Research Document
 
 1. **Determine metadata:**
    - Filename: `thoughts/shared/research/YYYY-MM-DD_HH-MM-SS_{topic}.md`
@@ -282,7 +292,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
    {Only questions NOT resolved during checkpoint}
    ```
 
-## Step 5: Present and Chain
+### Step 5: Present and Chain
 
 ```
 Research document written to:
@@ -303,7 +313,7 @@ Please review and let me know if you have follow-up questions.
 > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
 ```
 
-## Step 6: Handle Follow-ups
+### Step 6: Handle Follow-ups
 
 - **Append, never rewrite.** Edit the artifact to add a `## Follow-up Research {ISO 8601 timestamp}` section. Prior content stays immutable.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "Added follow-up research for <brief description>"`.
@@ -314,7 +324,7 @@ Please review and let me know if you have follow-up questions.
 
 - **Analysis only**: This skill answers questions. Question formulation is delegated to the scope-tracer subagent at Step 1.
 - **Single entry point**: Free-text research prompt. Argument substitution is handled by `rpiv-args`; scope-tracer runs in-band before analysis dispatch.
-- **Chained from discover**: when `$ARGUMENTS` mentions a `thoughts/shared/discover/*.md` artifact, read it FULLY in Step 1 and translate each Decision into a `Q (discover: <title>) / A: <Chosen>` Developer Context entry. Pass the FRD's `Recommended Approach` text as the scope-tracer topic. Open Questions carry forward verbatim. The `argument-hint` stays free-text-only — discover artifact recognition is by path-mention, not by argument-hint widening.
+- **Chained from discover**: when the input includes a path to a `thoughts/shared/discover/*.md` artifact, read it FULLY in Step 1 and translate each Decision into a `Q (discover: <title>) / A: <Chosen>` Developer Context entry. Pass the FRD's `Recommended Approach` text as the scope-tracer topic. Open Questions carry forward verbatim. The `argument-hint` stays free-text-only — discover artifact recognition is by path-mention, not by argument-hint widening.
 - **Grouped dispatch**: Related questions are batched per agent based on file overlap. Default agent: codebase-analyzer. This reduces token waste from redundant file reads and lets agents build cross-question context.
 - **Downstream compatible**: Research documents feed directly into design and plan — the same Code References / Integration Points / Architecture Insights sections they expect.
 - **Agent-message parsing**: scope-tracer emits Discovery Summary + numbered Questions inline in its final assistant message; parse the agent's final-message text (no file write).

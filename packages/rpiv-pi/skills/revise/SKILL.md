@@ -4,11 +4,23 @@ description: Surgically update an existing implementation plan in thoughts/share
 argument-hint: "[plan-path] [feedback]"
 ---
 
-# Iterate Implementation Plan
+# Revise
 
 You are tasked with updating existing implementation plans based on user feedback. You should be skeptical, thorough, and ensure changes are grounded in actual codebase reality.
 
-## Initial Response
+## Input
+
+`$ARGUMENTS` — plan path plus feedback, e.g. `thoughts/shared/plans/2025-10-16_09-00-00_feature.md "Split Phase 2 into two phases"`.
+
+## Flow
+
+1. Input → 2. Research if needed → 3. Present approach → 4. Update plan → 5. Sync & review → 6. Follow-ups
+
+The revised artifact stays in `thoughts/shared/plans/` for `/skill:implement` to resume.
+
+## Steps
+
+### Step 1: Input Handling
 
 When this command is invoked:
 
@@ -55,19 +67,14 @@ When this command is invoked:
    Wait for user input.
 
    **If BOTH plan file AND feedback provided**:
-   - Proceed immediately to Step 1
-   - No preliminary questions needed
+   - Proceed to substep 3 — no preliminary questions needed.
 
-## Process Steps
-
-### Step 1: Read and Understand Current Plan
-
-1. **Read the existing plan file COMPLETELY**:
+3. **Read the existing plan file COMPLETELY**:
    - Use the Read tool WITHOUT limit/offset parameters
    - Understand the current structure, phases, and scope
    - Note the success criteria and implementation approach
 
-2. **Understand the requested changes**:
+4. **Understand the requested changes**:
    - Parse what the user wants to add/modify/remove
    - Identify if changes require codebase research
    - Determine scope of the update
@@ -166,7 +173,7 @@ Use the `ask_user_question` tool to confirm before editing. Question: "{Summary 
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-## Step 6: Handle Follow-ups
+### Step 6: Handle Follow-ups
 
 - **Each invocation appends history.** Every `/skill:revise` call adds another timestamped Follow-up section — do not collapse history. Prior phase decisions stay visible.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "<one-line summary of revision>"`.

@@ -11,7 +11,17 @@ You are tasked with discovering all testable features in a project and creating 
 
 Two modes: **Fresh** (no existing outline — full discovery and checkpoint) and **Incremental** (existing outline found — discovery with prior context, diff-based checkpoint). Discovery always runs in both modes.
 
-## Initial Setup
+## Input
+
+`$ARGUMENTS` — optional target directory. Defaults to the current working directory.
+
+## Flow
+
+1. Input → 2. Discover features → 3. Determine targets → 4. Checkpoint → 5. Write outline → 6. Follow-ups
+
+## Steps
+
+### Step 1: Input Handling and Mode Detection
 
 When this command is invoked, respond with:
 ```
@@ -20,10 +30,6 @@ under .rpiv/test-cases/. Let me check for existing outlines and analyze the code
 ```
 
 Use the current working directory as the target project by default. If the user provides a specific directory path as an argument, use that instead.
-
-## Steps
-
-### Step 1: Read files & detect mode
 
 - If the user mentions specific files (existing test cases, architecture docs, READMEs), read them FULLY first
 - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
