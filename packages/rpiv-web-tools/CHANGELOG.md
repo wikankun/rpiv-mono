@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `/web-search-config` now persists settings to disk before applying them in memory, preventing silent reverts on write failure.
+
 ## [1.8.0] - 2026-05-16
 
 ### Added

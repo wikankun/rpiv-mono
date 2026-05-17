@@ -7,6 +7,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Rework the pick-a-path guide for recipe-first reading, with scope-based entry points and customer-facing examples.
+- Add release notes for v1.7.0 and v1.8.0.
+
 ## [1.8.0] - 2026-05-16
 
 ### Changed

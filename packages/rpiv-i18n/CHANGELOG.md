@@ -8,8 +8,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
-- `saveLocaleConfig` returns `boolean` again (was temporarily void after migrating to `@juicesharp/rpiv-config`'s shared save helper). The `/languages` handler re-guards `applyLocale` on persist success — restores the documented save-then-apply invariant that prevents silent locale revert at next start when the disk write fails.
-- `loadLocaleConfig` no longer logs its own warning on parse failure; the diagnostic now lives in `@juicesharp/rpiv-config.loadJsonConfig` and benefits every consumer. The log prefix changed from `rpiv-i18n:` to `rpiv-config:` — external log parsers that grep for the old prefix should switch or match both during transition.
+- Config loading diagnostics now emit from `rpiv-config` instead of `rpiv-i18n` (log prefix changed).
+
+### Fixed
+- `/languages` now persists the locale to disk before applying it in memory, preventing silent reverts on write failure.
 
 ## [1.8.0] - 2026-05-16
 

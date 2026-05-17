@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `/advisor` settings now persist to disk before applying in memory, preventing silent reverts on write failure.
+
 ## [1.8.0] - 2026-05-16
 
 ## [1.7.0] - 2026-05-15
