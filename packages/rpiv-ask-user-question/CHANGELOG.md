@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-ask-user-question` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.0] - 2026-05-18
 
 ### Added
 - Terminal-row-aware overflow scroll for dialogs — content is rendered at full height then sliced into a three-region layout (sticky top, scrollable middle, sticky bottom) with scroll-to-focus and overflow indicators.
