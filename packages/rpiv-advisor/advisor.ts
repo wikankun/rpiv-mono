@@ -578,7 +578,7 @@ export function registerThinkingLevelSelectHandler(pi: ExtensionAPI): void {
 		if (blocked && hasTool) {
 			pi.setActiveTools(active.filter((n) => n !== ADVISOR_TOOL_NAME));
 			if (ctx.hasUI) {
-				ctx.ui.notify(`Advisor disabled for ${modelKey(ctx.model ?? { provider: "", id: "" })}`, "info");
+				ctx.ui.notify(`Advisor disabled for ${modelKey(ctx.model!)}`, "info");
 			}
 		} else if (!blocked && !hasTool) {
 			pi.setActiveTools([...active, ADVISOR_TOOL_NAME]);

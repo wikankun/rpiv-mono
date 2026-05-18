@@ -416,6 +416,32 @@ describe("/advisor — blocked executor notification", () => {
 		expect(msg).toBe("Advisor: anthropic:opus");
 		expect(severity).toBe("info");
 	});
+
+	it("shows inactive notification when executor blocked by effort-aware entry at threshold", async () => {
+		vi.mocked(showAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+		setDisabledForModels([{ model: "anthropic:sonnet", minEffort: "high" }]);
+		const { pi, captured } = register();
+		vi.mocked(pi.getThinkingLevel).mockReturnValue("high");
+		vi.mocked(pi.setActiveTools).mockClear();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA], model: modelBlocked });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("inactive for current executor"), "info");
+		const calls = vi.mocked(pi.setActiveTools).mock.calls;
+		for (const [tools] of calls) {
+			expect(tools).not.toContain(ADVISOR_TOOL_NAME);
+		}
+	});
+
+	it("shows enabled notification when executor effort below threshold for effort-aware entry", async () => {
+		vi.mocked(showAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+		setDisabledForModels([{ model: "anthropic:sonnet", minEffort: "high" }]);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA], model: modelBlocked });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const [msg, severity] = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.at(-1) ?? [];
+		expect(msg).toBe("Advisor: anthropic:opus");
+		expect(severity).toBe("info");
+	});
 });
 
 describe("registerAdvisorBeforeAgentStart — effort-aware blocklist", () => {

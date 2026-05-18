@@ -1,9 +1,10 @@
 /**
  * rpiv-advisor — Pi extension
  *
- * Registers the `advisor` tool, `/advisor` command, and the three lifecycle
+ * Registers the `advisor` tool, `/advisor` command, and four lifecycle
  * hooks (session_start restore, before_agent_start strip, model_select
- * re-evaluation) that together implement the advisor-strategy pattern.
+ * re-evaluation, thinking_level_select re-evaluation) that together
+ * implement the advisor-strategy pattern.
  *
  * Config persists at ~/.config/rpiv-advisor/advisor.json. Tool name
  * preserved verbatim from rpiv-pi@7525a5d.
