@@ -33,8 +33,8 @@ node "${SKILL_DIR}/../_shared/git-changes.mjs"
 
 1. **Think about what changed:**
    - **If in-session**: Review the conversation history to understand what was accomplished.
-   - The Metadata block already gives you the status snapshot and per-file diffstat — use it as the starting picture. Run `git diff <path>` via Bash only when you need per-file detail to write a precise message.
-   - If needed, inspect file contents to understand purpose and scope.
+   - The Metadata block gives you the file list and per-file diffstat (insertions/deletions). For files with a small diffstat (≲5 lines), the line counts alone are enough to write the message — skip `git diff`. Run `git diff <path>` only for files where the change is large or the intent isn't obvious from filename + line counts.
+   - For untracked directories shown in status (e.g. `?? path/`), assume their contents are the change unless the directory has many files; do NOT `cat`/`head` files to verify obvious purpose.
    - Consider whether changes should be one commit or multiple logical commits.
 
 2. **Plan your commit(s):**
