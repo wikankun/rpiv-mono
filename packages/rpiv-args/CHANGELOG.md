@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-args` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.10.0] - 2026-05-19
 
 ### Added
 - Variable substitution (`${SKILL_DIR}`, `${SESSION_ID}`) and inline shell execution in skill bodies, with `shell-timeout` frontmatter and output truncation at 50 KB / 2 000 lines.
