@@ -4,6 +4,7 @@ description: Create a context-preserving handoff document for session transition
 argument-hint: [description]
 allowed-tools: Read, Write, Bash(git *), Glob, Grep
 disable-model-invocation: true
+shell-timeout: 10
 ---
 
 # Create Handoff
@@ -16,17 +17,19 @@ You are tasked with writing a handoff document to hand off your work to another 
 
 ## Process
 ### 1. Filepath & Metadata
-Use the following information to understand how to create your document:
-    - create your file under `.rpiv/artifacts/handoffs/YYYY-MM-DD_HH-MM-SS_description.md`, where:
-        - YYYY-MM-DD / HH-MM-SS come from the `date` command (see below)
-        - description is a brief kebab-case description
-     - Repository name: from git root basename, or current directory basename if not a git repo
-     - Use the git branch and commit from the git context injected at the start of the session (or run `git branch --show-current` / `git rev-parse --short HEAD` directly)
-     - Timestamp: run `date +"%Y-%m-%dT%H:%M:%S%z"` — raw for `date:` and `last_updated:`, first 19 chars (`T`→`_`, `:`→`-`) for filename slug.
-     - Author: use the User from the git context injected at the start of the session (fallback: "unknown")
-     - If metadata unavailable: use "unknown" for commit/branch
-    - Examples:
-        - `.rpiv/artifacts/handoffs/2025-01-08_13-55-22_create-context-compaction.md`
+
+```!
+node "${SKILL_DIR}/../_shared/now.mjs"
+echo
+node "${SKILL_DIR}/../_shared/git-context.mjs"
+```
+
+Line 1 is `<iso>\t<slug>` (tab-separated). Copy values verbatim — do not reformat the timezone offset or any other field:
+- `<slug>` → filename prefix: `.rpiv/artifacts/handoffs/<slug>_<description>.md` (`<description>` is a kebab-case slug from `$ARGUMENTS`).
+- `<iso>` → frontmatter `date:` and `last_updated:`.
+- `repo:` → frontmatter `repository:`.
+- `branch:` / `commit:` → matching frontmatter fields.
+- Author → from session's git-context injection (fallback: `unknown`).
 
 ### 2. Handoff writing.
 using the above conventions, write your document. use the defined filepath, and the following YAML frontmatter pattern. Use the metadata gathered in step 1, Structure the document with YAML frontmatter followed by content:
