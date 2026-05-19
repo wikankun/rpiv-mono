@@ -75,11 +75,15 @@ const DEFAULT_SHELL_TIMEOUT_MS = 120_000;
  *  prose does NOT run the shell with an empty `-c` argument (per
  *  artifact-reviewer finding R3).
  *  Runs AFTER block; block-before-inline is enforced by the mask-and-restore
- *  pass below (block outputs are protected from inline re-execution per R2). */
+ *  pass below (block outputs are protected from inline re-execution per R2).
+ *  MUST stay /g — consumed by matchAll(); do NOT call .exec()/.test() on
+ *  this directly (stale lastIndex would silently skip matches). */
 const SHELL_INLINE_PATTERN = /!`([^`\n]+)`/g;
 
 /** Block shell: ```!\n…\n``` — multiline non-greedy. Captured content is
- *  handed to the shell as a single program (newlines preserved). */
+ *  handed to the shell as a single program (newlines preserved).
+ *  MUST stay /g — consumed by matchAll(); do NOT call .exec()/.test() on
+ *  this directly (stale lastIndex would silently skip matches). */
 const SHELL_BLOCK_PATTERN = /```!\n([\s\S]*?)\n```/g;
 
 // ---------------------------------------------------------------------------
