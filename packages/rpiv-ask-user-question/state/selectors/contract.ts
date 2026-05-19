@@ -11,6 +11,7 @@ export interface BindingContext {
 	readonly totalQuestions: number;
 	readonly activeView: ActiveView;
 	readonly inputBuffer: string;
+	readonly inputCursorOffset: number | undefined;
 	readonly activePreviewPane: StatefulView<PreviewPaneProps>;
 }
 

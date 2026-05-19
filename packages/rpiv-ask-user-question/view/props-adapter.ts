@@ -13,6 +13,20 @@ interface Invalidatable {
 	invalidate(): void;
 }
 
+/**
+ * Reads pi-tui Input's private `cursor` field via type escape with full runtime validation.
+ * Returns `undefined` on any failure → graceful degradation to end-of-buffer cursor.
+ * Follow-up: replace with Input.getCursorOffset() when pi-tui exposes a public API.
+ */
+function getInputCursorOffset(input: Input): number | undefined {
+	const raw = (input as unknown as { cursor?: unknown }).cursor;
+	if (typeof raw !== "number") return undefined;
+	if (!Number.isSafeInteger(raw)) return undefined;
+	const value = input.getValue();
+	if (raw < 0 || raw > value.length) return undefined;
+	return raw;
+}
+
 export interface QuestionnairePropsAdapterConfig {
 	tui: { requestRender(): void };
 	questions: readonly QuestionData[];
@@ -71,6 +85,7 @@ export class QuestionnairePropsAdapter {
 			totalQuestions,
 			activeView,
 			inputBuffer: this.inlineInput.getValue(),
+			inputCursorOffset: getInputCursorOffset(this.inlineInput),
 			activePreviewPane,
 		};
 

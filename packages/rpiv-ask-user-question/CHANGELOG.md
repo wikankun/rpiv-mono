@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Inline "Other" free-text input now renders the cursor at the actual typed position (cursor-aware reverse-video on the cell under the cursor, per ECMA-48 SGR 7 — same pattern as pi-tui Input, ink-text-input, terkelg/prompts, ratatui). Previously a stationary `▌` glyph rendered at end-of-buffer regardless of arrow-key navigation. Pi-tui's `CURSOR_MARKER` is emitted so the hardware terminal cursor lands at the typed column when pi's `showHardwareCursor` setting is enabled. NBSP (U+00A0) substitutes for whitespace under the cursor to avoid wrap-break tokenization in `wrapTextWithAnsi`.
+
 ## [1.9.0] - 2026-05-18
 
 ### Added

@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 /**
  * Row-intent discriminated union. `kind` is the single discriminator —
@@ -47,7 +47,6 @@ export class WrappingSelect implements Component {
 	private static readonly ACTIVE_POINTER = "❯ ";
 	private static readonly INACTIVE_POINTER = "  ";
 	private static readonly NUMBER_SEPARATOR = ". ";
-	private static readonly INPUT_CURSOR = "▌";
 	private static readonly CONFIRMED_MARK = " ✔";
 	private static readonly MIN_CONTENT_WIDTH = 1;
 
@@ -60,6 +59,7 @@ export class WrappingSelect implements Component {
 	private selectedIndex = 0;
 	private focused = true;
 	private inputBuffer = "";
+	private inputCursorOffset: number | undefined = undefined;
 	/**
 	 * Index of the row that was previously confirmed for this list (e.g. the user's prior
 	 * answer when re-entering a multi-question tab). Renders `<label> ✔` in the active-row
@@ -123,6 +123,11 @@ export class WrappingSelect implements Component {
 
 	setInputBuffer(text: string): void {
 		this.inputBuffer = text;
+	}
+
+	/** Set the cursor offset for the inline input row. `undefined` → end-of-buffer fallback. */
+	setInputCursorOffset(offset: number | undefined): void {
+		this.inputCursorOffset = offset;
 	}
 
 	/** Intentionally empty — input is routed at the container level. */
@@ -248,14 +253,42 @@ export class WrappingSelect implements Component {
 	 * so long input doesn't run off the right edge or trip the parent renderer's
 	 * width invariant. Mirrors `renderLabelBlock`'s contract: first line carries
 	 * `rowPrefix`, continuation lines carry `continuationPrefix` (spaces), and every
-	 * emitted line passes through `theme.selectedText`. The trailing cursor glyph
-	 * `▌` is appended to the buffer pre-wrap so it lands at the visual end of the
-	 * input — `Input` only exposes `getValue()` (cursor offset is private), so
-	 * cursor-mid-string is intentionally not rendered here; that would require
-	 * either an `Input.getCursorOffset()` API or delegating to `Input.render`.
+	 * emitted line passes through `theme.selectedText`.
+	 *
+	 * Cursor visualization follows the standard TUI input-widget pattern (ECMA-48
+	 * SGR 7 reverse-video on the cell *at* the cursor, not an inserted glyph) —
+	 * same approach used by pi-tui Input.render (input.js:411-418), ink-text-input,
+	 * terkelg/prompts, ratatui's user-input example, etc. Split: `before | at | after`
+	 * where `at` is the single character under the cursor (or U+00A0 NBSP at end-of-
+	 * buffer) wrapped in `\x1b[7m…\x1b[27m`. No characters shift; the column under
+	 * the cursor inverts.
+	 *
+	 * pi-tui's zero-width `CURSOR_MARKER` (APC sentinel) is emitted immediately
+	 * before the `at` cell so the TUI framebuffer can position the hardware
+	 * terminal cursor at that column (visible iff pi's `showHardwareCursor`
+	 * setting is on — `pi-coding-agent/main.js:303`). `visibleWidth` strips the
+	 * marker as zero-width (utils.js:187-203), so wrap math is preserved.
+	 *
+	 * NBSP at end-of-buffer (rather than literal space): `wrapTextWithAnsi`
+	 * tokenizes on whitespace, so a literal space inside the reverse-video escape
+	 * pair would cause `wrapTextWithAnsi` to break the line at the cursor. NBSP
+	 * preserves the visible width-1 contribution without registering as a wrap
+	 * break — the conventional workaround documented across ANSI-aware string
+	 * wrappers.
 	 */
 	private renderInlineInputRow(rowPrefix: string, continuationPrefix: string, contentWidth: number): string[] {
-		const raw = `${this.inputBuffer}${WrappingSelect.INPUT_CURSOR}`;
+		const buffer = this.inputBuffer;
+		const requested = this.inputCursorOffset;
+		const offset =
+			requested !== undefined && requested >= 0 && requested <= buffer.length ? requested : buffer.length;
+		const before = buffer.slice(0, offset);
+		const rawAt = buffer.slice(offset, offset + 1);
+		// Whitespace at cursor (including end-of-buffer fallback) tokenizes as a wrap
+		// break inside `wrapTextWithAnsi`, splitting the line at the cursor. Substitute
+		// U+00A0 (NBSP): visually identical to a space, wrap-safe.
+		const atCursor = rawAt === "" || rawAt === " " ? " " : rawAt;
+		const after = buffer.slice(offset + rawAt.length);
+		const raw = `${before}${CURSOR_MARKER}\x1b[7m${atCursor}\x1b[27m${after}`;
 		const wrapped = wrapTextWithAnsi(raw, contentWidth);
 		return wrapped.map((segment, index) => {
 			const prefix = index === 0 ? rowPrefix : continuationPrefix;

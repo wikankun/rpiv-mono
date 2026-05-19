@@ -1,6 +1,15 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { WrappingSelect, type WrappingSelectItem, type WrappingSelectTheme } from "./wrapping-select.js";
+
+// Cursor render emitted by wrapping-select.ts:renderInlineInputRow — pi-tui's
+// zero-width CURSOR_MARKER (hardware-cursor positioning) immediately followed by
+// the character UNDER the cursor wrapped in SGR 7/27 (reverse video). The cursor
+// REPLACES (does not insert), so width is preserved. At end-of-buffer the
+// reverse-video character is a single U+00A0 (NBSP); a literal space would
+// tokenize as a wrap break.
+const cursorOn = (ch: string) => `${CURSOR_MARKER}\x1b[7m${ch}\x1b[27m`;
+const NBSP = " ";
 
 const identityTheme: WrappingSelectTheme = {
 	selectedText: (t) => t,
@@ -79,7 +88,7 @@ describe("WrappingSelect.render — inline input when kind:'other' + focused", (
 	// multiple lines, but we want to ignore unrelated rows (e.g. scrollInfo) when
 	// computing how many wrapped lines the input produced.
 	const inlineInputLines = (lines: readonly string[]): string[] =>
-		lines.filter((l) => l.includes("▌") || /[a-z0-9]/.test(l));
+		lines.filter((l) => l.includes(CURSOR_MARKER) || /[a-z0-9]/.test(l));
 
 	it("renders inline input row with cursor when kind:'other' item focused", () => {
 		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
@@ -88,7 +97,7 @@ describe("WrappingSelect.render — inline input when kind:'other' + focused", (
 		s.setInputBuffer("hi");
 		const lines = s.render(40);
 		expect(lines[0]).toContain("hi");
-		expect(lines[0]).toContain("▌");
+		expect(lines[0]).toContain(CURSOR_MARKER);
 	});
 	it("renders label (not input) when kind:'other' but NOT focused", () => {
 		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
@@ -96,7 +105,7 @@ describe("WrappingSelect.render — inline input when kind:'other' + focused", (
 		s.setInputBuffer("buf");
 		const lines = s.render(40);
 		expect(lines[0]).toContain("pick");
-		expect(lines[0]).not.toContain("▌");
+		expect(lines[0]).not.toContain(CURSOR_MARKER);
 	});
 
 	// Regression: pre-fix the inline-input row was hard-truncated to `width`, so long
@@ -183,18 +192,17 @@ describe("WrappingSelect.render — inline input when kind:'other' + focused", (
 		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(width);
 	});
 
-	// Cursor always rides at the visual end of the inputBuffer (Input.getCursorOffset
-	// is not exposed today; cursor-mid-string is intentionally out of scope and
-	// requires either Input API exposure or delegating to Input.render).
-	it("renders the cursor glyph on the LAST wrapped line, never an intermediate one", () => {
+	it("renders cursor at end-of-buffer when no offset is set (default fallback)", () => {
+		// When setInputCursorOffset is never called, cursor defaults to end-of-buffer
+		// (identical to pre-fix behavior).
 		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
 		s.setSelectedIndex(0);
 		s.setFocused(true);
 		s.setInputBuffer("this input is long enough that it definitely wraps across multiple lines");
 		const lines = s.render(20);
-		const cursorLines = lines.filter((l) => l.includes("▌"));
+		const cursorLines = lines.filter((l) => l.includes(CURSOR_MARKER));
 		expect(cursorLines).toHaveLength(1);
-		expect(lines[lines.length - 1]).toContain("▌");
+		expect(lines[lines.length - 1]).toContain(CURSOR_MARKER);
 	});
 
 	// First line carries the row prefix ("❯ N. "); continuation lines are blank-padded
@@ -232,6 +240,104 @@ describe("WrappingSelect.render — inline input when kind:'other' + focused", (
 		for (const l of lines) {
 			expect(l.startsWith("<S>")).toBe(true);
 			expect(l.endsWith("</S>")).toBe(true);
+		}
+	});
+});
+
+describe("WrappingSelect.render — cursor position via setInputCursorOffset", () => {
+	it("renders cursor at position 0 (start of buffer)", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		s.setInputCursorOffset(0);
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`${cursorOn("h")}ello`);
+	});
+
+	it("renders cursor mid-string", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		s.setInputCursorOffset(2);
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`he${cursorOn("l")}lo`);
+	});
+
+	it("renders cursor at end of buffer", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		s.setInputCursorOffset(5);
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`hello${cursorOn(NBSP)}`);
+	});
+
+	it("falls back to end-of-buffer when offset is undefined", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		// Don't call setInputCursorOffset — stays undefined
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`hello${cursorOn(NBSP)}`);
+	});
+
+	it("wraps correctly with cursor mid-string on narrow width", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		// 11 chars > contentWidth 10 → wraps. Cursor REPLACES (does not insert), so the
+		// reverse-video cell occupies the same column as `d` would; total visible width
+		// is the same as the raw buffer. First wrapped segment fits 10 cols → "abcdefghij"
+		// with `d` rendered in reverse video at column index 3. Last char `k` wraps.
+		s.setInputBuffer("abcdefghijk");
+		s.setInputCursorOffset(3);
+		const narrowWidth = 15; // rowPrefix "❯ 1. " = 5 cols, contentWidth = 10
+		const lines = s.render(narrowWidth);
+		expect(lines[0]).toContain(`abc${cursorOn("d")}efghij`);
+		expect(lines[0]).toContain(CURSOR_MARKER);
+		// Every line must respect width invariant
+		for (const l of lines) {
+			expect(visibleWidth(l)).toBeLessThanOrEqual(narrowWidth);
+		}
+	});
+
+	it("clamps negative offset to end-of-buffer fallback", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		s.setInputCursorOffset(-1);
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`hello${cursorOn(NBSP)}`);
+	});
+
+	it("clamps offset exceeding buffer length to end-of-buffer fallback", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("hello");
+		s.setInputCursorOffset(99);
+		const lines = s.render(40);
+		expect(lines[0]).toContain(`hello${cursorOn(NBSP)}`);
+	});
+
+	it("renders cursor at correct position with wrapping across multiple lines", () => {
+		const s = new WrappingSelect([{ kind: "other", label: "pick" }], 1, identityTheme);
+		s.setSelectedIndex(0);
+		s.setFocused(true);
+		s.setInputBuffer("this is a very long input that will wrap");
+		s.setInputCursorOffset(5);
+		const width = 20;
+		const lines = s.render(width);
+		// Cursor at position 5 in a long string → cursor appears on the first wrapped line
+		expect(lines[0]).toContain(CURSOR_MARKER);
+		// Width invariant
+		for (const l of lines) {
+			expect(visibleWidth(l)).toBeLessThanOrEqual(width);
 		}
 	});
 });
@@ -372,7 +478,7 @@ describe("WrappingSelect.setConfirmedIndex", () => {
 		s.setInputBuffer("World");
 		const lines = s.render(40);
 		expect(lines[1]).toContain("World");
-		expect(lines[1]).toContain("▌");
+		expect(lines[1]).toContain(CURSOR_MARKER);
 		expect(lines[1]).not.toContain("✔");
 	});
 	it("clamps index to valid range", () => {
@@ -508,7 +614,7 @@ describe("WrappingSelectItem.kind contract — exhaustive", () => {
 		s.setFocused(true);
 		const lines = s.render(20);
 		const isOther = item.kind === "other";
-		const hasInputCursor = lines.some((l) => l.includes("▌"));
+		const hasInputCursor = lines.some((l) => l.includes(CURSOR_MARKER));
 		expect(hasInputCursor).toBe(isOther);
 	});
 });

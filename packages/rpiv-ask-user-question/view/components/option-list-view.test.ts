@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { makeTheme } from "@juicesharp/rpiv-test-utils";
 import { describe, expect, it } from "vitest";
 import { MAX_VISIBLE_OPTIONS, OptionListView, type OptionListViewProps } from "./option-list-view.js";
@@ -68,7 +69,7 @@ describe("OptionListView — inputBuffer prop", () => {
 		v.setProps(props({ selectedIndex: 1, focused: true, inputBuffer: "typed" }));
 		const lines = v.render(40);
 		expect(lines.some((l) => l.includes("typed"))).toBe(true);
-		expect(lines.some((l) => l.includes("▌"))).toBe(true);
+		expect(lines.some((l) => l.includes(CURSOR_MARKER))).toBe(true);
 	});
 });
 

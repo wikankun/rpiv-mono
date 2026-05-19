@@ -111,6 +111,7 @@ describe("QuestionnairePropsAdapter.apply", () => {
 			selectedIndex: 1,
 			focused: true,
 			inputBuffer: "",
+			inputCursorOffset: 0,
 			confirmed: { index: 1 },
 		});
 		expect(tabsByIndex[0]!.preview.setProps).toHaveBeenLastCalledWith({

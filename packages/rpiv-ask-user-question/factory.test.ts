@@ -1,3 +1,4 @@
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { createMockPi } from "@juicesharp/rpiv-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAskUserQuestionTool } from "./ask-user-question.js";
@@ -635,7 +636,7 @@ describe("ask_user_question — multi-question tab cycling flow", () => {
 		expect(back.some((l) => l.includes("Type something."))).toBe(false);
 		expect(back.some((l) => l.includes("❯ 1. A"))).toBe(true);
 		const onOther = renderedOnOtherRow[0]!;
-		expect(onOther.some((l) => l.includes("Hello") && l.includes("▌"))).toBe(true);
+		expect(onOther.some((l) => l.includes("Hello") && l.includes(CURSOR_MARKER))).toBe(true);
 	});
 
 	// Multi-select keeps its existing `[✔]` rendering — the new single-select marker must

@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
 import { makeTheme } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -760,7 +760,7 @@ describe("PreviewPane composes OptionListView state into render output", () => {
 		optionListView.setProps({ selectedIndex: 2, focused: true, inputBuffer: "Hello" });
 		const lines = pane.render(120);
 		expect(lines.some((l) => l.includes("Hello"))).toBe(true);
-		expect(lines.some((l) => l.includes("▌"))).toBe(true);
+		expect(lines.some((l) => l.includes(CURSOR_MARKER))).toBe(true);
 	});
 });
 
