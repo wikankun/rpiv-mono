@@ -24,7 +24,7 @@ node "${SKILL_DIR}/../_shared/git-context.mjs"
 ```
 
 - `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
-- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:` / `author:`.
 
 Copy values verbatim — do not reformat the timezone offset or any other field.
 
@@ -36,7 +36,7 @@ From the Metadata block above:
 - `<iso>` → frontmatter `date:` and `last_updated:`.
 - `repo:` → frontmatter `repository:`.
 - `branch:` / `commit:` → matching frontmatter fields.
-- Author → from session's git-context injection (fallback: `unknown`).
+- `author:` → frontmatter `author:` and `last_updated_by:`.
 
 ### 2. Handoff writing.
 using the above conventions, write your document. use the defined filepath, and the following YAML frontmatter pattern. Use the metadata gathered in step 1, Structure the document with YAML frontmatter followed by content:

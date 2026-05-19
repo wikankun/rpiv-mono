@@ -22,7 +22,7 @@ node "${SKILL_DIR}/../_shared/git-context.mjs"
 ```
 
 - `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
-- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:` / `author:`.
 
 Copy values verbatim — do not reformat the timezone offset.
 
@@ -112,7 +112,7 @@ After structure approval, write the plan **incrementally** — skeleton first, t
 ```markdown
 ---
 date: {Current date and time with timezone in ISO format}
-author: {User from injected git context}
+author: {`author:` from Metadata block}
 commit: {Current commit hash}
 branch: {Current branch name}
 repository: {Repository name}

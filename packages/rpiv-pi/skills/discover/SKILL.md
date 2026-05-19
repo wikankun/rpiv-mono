@@ -22,7 +22,7 @@ node "${SKILL_DIR}/../_shared/git-context.mjs"
 ```
 
 - `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
-- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:` / `author:`.
 
 Copy values verbatim — do not reformat the timezone offset.
 
@@ -173,7 +173,7 @@ Compile interview output into the FRD. The interview's logical order (problem �
    - Filename: `.rpiv/artifacts/discover/<slug>_<topic>.md` — `<slug>` is the second tab-separated field on `now.mjs` line 1; `<topic>` is a kebab-case slug from the settled feature concept.
    - `repository:` ← `repo:` label; `branch:` / `commit:` ← matching labels.
    - `date:` / `last_updated:` ← `<iso>` (first tab-separated field on `now.mjs` line 1, offset verbatim).
-   - Interviewer: from the User in the injected git context (fallback: `unknown`).
+   - Interviewer: `author:` from the Metadata block (fallback: `unknown`).
 
 2. **Write the FRD** using the Write tool. Frontmatter `status: complete`. All template sections present and filled. The Write tool creates parent directories automatically — no `mkdir -p` needed in the skill.
 

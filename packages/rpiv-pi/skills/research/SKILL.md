@@ -22,7 +22,7 @@ node "${SKILL_DIR}/../_shared/git-context.mjs"
 ```
 
 - `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
-- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:` / `author:`.
 
 Copy values verbatim — do not reformat the timezone offset.
 
@@ -213,14 +213,14 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
    - Filename: `.rpiv/artifacts/research/<slug>_<topic>.md` — `<slug>` is the second tab-separated field on `now.mjs` line 1; `<topic>` is a brief kebab-case description.
    - `repository:` ← `repo:` label; `branch:` / `commit:` ← matching labels (already include `no-branch` / `no-commit` fallbacks).
    - `date:` / `last_updated:` ← `<iso>` (first tab-separated field on `now.mjs` line 1, offset verbatim).
-   - Author: from the User in the injected git context (fallback: `unknown`).
+   - Author: `author:` from the Metadata block (fallback: `unknown`).
 
 2. **Write the research document** — this document is compressed context for a new session. Include everything the planner needs to make architectural decisions without re-researching:
 
    ```markdown
    ---
    date: {Current date and time with timezone in ISO format}
-   author: {User from injected git context}
+   author: {`author:` from Metadata block}
    commit: {Current commit hash}
    branch: {Current branch name}
    repository: {Repository name}
