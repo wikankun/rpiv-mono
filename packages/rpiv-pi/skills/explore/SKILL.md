@@ -2,6 +2,7 @@
 name: explore
 description: Analyze solution options for a feature or change, comparing approaches with pros, cons, trade-offs, and a recommended path. Use when the user is weighing approaches, asks "what are the options" or "how should we approach X", wants approaches compared, says "explore solutions", or faces a decision with multiple valid implementations. Produces solutions documents in .rpiv/artifacts/solutions/, which can feed the design skill.
 argument-hint: "[feature/change description]"
+shell-timeout: 10
 ---
 
 # Explore
@@ -11,6 +12,19 @@ You are tasked with analyzing solution options for new features or changes by in
 ## Input
 
 `$ARGUMENTS` — feature/change description, optionally with paths to tickets or research docs.
+
+## Metadata
+
+```!
+node "${SKILL_DIR}/../_shared/now.mjs"
+echo
+node "${SKILL_DIR}/../_shared/git-context.mjs"
+```
+
+- `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+
+Copy values verbatim — do not reformat the timezone offset.
 
 ## Flow
 
@@ -127,14 +141,12 @@ Wait for ALL agents to complete before proceeding.
 
 ### Step 6: Determine Metadata and Filename
 
-- Filename format: `.rpiv/artifacts/solutions/YYYY-MM-DD_HH-MM-SS_{topic}.md`
-  - YYYY-MM-DD_HH-MM-SS: Current date and time (e.g., 2025-10-11_14-30-22)
-  - {topic}: Brief kebab-case description
-- Repository name: from git root basename, or current directory basename if not a git repo
-- Use the git branch and commit from the git context injected at the start of the session (or run `git branch --show-current` / `git rev-parse --short HEAD` directly)
-- Timestamp: run `date +"%Y-%m-%dT%H:%M:%S%z"` — raw for `date:` and `last_updated:`, first 19 chars (`T`→`_`, `:`→`-`) for filename slug.
-- Author: use the User from the git context injected at the start of the session (fallback: "unknown")
-- If metadata unavailable: use "unknown" for commit/branch
+Use the substituted values from the Metadata block at the top of this skill:
+
+- Filename: `.rpiv/artifacts/solutions/<slug>_<topic>.md` — `<slug>` is the second tab-separated field on `now.mjs` line 1; `<topic>` is a brief kebab-case description.
+- `repository:` ← `repo:` label; `branch:` / `commit:` ← matching labels (already include `no-branch` / `no-commit` fallbacks).
+- `date:` / `last_updated:` ← `<iso>` (first tab-separated field on `now.mjs` line 1, offset verbatim).
+- Author: from the User in the injected git context (fallback: `unknown`).
 
 ### Step 7: Generate Solutions Document
 
