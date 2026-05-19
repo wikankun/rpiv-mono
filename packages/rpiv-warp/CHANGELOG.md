@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- "Waiting for your answer" toast renders skill invocations as `/skill:<name> <args>` instead of the raw skill-block markup. Applies to both prompt-submit and stop-query toasts.
+
 ## [1.9.1] - 2026-05-19
 
 ## [1.9.0] - 2026-05-18

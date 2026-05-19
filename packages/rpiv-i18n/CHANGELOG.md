@@ -8,7 +8,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- `@juicesharp/rpiv-i18n/loader` subpath export with `registerLocalesFromDir(namespace, packageUrl, options?)` — reads `locales/<code>.json` for every entry in `SUPPORTED_LOCALES` from the caller's package and calls `registerStrings` once. Replaces the per-package `loadLocale` + 8-key literal pattern. Subpath kept separate from the SDK entry so consumers do not pull `i18n-ui.ts` (and pi-tui) into the load graph just to register strings. Per-file failures (missing, malformed JSON, EACCES) warn and record an empty map — the extension never crashes at module init.
+- `@juicesharp/rpiv-i18n/loader` subpath export with `registerLocalesFromDir(namespace, packageUrl, options?)` — one-call locale registration for sibling extensions, replacing the per-package locale-load boilerplate.
 
 ## [1.9.1] - 2026-05-19
 

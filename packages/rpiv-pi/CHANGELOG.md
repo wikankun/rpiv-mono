@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Status bar no longer prefixes user-supplied or third-party skills with `rpiv:`. The prefix now only appears for skills bundled with rpiv-pi.
+
 ## [1.9.1] - 2026-05-19
 
 ## [1.9.0] - 2026-05-18
