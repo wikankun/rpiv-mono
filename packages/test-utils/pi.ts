@@ -52,7 +52,7 @@ export function createMockPi(overrides: Partial<ExtensionAPI> = {}): MockPi {
 			captured.events.set(event, list);
 		}),
 		sendMessage: vi.fn(async () => {}),
-		exec: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+		exec: vi.fn(async () => ({ stdout: "", stderr: "", code: 0, killed: false })),
 		getActiveTools: vi.fn(() => [...captured.activeTools]),
 		setActiveTools: vi.fn((names: string[]) => {
 			captured.activeTools = [...names];
