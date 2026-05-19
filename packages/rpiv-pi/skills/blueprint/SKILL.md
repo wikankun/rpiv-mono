@@ -2,6 +2,7 @@
 name: blueprint
 description: Plan complex features by decomposing them into vertical slices (one slice equals one phase) with developer micro-checkpoints between phases, producing an implement-ready phased plan in .rpiv/artifacts/plans/. Use for complex multi-component features touching 6+ files across multiple layers when iterative review between slices is valuable. Requires a research artifact or a solutions artifact (from explore). Prefer blueprint over plan when mid-flight micro-checkpoints matter, and prefer plan when a straightforward phased breakdown is enough.
 argument-hint: "[research artifact path]"
+shell-timeout: 10
 ---
 
 # Blueprint
@@ -11,6 +12,19 @@ You are tasked with planning how code will be shaped for a feature or change AND
 ## Input
 
 `$ARGUMENTS` — path to a research artifact (`.rpiv/artifacts/research/*.md`) or a solutions artifact (`.rpiv/artifacts/solutions/*.md`).
+
+## Metadata
+
+```!
+node "${SKILL_DIR}/../_shared/now.mjs"
+echo
+node "${SKILL_DIR}/../_shared/git-context.mjs"
+```
+
+- `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+
+Copy values verbatim — do not reformat the timezone offset.
 
 ## Flow
 
@@ -200,8 +214,8 @@ After the design summary is confirmed, decompose the feature into vertical slice
 3. **Confirm decomposition** using the `ask_user_question` tool. Question: "{N} slices for {feature}. Slice 1: {name} (foundation). Slices 2-N: {brief}. Approve decomposition?". Header: "Slices". Options: "Approve (Recommended)" (Proceed to slice-by-slice code generation); "Adjust slices" (Reorder, merge, or split slices before generating); "Change scope" (Add or remove files from the decomposition).
 
 4. **Create skeleton artifact** — immediately after decomposition is approved:
-   - Determine metadata: filename `.rpiv/artifacts/plans/YYYY-MM-DD_HH-MM-SS_topic.md`, repository name from git root, branch and commit from the git context injected at the start of the session (fallbacks: "no-branch" / "no-commit"), author from the injected User (fallback: "unknown")
-   - Timestamp: run `date +"%Y-%m-%dT%H:%M:%S%z"` — raw for `date:` and `last_updated:`, first 19 chars (`T`→`_`, `:`→`-`) for filename slug.
+   - Determine metadata from the Metadata block above: filename `.rpiv/artifacts/plans/<slug>_<topic>.md` (use `<slug>` from `now.mjs` line 1); `repository:` from `repo:`; `branch:` / `commit:` from matching labels; author from session's git-context injection (fallback: `unknown`).
+   - Timestamp: use `<iso>` from `now.mjs` line 1 for `date:` and `last_updated:` (copy the offset verbatim).
    - Write skeleton using the Write tool with `status: in-progress` in frontmatter
    - **Include all prose sections filled** from Steps 1-5: Overview, Requirements, Current State Analysis, Desired End State, What We're NOT Doing, Decisions, Ordering Constraints, Verification Notes, Performance Considerations, Migration Notes, Pattern References, Developer Context, References
    - **Phase sections**: one `## Phase N: {slice name}` heading per slice from the decomposition (in slice order), each with `### Overview`, `### Changes Required:` (one `#### N. path/to/file.ext` subsection per file with empty code fence + NEW/MODIFY label), and `### Success Criteria:` (empty Automated + Manual subsection headers — filled in Step 7.4 on approval)
