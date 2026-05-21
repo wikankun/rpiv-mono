@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-web-tools` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.12.0] - 2026-05-21
 
 ### Added
 - New `searxng` search provider for self-hosted [SearXNG](https://docs.searxng.org/) instances. Configure via `SEARXNG_URL` env var or `baseUrls.searxng` in `~/.config/rpiv-web-tools/config.json` (defaults to `http://localhost:8080`); optional `SEARXNG_API_KEY` / `apiKeys.searxng` for instances behind a Bearer-auth proxy. `/web-search-config` prompts for the URL first, then the optional key. `web_fetch` reuses the shared HTTP + htmlToText pipeline (same path as Brave/Serper). A `403` response from the instance attaches an actionable hint that `json` likely needs to be enabled under `search.formats` in `settings.yml`.
