@@ -28,12 +28,21 @@ export interface SearchProvider {
 // PROVIDER_META + per-provider configure() contract
 // ---------------------------------------------------------------------------
 
+// User input from a ProviderConfigUi prompt. Both `null` and `undefined`
+// indicate the user cancelled (different UI implementations may return
+// either); use isCancellation() to test instead of comparing manually.
+export type UserInput = string | null | undefined;
+
+export function isCancellation(input: UserInput): input is null | undefined {
+	return input == null;
+}
+
 // Minimal UI surface a provider's configure() helper is allowed to depend on.
 // Intentionally narrow so providers/ stays free of web-tools internals (no
 // circular import) and so the contract can grow deliberately if a future
 // provider needs more.
 export interface ProviderConfigUi {
-	input(label: string, placeholder: string): Promise<string | null | undefined>;
+	input(label: string, placeholder: string): Promise<UserInput>;
 }
 
 // What the orchestrator hands to configure(): the provider's currently

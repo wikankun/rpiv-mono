@@ -55,6 +55,12 @@ const UNSET_LABEL = "(not set)";
 
 const DEFAULT_PROVIDER_NAME = "brave";
 
+// Brave is the only provider whose key was historically stored at the top
+// level (config.apiKey) before the per-provider apiKeys map. The legacy
+// field is auto-migrated to apiKeys.brave on the next save by
+// /web-search-config (the dispatch deletes apiKey from the saved object).
+const LEGACY_TOP_LEVEL_KEY_PROVIDER = "brave";
+
 // ---------------------------------------------------------------------------
 // Config file persistence
 // ---------------------------------------------------------------------------
@@ -119,7 +125,7 @@ function resolveProviderApiKey(providerName: string, config: WebToolsConfig): st
 	const configKey = config.apiKeys?.[providerName]?.trim();
 	if (configKey) return configKey;
 
-	if (providerName === "brave") {
+	if (providerName === LEGACY_TOP_LEVEL_KEY_PROVIDER) {
 		return config.apiKey?.trim() || undefined;
 	}
 
@@ -456,7 +462,7 @@ function formatShowConfigMessage(current: WebToolsConfig): string {
 	for (const meta of PROVIDERS) {
 		const envKey = meta.envVar ? process.env[meta.envVar]?.trim() : undefined;
 		const configKey = current.apiKeys?.[meta.name]?.trim();
-		const legacyKey = meta.name === "brave" ? current.apiKey?.trim() : undefined;
+		const legacyKey = meta.name === LEGACY_TOP_LEVEL_KEY_PROVIDER ? current.apiKey?.trim() : undefined;
 		const resolved = envKey ?? configKey ?? legacyKey;
 		lines.push(
 			`  ${meta.name}: ${maskApiKey(resolved)} (env: ${maskApiKey(envKey)}, config: ${maskApiKey(configKey ?? legacyKey)})`,
@@ -570,7 +576,8 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 			}
 
 			const existingKey =
-				current.apiKeys?.[selectedProvider] ?? (selectedProvider === "brave" ? current.apiKey : undefined);
+				current.apiKeys?.[selectedProvider] ??
+				(selectedProvider === LEGACY_TOP_LEVEL_KEY_PROVIDER ? current.apiKey : undefined);
 			const input = await ctx.ui.input(
 				`${selectedMeta.label} API key`,
 				existingKey ? `Press Enter to keep current (${maskApiKey(existingKey)}), or type new key` : "...",
