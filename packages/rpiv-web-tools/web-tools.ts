@@ -27,8 +27,8 @@ import type { GuidanceFields } from "@juicesharp/rpiv-config";
 import { configPath, loadJsonConfig, saveJsonConfig, validateGuidanceFields } from "@juicesharp/rpiv-config";
 import { Type } from "typebox";
 import { createSearchProvider } from "./providers/factory.js";
-import { configureSearxng, PROVIDERS, SEARXNG_DEFAULT_URL, SEARXNG_URL_ENV_VAR } from "./providers/index.js";
-import type { SearchResult } from "./providers/types.js";
+import { PROVIDERS } from "./providers/index.js";
+import type { ProviderMeta, SearchProvider, SearchResult } from "./providers/types.js";
 
 // ---------------------------------------------------------------------------
 // Tunables and external surface
@@ -113,7 +113,7 @@ function resolveProviderApiKey(providerName: string, config: WebToolsConfig): st
 	const meta = PROVIDERS.find((p) => p.name === providerName);
 	if (!meta) return undefined;
 
-	const envKey = process.env[meta.envVar]?.trim();
+	const envKey = meta.envVar ? process.env[meta.envVar]?.trim() : undefined;
 	if (envKey) return envKey;
 
 	const configKey = config.apiKeys?.[providerName]?.trim();
@@ -126,12 +126,29 @@ function resolveProviderApiKey(providerName: string, config: WebToolsConfig): st
 	return undefined;
 }
 
-function resolveSearxngBaseUrl(config: WebToolsConfig): string {
-	const envUrl = process.env[SEARXNG_URL_ENV_VAR]?.trim();
+// Generic per-provider base-URL resolution: env → config.baseUrls[name] →
+// meta.defaultBaseUrl → "". Providers without baseUrlEnvVar (hosted ones)
+// short-circuit to "". The orchestrator only calls this for providers that
+// declare baseUrlEnvVar, so the empty-string fallback is a safety net rather
+// than a runtime path.
+function resolveProviderBaseUrl(meta: ProviderMeta, config: WebToolsConfig): string {
+	if (!meta.baseUrlEnvVar) return "";
+	const envUrl = process.env[meta.baseUrlEnvVar]?.trim();
 	if (envUrl) return envUrl;
-	const configUrl = config.baseUrls?.searxng?.trim();
+	const configUrl = config.baseUrls?.[meta.name]?.trim();
 	if (configUrl) return configUrl;
-	return SEARXNG_DEFAULT_URL;
+	return meta.defaultBaseUrl ?? "";
+}
+
+// Centralized instantiation: load active provider name + creds, build via
+// the factory. Called by both registerWebSearchTool and registerWebFetchTool.
+function instantiateActiveProvider(config: WebToolsConfig): { providerName: string; provider: SearchProvider } {
+	const providerName = config.provider ?? DEFAULT_PROVIDER_NAME;
+	const apiKey = resolveProviderApiKey(providerName, config);
+	const meta = PROVIDERS.find((p) => p.name === providerName);
+	const baseUrl = meta?.baseUrlEnvVar ? resolveProviderBaseUrl(meta, config) : undefined;
+	const provider = createSearchProvider(providerName, { apiKey: apiKey ?? "", baseUrl });
+	return { providerName, provider };
 }
 
 function maskApiKey(key: string | undefined): string {
@@ -270,10 +287,7 @@ export function registerWebSearchTool(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const maxResults = clampSearchResultCount(params.max_results);
 			const config = loadConfig();
-			const providerName = config.provider ?? DEFAULT_PROVIDER_NAME;
-			const apiKey = resolveProviderApiKey(providerName, config);
-			const baseUrl = providerName === "searxng" ? resolveSearxngBaseUrl(config) : undefined;
-			const provider = createSearchProvider(providerName, { apiKey: apiKey ?? "", baseUrl });
+			const { providerName, provider } = instantiateActiveProvider(config);
 
 			onUpdate?.({
 				content: [{ type: "text", text: `Searching ${provider.label} for: "${params.query}"...` }],
@@ -361,10 +375,7 @@ export function registerWebFetchTool(pi: ExtensionAPI): void {
 			});
 
 			const config = loadConfig();
-			const providerName = config.provider ?? DEFAULT_PROVIDER_NAME;
-			const apiKey = resolveProviderApiKey(providerName, config);
-			const baseUrl = providerName === "searxng" ? resolveSearxngBaseUrl(config) : undefined;
-			const provider = createSearchProvider(providerName, { apiKey: apiKey ?? "", baseUrl });
+			const { provider } = instantiateActiveProvider(config);
 
 			const { text: bodyText, title, contentType, contentLength } = await provider.fetch(url, raw, signal);
 
@@ -443,7 +454,7 @@ function formatShowConfigMessage(current: WebToolsConfig): string {
 	lines.push(`  active provider: ${providerName}`);
 
 	for (const meta of PROVIDERS) {
-		const envKey = process.env[meta.envVar]?.trim();
+		const envKey = meta.envVar ? process.env[meta.envVar]?.trim() : undefined;
 		const configKey = current.apiKeys?.[meta.name]?.trim();
 		const legacyKey = meta.name === "brave" ? current.apiKey?.trim() : undefined;
 		const resolved = envKey ?? configKey ?? legacyKey;
@@ -452,11 +463,17 @@ function formatShowConfigMessage(current: WebToolsConfig): string {
 		);
 	}
 
-	const envUrl = process.env[SEARXNG_URL_ENV_VAR]?.trim();
-	const configUrl = current.baseUrls?.searxng?.trim();
-	const resolvedUrl = envUrl || configUrl || SEARXNG_DEFAULT_URL;
-	const urlSource = envUrl ? "env" : configUrl ? "config" : "default";
-	lines.push(`  searxng url: ${resolvedUrl} (source: ${urlSource})`);
+	// One URL line per provider that declares baseUrlEnvVar. Today this is
+	// only SearXNG, but a second self-hosted provider lands without touching
+	// this loop.
+	for (const meta of PROVIDERS) {
+		if (!meta.baseUrlEnvVar) continue;
+		const envUrl = process.env[meta.baseUrlEnvVar]?.trim();
+		const configUrl = current.baseUrls?.[meta.name]?.trim();
+		const resolvedUrl = envUrl || configUrl || meta.defaultBaseUrl || "";
+		const urlSource = envUrl ? "env" : configUrl ? "config" : "default";
+		lines.push(`  ${meta.name} url: ${resolvedUrl} (source: ${urlSource})`);
+	}
 
 	return lines.join("\n");
 }
@@ -482,12 +499,12 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 				...PROVIDERS.filter((p) => p.name === activeProvider),
 				...PROVIDERS.filter((p) => p.name !== activeProvider),
 			];
-			const hasKey = (p: (typeof PROVIDERS)[number]) => {
-				// SearXNG is "configured" once it has a base URL (env or config).
-				// The bare default URL doesn't count — it's just a hint that the
-				// user hasn't touched the setting yet.
-				if (p.name === "searxng") {
-					return Boolean(process.env[SEARXNG_URL_ENV_VAR]?.trim() || current.baseUrls?.searxng?.trim());
+			const hasKey = (p: ProviderMeta) => {
+				// Self-hosted providers are "configured" once they have a base URL
+				// (env or config). The bare default URL doesn't count — it's just a
+				// hint that the user hasn't touched the setting yet.
+				if (p.baseUrlEnvVar) {
+					return Boolean(process.env[p.baseUrlEnvVar]?.trim() || current.baseUrls?.[p.name]?.trim());
 				}
 				return resolveProviderApiKey(p.name, current) !== undefined;
 			};
@@ -515,12 +532,13 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 			}
 			const selectedProvider = selectedMeta.name;
 
-			// SearXNG branches off the API-key flow: prompt logic lives in
-			// providers/searxng.ts; this caller owns persistence + notifications.
-			if (selectedProvider === "searxng") {
-				const result = await configureSearxng(ctx.ui, {
-					baseUrl: current.baseUrls?.searxng,
-					apiKey: current.apiKeys?.searxng,
+			// Providers that declare a `configure` callback own their prompt flow
+			// (e.g. SearXNG: URL prompt then optional Bearer key). The orchestrator
+			// dispatches generically and owns persistence + notifications.
+			if (selectedMeta.configure) {
+				const result = await selectedMeta.configure(ctx.ui, {
+					baseUrl: current.baseUrls?.[selectedProvider],
+					apiKey: current.apiKeys?.[selectedProvider],
 				});
 				if (!result) {
 					ctx.ui.notify("Web search config unchanged", "info");
@@ -528,16 +546,26 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 				}
 				const toSave: WebToolsConfig = {
 					...current,
-					provider: "searxng",
-					baseUrls: { ...current.baseUrls, searxng: result.baseUrl },
-					apiKeys: result.apiKey ? { ...current.apiKeys, searxng: result.apiKey } : current.apiKeys,
+					provider: selectedProvider,
+					...(result.baseUrl !== undefined && {
+						baseUrls: { ...current.baseUrls, [selectedProvider]: result.baseUrl },
+					}),
+					...(result.apiKey ? { apiKeys: { ...current.apiKeys, [selectedProvider]: result.apiKey } } : {}),
 				};
 				delete (toSave as { apiKey?: string }).apiKey;
 				if (!saveConfig(toSave)) {
-					ctx.ui.notify(`Failed to save SearXNG config to ${CONFIG_PATH} — disk write failed`, "error");
+					ctx.ui.notify(
+						`Failed to save ${selectedMeta.label} config to ${CONFIG_PATH} — disk write failed`,
+						"error",
+					);
 					return;
 				}
-				ctx.ui.notify(`Saved SearXNG config (url: ${result.baseUrl}) to ${CONFIG_PATH}`, "info");
+				ctx.ui.notify(
+					result.baseUrl
+						? `Saved ${selectedMeta.label} config (url: ${result.baseUrl}) to ${CONFIG_PATH}`
+						: `Saved ${selectedMeta.label} config to ${CONFIG_PATH}`,
+					"info",
+				);
 				return;
 			}
 

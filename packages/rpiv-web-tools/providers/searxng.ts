@@ -1,16 +1,34 @@
 import { assertTextContentType, extractBodyAsText, fetchUrlOrThrow } from "./fetch-helpers.js";
-import type { FetchResponse, SearchProvider, SearchResponse, SearchResult } from "./types.js";
+import type {
+	FetchResponse,
+	ProviderConfigChange,
+	ProviderConfigCurrent,
+	ProviderConfigUi,
+	ProviderMeta,
+	SearchProvider,
+	SearchResponse,
+	SearchResult,
+} from "./types.js";
 
 export const SEARXNG_API_KEY_ENV_VAR = "SEARXNG_API_KEY";
 export const SEARXNG_URL_ENV_VAR = "SEARXNG_URL";
 export const SEARXNG_DEFAULT_URL = "http://localhost:8080";
 
-export const SEARXNG_PROVIDER_META = {
+// SearXNG-specific aliases of the generic config shapes — preserved for
+// backward compatibility with the symbols exported in v1.11.0. New providers
+// should consume the generic ProviderConfig* types from ./types.js directly.
+export type SearxngConfigUi = ProviderConfigUi;
+export type SearxngConfigCurrent = ProviderConfigCurrent;
+export type SearxngConfigChange = ProviderConfigChange;
+
+export const SEARXNG_PROVIDER_META: ProviderMeta = {
 	name: "searxng",
 	label: "SearXNG",
 	envVar: SEARXNG_API_KEY_ENV_VAR,
 	baseUrlEnvVar: SEARXNG_URL_ENV_VAR,
-} as const;
+	defaultBaseUrl: SEARXNG_DEFAULT_URL,
+	configure: (ui, current) => configureSearxng(ui, current),
+};
 
 interface SearxngRawResult {
 	title?: string;
@@ -57,9 +75,12 @@ interface SearxngProviderOptions {
 }
 
 export class SearxngProvider implements SearchProvider {
-	readonly name = SEARXNG_PROVIDER_META.name;
-	readonly label = SEARXNG_PROVIDER_META.label;
-	readonly envVar = SEARXNG_PROVIDER_META.envVar;
+	// Read from the env-var constant directly rather than SEARXNG_PROVIDER_META,
+	// because the META is typed as ProviderMeta (envVar is optional there) and
+	// the SearchProvider interface requires envVar: string.
+	readonly name = "searxng";
+	readonly label = "SearXNG";
+	readonly envVar = SEARXNG_API_KEY_ENV_VAR;
 
 	private readonly apiKey?: string;
 	private readonly baseUrl: string;
@@ -136,20 +157,9 @@ export class SearxngProvider implements SearchProvider {
 // ---------------------------------------------------------------------------
 // /web-search-config helper — SearXNG branch
 // ---------------------------------------------------------------------------
-
-export interface SearxngConfigUi {
-	input(label: string, placeholder: string): Promise<string | null | undefined>;
-}
-
-export interface SearxngConfigCurrent {
-	baseUrl?: string;
-	apiKey?: string;
-}
-
-export interface SearxngConfigChange {
-	baseUrl: string;
-	apiKey: string | null;
-}
+// SEARXNG_PROVIDER_META.configure wires this function in; the orchestrator
+// dispatches generically through ProviderMeta.configure without naming
+// SearXNG specifically.
 
 // Mirrors web-tools.ts:maskApiKey. Duplicated here (3 lines) to keep
 // providers/* free of web-tools internals; consolidate if this ever grows.
