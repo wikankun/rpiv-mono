@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
 	RegisteredCommand,
@@ -140,4 +141,150 @@ export function createMockCtx(opts: MockCtxOptions = {}): ExtensionContext {
 		sessionManager: createMockSessionManager(opts.branch ?? []),
 		modelRegistry: createMockModelRegistry(opts.models ?? []),
 	} as unknown as ExtensionContext;
+}
+
+/**
+ * Minimal `ExtensionCommandContext` mock for unit tests that mock the runner
+ * (or otherwise never exercise `newSession` for real). Adds `waitForIdle` and
+ * a no-op `newSession` to satisfy the type — both are `vi.fn` so tests can
+ * still assert `expect(ctx.newSession).not.toHaveBeenCalled()`.
+ *
+ * For tests that DO drive `newSession({ withSession })` recursively, use
+ * `createMockSessionChain` — it scripts a queue of responses and gives every
+ * freshCtx its own spy.
+ */
+export function createMockCommandCtx(opts: MockCtxOptions = {}): ExtensionCommandContext {
+	const base = createMockCtx(opts);
+	return {
+		...base,
+		waitForIdle: vi.fn(async () => {}),
+		newSession: vi.fn(async () => ({ cancelled: false })),
+	} as unknown as ExtensionCommandContext;
+}
+
+// ---------------------------------------------------------------------------
+// Session chain fixture — for tests that drive runWorkflow/runStage/runImplementPhases
+// across multiple newSession() calls. The outer ctx and every freshCtx share
+// a single scripted queue; pop order is the order in which the production
+// code calls newSession (recursively, on the freshCtx returned from each
+// withSession callback).
+// ---------------------------------------------------------------------------
+
+/** One scripted response in a session chain. */
+export interface MockSessionStep {
+	/**
+	 * Branch entries the freshCtx's sessionManager.getBranch() will return
+	 * inside withSession. Each element should be a BranchEntry-shaped object
+	 * (e.g. built with `mockAssistantMessage`).
+	 */
+	branch?: unknown[];
+	/**
+	 * If true, newSession resolves `{ cancelled: true }` without invoking
+	 * withSession. Mutually exclusive with `branch`.
+	 */
+	cancelled?: boolean;
+}
+
+export interface MockSessionChainOptions extends MockCtxOptions {
+	/** Scripted responses, in the order newSession will consume them. */
+	steps: MockSessionStep[];
+}
+
+export interface MockSessionChain {
+	/** The outer ExtensionCommandContext passed into runWorkflow(). */
+	ctx: ExtensionCommandContext;
+	/** Every `sendUserMessage(...)` call across all freshCtxs, in order. */
+	sentMessages: string[];
+	/** Every `ui.notify(msg, level)` call across outer + freshCtxs, in order. */
+	notifications: Array<{ msg: string; level: string }>;
+	/** How many scripted steps remain unconsumed. */
+	remaining: () => number;
+	/** Shared vi.fn() backing every `ui.notify` — for direct `.mock.calls` assertions. */
+	notifyFn: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Build a chained session-mock for tests that exercise `runWorkflow` (or any
+ * code that calls `newSession({ withSession })` recursively). Every call to
+ * `newSession` — whether on the outer ctx or on a freshCtx handed to a prior
+ * `withSession` callback — dequeues one step from `opts.steps`. If the test
+ * scripts fewer steps than the code under test consumes, the next call throws
+ * a clear "no more scripted steps" error pointing back at the fixture.
+ *
+ * The outer ctx's `newSession` is its own `vi.fn` (so tests can assert
+ * `expect(chain.ctx.newSession).toHaveBeenCalledTimes(1)` to verify that the
+ * chain advances on freshCtx, not on the outer ctx). Every freshCtx gets its
+ * own newSession spy too, but they all share the same script queue.
+ */
+export function createMockSessionChain(opts: MockSessionChainOptions): MockSessionChain {
+	const queue: MockSessionStep[] = [...opts.steps];
+	const sentMessages: string[] = [];
+	const notifications: Array<{ msg: string; level: string }> = [];
+
+	const notifyFn = vi.fn((msg: unknown, level?: unknown) => {
+		notifications.push({ msg: String(msg), level: String(level ?? "info") });
+	});
+
+	const sendUserMessageFn = vi.fn(async (content: unknown) => {
+		sentMessages.push(typeof content === "string" ? content : JSON.stringify(content));
+	});
+
+	const buildCtx = (kind: "outer" | "replaced", branch: unknown[]): ExtensionCommandContext => {
+		const base = createMockCtx({
+			...opts,
+			ui: { ...(opts.ui ?? {}), notify: notifyFn as unknown as ExtensionUIContext["notify"] },
+		});
+
+		const newSessionSpy = vi.fn(async (options?: { withSession?: (ctx: unknown) => Promise<void> }) => {
+			const step = queue.shift();
+			if (!step) {
+				throw new Error(
+					"createMockSessionChain: newSession called but no more scripted steps remain (chain consumed too many).",
+				);
+			}
+			if (step.cancelled) return { cancelled: true };
+			const freshCtx = buildCtx("replaced", step.branch ?? []);
+			if (options?.withSession) {
+				await options.withSession(freshCtx);
+			}
+			return { cancelled: false };
+		});
+
+		const ctx = {
+			...base,
+			waitForIdle: vi.fn(async () => {}),
+			newSession: newSessionSpy,
+		} as Record<string, unknown>;
+
+		if (kind === "replaced") {
+			ctx.sendUserMessage = sendUserMessageFn;
+			ctx.sendMessage = vi.fn(async () => {});
+			ctx.sessionManager = {
+				...((base as { sessionManager?: object }).sessionManager ?? {}),
+				getBranch: vi.fn(() => branch),
+			};
+		}
+
+		return ctx as unknown as ExtensionCommandContext;
+	};
+
+	return {
+		ctx: buildCtx("outer", []),
+		sentMessages,
+		notifications,
+		remaining: () => queue.length,
+		notifyFn,
+	};
+}
+
+/**
+ * Convenience: build a branch entry that looks like an assistant message
+ * containing a single text block. Cast to `unknown` to avoid leaking pi-ai's
+ * internal discriminators into test files.
+ */
+export function mockAssistantMessage(text: string): unknown {
+	return {
+		type: "message",
+		message: { role: "assistant", content: [{ type: "text", text }] },
+	};
 }

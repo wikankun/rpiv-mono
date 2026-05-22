@@ -1,7 +1,7 @@
 /**
  * rpiv-core — Pure-orchestrator extension for rpiv-pi.
  *
- * Composes session hooks and the two slash commands. All logic lives in the
+ * Composes session hooks and the slash commands. All logic lives in the
  * registrar modules; this file is the table of contents.
  *
  * Tool-owning plugins are siblings (see siblings.ts); install via /rpiv-setup.
@@ -12,6 +12,7 @@ import { FLAG_DEBUG } from "./constants.js";
 import { registerSessionHooks } from "./session-hooks.js";
 import { registerSetupCommand } from "./setup-command.js";
 import { registerUpdateAgentsCommand } from "./update-agents-command.js";
+import { registerWorkflowCommand } from "./workflow/command.js";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(FLAG_DEBUG, {
@@ -22,4 +23,5 @@ export default function (pi: ExtensionAPI) {
 	registerSessionHooks(pi);
 	registerUpdateAgentsCommand(pi);
 	registerSetupCommand(pi);
+	registerWorkflowCommand(pi);
 }

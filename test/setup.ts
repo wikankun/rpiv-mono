@@ -99,6 +99,9 @@ beforeEach(async () => {
 	rmSync(askUserQuestionConfig, { force: true });
 	rmSync(webToolsConfig, { force: true });
 
+	const workflowConfig = join(process.env.HOME!, ".config", "rpiv", "workflow.json");
+	rmSync(workflowConfig, { force: true });
+
 	// Clean global agent dir parent (`~/.pi/agent/`) — not just `~/.pi/agent/agents/` —
 	// so Q18-style tests that place a regular file at `~/.pi/agent` can write into a
 	// clean slot, and so no test inherits an empty-dir residue from a prior worker run.
