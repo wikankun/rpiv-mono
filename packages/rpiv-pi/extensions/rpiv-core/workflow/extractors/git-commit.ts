@@ -1,13 +1,18 @@
 /**
  * Git commit extractor + pre-stage git HEAD snapshot.
  *
- * The extractor compares pre/post stage HEAD SHAs to detect commits made
- * by the agent during the stage. Uses execFileSync (sync) for post-stage
- * reads since extraction happens synchronously after executeSession.
+ * Compares pre/post stage HEAD SHAs to detect commits made by the agent
+ * during the stage. Shells out asynchronously via `execFile` so a slow
+ * `git` invocation (network-backed working tree, hung FS, large
+ * `--shortstat`) can't pin the event loop — `ExtractorFn`'s contract
+ * already supports `Promise<ExtractorResult>`.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { ExtractorCtx, ExtractorPayload, ExtractorResult, GitCommitData, SnapshotCtx } from "../manifest.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Baseline snapshot captured before the stage runs. */
 export interface GitHeadSnapshot {
@@ -17,32 +22,32 @@ export interface GitHeadSnapshot {
 /** Per git command. 5 s is generous for `rev-parse` / `log -1` / `diff --shortstat` on local repos. */
 const GIT_EXEC_TIMEOUT_MS = 5_000;
 
-const GIT_EXEC_OPTS = {
-	encoding: "utf-8" as const,
-	stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"],
-	timeout: GIT_EXEC_TIMEOUT_MS,
-};
-
 /** Run a git command from `cwd`, returning trimmed stdout. */
-function git(cwd: string, ...args: string[]): string {
-	return execFileSync("git", args, { ...GIT_EXEC_OPTS, cwd }).trim();
+async function git(cwd: string, ...args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", args, {
+		cwd,
+		encoding: "utf-8",
+		timeout: GIT_EXEC_TIMEOUT_MS,
+	});
+	return stdout.trim();
 }
 
 /**
- * Pre-stage snapshot: capture the current HEAD SHA.
+ * Pre-stage snapshot: capture the current HEAD SHA via async `execFile`.
  *
- * Synchronous — `ExtensionAPI` does not expose a public `exec`/process surface,
- * so the snapshot shells out via `node:child_process.execFileSync` exactly like
- * the post-stage extractor. Sync is fine: the snapshot is a single sub-5ms
- * git call that runs before the agent loop starts, on the runner's thread.
+ * Async — keeps the event loop responsive even if `git` is slow (network
+ * FS, hung mount, contended index). `ExtensionAPI` does not expose a
+ * public `exec` surface, so we shell out directly here and via the
+ * post-stage extractor; the `SnapshotFn` contract already supports
+ * `Promise<unknown>` so the runner awaits without ceremony.
  *
- * Fail-soft: returns undefined on any failure (not a git repo, git missing,
- * non-zero exit). `gitCommitExtractor` handles `undefined` snapshot gracefully
- * by emitting a `noOp: true` manifest.
+ * Fail-soft: returns undefined on any failure (not a git repo, git
+ * missing, non-zero exit, timeout). `gitCommitExtractor` handles
+ * `undefined` snapshot gracefully by emitting a `noOp: true` manifest.
  */
-export function gitHeadSnapshot(ctx: SnapshotCtx): GitHeadSnapshot | undefined {
+export async function gitHeadSnapshot(ctx: SnapshotCtx): Promise<GitHeadSnapshot | undefined> {
 	try {
-		const sha = git(ctx.cwd, "rev-parse", "HEAD");
+		const sha = await git(ctx.cwd, "rev-parse", "HEAD");
 		return sha ? { baselineSha: sha } : undefined;
 	} catch {
 		return undefined;
@@ -53,11 +58,11 @@ export function gitHeadSnapshot(ctx: SnapshotCtx): GitHeadSnapshot | undefined {
  * Post-stage extractor: compare HEAD to baseline and extract commit metadata.
  * Always succeeds — git errors surface as a `noOp: true` payload (defensive).
  */
-export function gitCommitExtractor(ctx: ExtractorCtx): ExtractorResult {
+export async function gitCommitExtractor(ctx: ExtractorCtx): Promise<ExtractorResult> {
 	const snapshot = ctx.snapshot as GitHeadSnapshot | undefined;
 	if (!snapshot?.baselineSha) return { payload: wrap(ctx, noOpData("")) };
 
-	const data = collectCommitData(ctx.cwd, snapshot.baselineSha) ?? noOpData(snapshot.baselineSha);
+	const data = (await collectCommitData(ctx.cwd, snapshot.baselineSha)) ?? noOpData(snapshot.baselineSha);
 	return { payload: wrap(ctx, data) };
 }
 
@@ -70,25 +75,24 @@ export function gitCommitExtractor(ctx: ExtractorCtx): ExtractorResult {
  * didn't move). Returns `null` if any git call throws — caller substitutes a
  * baseline-aware no-op payload so the workflow keeps moving.
  */
-function collectCommitData(cwd: string, baselineSha: string): GitCommitData | null {
+async function collectCommitData(cwd: string, baselineSha: string): Promise<GitCommitData | null> {
 	try {
-		const headSha = git(cwd, "rev-parse", "HEAD");
+		const headSha = await git(cwd, "rev-parse", "HEAD");
 		if (headSha === baselineSha) return noOpData(baselineSha, headSha);
 
-		return {
-			sha: headSha,
-			prevSha: baselineSha,
-			subject: git(cwd, "log", "-1", "--format=%s", headSha),
-			filesChanged: countFilesChanged(cwd, baselineSha, headSha),
-		};
+		const [subject, filesChanged] = await Promise.all([
+			git(cwd, "log", "-1", "--format=%s", headSha),
+			countFilesChanged(cwd, baselineSha, headSha),
+		]);
+		return { sha: headSha, prevSha: baselineSha, subject, filesChanged };
 	} catch {
 		return null;
 	}
 }
 
 /** Parse `git diff --shortstat` output for the "N files changed" count. */
-function countFilesChanged(cwd: string, baselineSha: string, headSha: string): number {
-	const diffStat = git(cwd, "diff", "--shortstat", baselineSha, headSha);
+async function countFilesChanged(cwd: string, baselineSha: string, headSha: string): Promise<number> {
+	const diffStat = await git(cwd, "diff", "--shortstat", baselineSha, headSha);
 	const match = diffStat.match(/^(\d+) files? changed/);
 	return match ? parseInt(match[1]!, 10) : 0;
 }
