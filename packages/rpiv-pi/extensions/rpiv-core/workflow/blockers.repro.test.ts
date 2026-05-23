@@ -1,0 +1,281 @@
+/**
+ * Reproducer tests for the 4 critical blockers identified in the
+ * 2026-05-23 code review of feat/rpiv-workflow-command.
+ *
+ * Each `describe` block asserts the EXPECTED (post-fix) behavior, so
+ * the test fails on the current source. Use these as fix targets:
+ * when all four describe blocks pass, the blockers are resolved.
+ *
+ * - I1 — `validate → commit` auto edge skips the code-review fix loop.
+ * - I2 — `writeHeader` silent failure drops the first stage row.
+ * - I6 — Missing `severeIssueCount` silently routes to `commit`.
+ * - I7 — `StopReason ∈ {"length","toolUse"}` collapses to `"ok"`.
+ */
+
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DagNode, WorkflowDag } from "./dag.js";
+import { validateDag, WORKFLOW_DAG } from "./dag.js";
+import { resolveNextStageId } from "./routing.js";
+import { runWorkflow } from "./runner.js";
+import { resolveStateFile, resolveWorkflowsDir } from "./state.js";
+import type { RunState } from "./types.js";
+
+const makeState = (manifestData?: Record<string, unknown>): RunState => ({
+	originalInput: "",
+	artifactPath: undefined,
+	manifest: manifestData
+		? { kind: "artifact-md", data: manifestData, meta: { skill: "code-review", stage: 1, ts: "", runId: "" } }
+		: undefined,
+	stagesCompleted: 0,
+	jsonlStage: 0,
+	success: false,
+	error: undefined,
+	backwardJumps: 0,
+});
+
+// ---------------------------------------------------------------------------
+// I1 — validate must route to code-review (not commit) in mid/large presets,
+//      and the second `implement` in `mid` must be reachable through routing.
+// ---------------------------------------------------------------------------
+
+describe("[I1] validate → code-review routing in mid/large", () => {
+	it("routes validate → code-review (not commit) in the mid preset", () => {
+		const mid = WORKFLOW_DAG.presets.mid!;
+		// validate sits at index 3 in mid: [research, blueprint, implement, validate, code-review, ...]
+		expect(mid[3]).toBe("validate");
+		expect(mid[4]).toBe("code-review");
+
+		const next = resolveNextStageId(WORKFLOW_DAG, "validate", mid, 3, makeState());
+		// Bug: returns "commit" because dag.ts:195 declares validate → ["commit"].
+		expect(next).toBe("code-review");
+	});
+
+	it("routes validate → code-review (not commit) in the large preset", () => {
+		const large = WORKFLOW_DAG.presets.large!;
+		expect(large[4]).toBe("validate");
+		expect(large[5]).toBe("code-review");
+
+		const next = resolveNextStageId(WORKFLOW_DAG, "validate", large, 4, makeState());
+		expect(next).toBe("code-review");
+	});
+
+	it("small and mid presets are fully reachable from preset[0] via the edge graph", () => {
+		// BFS-style reachability: follow every outgoing edge to every target
+		// (auto / choice / predicate all branch), then fall back to linear
+		// advance when a node has no outgoing edge. This is the static
+		// invariant — predicate edges are dynamic at runtime, but every
+		// declared target must at least be a forward step in the preset.
+		//
+		// `large` is intentionally excluded: its preset includes design/plan/
+		// implement after code-review, but the only predicate edge from
+		// code-review targets `revise`|`commit`, neither of which threads into
+		// the large post-review design loop. That gap is a separate structural
+		// concern from I1 (it pre-existed and survives this fix); fixing it
+		// needs a per-preset code-review variant or a smarter predicate.
+		const presetsToCheck = ["small", "mid"] as const;
+		for (const name of presetsToCheck) {
+			const stageIds = WORKFLOW_DAG.presets[name]!;
+			const reached = new Set<number>([0]);
+			const queue: number[] = [0];
+			while (queue.length) {
+				const idx = queue.shift()!;
+				const id = stageIds[idx]!;
+				const edge = WORKFLOW_DAG.edges.find((e) => e.from === id);
+				const targets: string[] = edge ? [...edge.to] : idx + 1 < stageIds.length ? [stageIds[idx + 1]!] : [];
+				for (const target of targets) {
+					const targetIdx = stageIds.indexOf(target);
+					if (targetIdx < 0) continue; // edge target outside this preset — fine
+					if (!reached.has(targetIdx)) {
+						reached.add(targetIdx);
+						queue.push(targetIdx);
+					}
+				}
+			}
+			for (let i = 0; i < stageIds.length; i++) {
+				expect(reached.has(i), `preset "${name}": idx ${i} (${stageIds[i]}) unreachable`).toBe(true);
+			}
+		}
+	});
+
+	it("revise routes forward to implement-after-revise (not the original implement)", () => {
+		// Direct check on the duplicate-implement fix: routing must reach the
+		// post-revise position via Array.indexOf rather than looping back to
+		// the pre-validate implement at idx 2.
+		const mid = WORKFLOW_DAG.presets.mid!;
+		const reviseIdx = mid.indexOf("revise");
+		expect(reviseIdx).toBeGreaterThan(-1);
+		const next = resolveNextStageId(WORKFLOW_DAG, "revise", mid, reviseIdx, makeState());
+		expect(next).toBe("implement-after-revise");
+		expect(mid.indexOf(next!)).toBeGreaterThan(reviseIdx);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// I2 — When writeHeader silently fails, the first stage row written by
+//      appendStage lands at line 0 and is dropped by every reader.
+// ---------------------------------------------------------------------------
+
+describe("[I2] readers must not silently drop the first row when no header is on disk", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-i2-repro-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("readLastStage returns the row even when the header line is missing", async () => {
+		// Simulate the writeHeader-silent-failure path: the workflows directory
+		// exists, but no header line was written. appendStage then writes the
+		// first stage row at line 0 of the file.
+		const { readLastStage } = await import("./state.js");
+		const runId = "2026-05-23_13-05-38-abcd";
+		mkdirSync(resolveWorkflowsDir(tmpDir), { recursive: true });
+		const filePath = resolveStateFile(tmpDir, runId);
+		const stageRow = {
+			stageNumber: 1,
+			skill: "research",
+			artifact: ".rpiv/artifacts/research/r.md",
+			status: "completed" as const,
+			ts: "2026-05-23T13:06:00-0400",
+		};
+		appendFileSync(filePath, `${JSON.stringify(stageRow)}\n`, "utf-8");
+
+		// Bug: readLastStage starts iteration at i=1, dropping the only row.
+		// Expected: the row is returned because filtering is type-based, not
+		// position-based.
+		expect(readLastStage(tmpDir, runId)).toEqual(stageRow);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// I6 — Predicate fires on un-validated frontmatter; missing severeIssueCount
+//      must not silently route to commit. Surfacing validateDag warnings is
+//      part of the same fix.
+// ---------------------------------------------------------------------------
+
+describe("[I6] code-review predicate must not silently route to commit on missing field", () => {
+	it("WORKFLOW_DAG declares an outputSchema on the code-review node", () => {
+		// Architectural fix: the predicate factory stays lenient (predicates.ts
+		// callers like `predicateOnField` rely on `?? 0` semantics for optional
+		// fields); the schema layer is what makes missing data impossible to
+		// reach the predicate. `retryUntilValid` runs the schema before
+		// `resolveNextStageId` consults the edge.
+		const codeReview = WORKFLOW_DAG.nodes["code-review"];
+		expect(codeReview?.outputSchema).toBeDefined();
+	});
+
+	it("the declared schema rejects an empty data object", async () => {
+		// The schema is the active defense. Verify it actually catches the
+		// "agent forgot the field" case at the validator boundary, so the
+		// downstream predicate is never asked about absent data.
+		const { validateManifestData } = await import("./validation.js");
+		const schema = WORKFLOW_DAG.nodes["code-review"]?.outputSchema;
+		if (!schema) throw new Error("code-review outputSchema missing — fix I6 first");
+		const result = validateManifestData(schema, {});
+		expect(result.valid).toBe(false);
+	});
+
+	it("validateDag reports no warnings for the default WORKFLOW_DAG", () => {
+		// With the schema in place, the predicate-edge advisory no longer fires
+		// for the built-in DAG. If a future built-in node grows a predicate edge
+		// without a schema, this guardrail catches it.
+		const { warnings } = validateDag(WORKFLOW_DAG);
+		expect(warnings).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// I7 — A `stopReason: "length"` reply on an agent-end stage must NOT be
+//      recorded as a successful "completed" stage.
+// ---------------------------------------------------------------------------
+
+describe("[I7] truncated reply (stopReason=length) must not record as completed", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-i7-repro-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	const singleAgentEndDag = (): WorkflowDag => {
+		const node: DagNode = {
+			kind: "skill",
+			skill: "implement",
+			stopStrategy: "agent-end",
+			sessionPolicy: "fresh",
+		};
+		return { edges: [], presets: { tiny: ["implement"] }, nodes: { implement: node } };
+	};
+
+	const readStages = (cwd: string): Array<Record<string, unknown>> => {
+		const dir = join(cwd, ".rpiv", "workflows");
+		const files = readdirSync(dir);
+		expect(files).toHaveLength(1);
+		const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");
+		// Skip header (line 0); every other line is a stage or routing row.
+		return lines.slice(1).map((l) => JSON.parse(l));
+	};
+
+	it("does not write status=completed for an implement stage that hit the length cap", async () => {
+		// No artifact file needed — agent-end nodes inherit prior artifactPath.
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [
+				{
+					branch: [mockAssistantMessage("partial edit before output cap reached", "length")],
+				},
+			],
+		});
+
+		const result = await runWorkflow(chain.ctx, {
+			preset: "tiny",
+			input: "add dark mode",
+			dag: singleAgentEndDag(),
+		});
+
+		// Bug: classifyStopOutcome returns "ok" for stopReason="length" and
+		// sideEffectExtractor never returns fatal, so the stage records as
+		// completed and the workflow reports success.
+		expect(result.success).toBe(false);
+
+		const stages = readStages(tmpDir);
+		const recorded = stages.find((s) => s.skill === "implement");
+		expect(recorded?.status).not.toBe("completed");
+	});
+
+	it("does not write status=completed for an agent-end stage that returned stopReason=toolUse", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [
+				{
+					branch: [mockAssistantMessage("invoked a tool but never settled", "toolUse")],
+				},
+			],
+		});
+
+		const result = await runWorkflow(chain.ctx, {
+			preset: "tiny",
+			input: "add dark mode",
+			dag: singleAgentEndDag(),
+		});
+
+		expect(result.success).toBe(false);
+		const stages = readStages(tmpDir);
+		const recorded = stages.find((s) => s.skill === "implement");
+		expect(recorded?.status).not.toBe("completed");
+	});
+});
+
+// Silence the unused-import linter — `writeFileSync` kept on hand for future
+// I2/I7 variants that exercise artifact-emit paths.
+void writeFileSync;

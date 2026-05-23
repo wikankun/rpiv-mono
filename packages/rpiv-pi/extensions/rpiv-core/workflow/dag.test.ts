@@ -86,6 +86,8 @@ describe("resolvePreset", () => {
 	});
 
 	it("resolves mid to Path A sequence (revise loop after code-review)", () => {
+		// Second implement is aliased to "implement-after-revise" so routing
+		// can reach it via Array.indexOf rather than looping back to idx 2.
 		expect(resolvePreset(WORKFLOW_DAG, "mid")).toEqual([
 			"research",
 			"blueprint",
@@ -93,7 +95,7 @@ describe("resolvePreset", () => {
 			"validate",
 			"code-review",
 			"revise",
-			"implement",
+			"implement-after-revise",
 			"commit",
 		]);
 	});
@@ -127,12 +129,13 @@ describe("validateDag", () => {
 		...overrides,
 	});
 
-	it("returns no errors for the default WORKFLOW_DAG (warnings are allowed)", () => {
+	it("returns no errors and no warnings for the default WORKFLOW_DAG", () => {
+		// code-review carries an outputSchema, so the predicate-edge warning is
+		// no longer emitted. If a future built-in node grows a predicate edge
+		// without a schema, the warning would resurface here.
 		const { errors, warnings } = validateDag(WORKFLOW_DAG);
-		// Predicate edge on code-review warns about missing outputSchema.
 		expect(errors).toEqual([]);
-		expect(warnings.length).toBeGreaterThan(0);
-		expect(warnings[0]).toContain("predicate");
+		expect(warnings).toEqual([]);
 	});
 
 	it("reports edge source that's not in nodes map", () => {

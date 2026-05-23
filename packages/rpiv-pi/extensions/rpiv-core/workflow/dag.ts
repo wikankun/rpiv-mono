@@ -21,7 +21,7 @@
  * on the policy at dispatch time.
  */
 
-import type { TSchema } from "typebox";
+import { type TSchema, Type } from "typebox";
 import { BUNDLED_SKILL_NAMES } from "../paths.js";
 import { gitCommitExtractor, gitHeadSnapshot } from "./extractors/index.js";
 import type { ExtractorFn, SnapshotFn } from "./manifest.js";
@@ -192,8 +192,15 @@ export const WORKFLOW_DAG: WorkflowDag = {
 		{ from: "plan", to: ["implement"], condition: "auto" },
 		{ from: "blueprint", to: ["implement"], condition: "auto" },
 		{ from: "implement", to: ["validate"], condition: "auto" },
-		{ from: "validate", to: ["commit"], condition: "auto" },
-		{ from: "revise", to: ["implement"], condition: "auto" },
+		// `small` terminates at validate (no review tail) — `routing.ts:atEndOfPreset`
+		// short-circuits before this edge is consulted there, so re-routing
+		// validate → code-review here is safe for small AND wires the review
+		// loop that mid/large declare in their preset arrays.
+		{ from: "validate", to: ["code-review"], condition: "auto" },
+		// The second implement in `mid` is a distinct node id (skill stays
+		// "implement") so routing's Array.indexOf reaches the post-revise
+		// position instead of the original first implement.
+		{ from: "revise", to: ["implement-after-revise"], condition: "auto" },
 		{ from: "outline-test-cases", to: ["write-test-cases"], condition: "auto" },
 		{ from: "migrate-to-guidance", to: ["annotate-guidance"], condition: "auto" },
 
@@ -225,7 +232,16 @@ export const WORKFLOW_DAG: WorkflowDag = {
 	// the user (working tree is in a known-good state at validate).
 	presets: {
 		small: ["blueprint", "implement", "validate"],
-		mid: ["research", "blueprint", "implement", "validate", "code-review", "revise", "implement", "commit"],
+		mid: [
+			"research",
+			"blueprint",
+			"implement",
+			"validate",
+			"code-review",
+			"revise",
+			"implement-after-revise",
+			"commit",
+		],
 		large: [
 			"research",
 			"design",
@@ -250,12 +266,23 @@ export const WORKFLOW_DAG: WorkflowDag = {
 		explore: skillNode("explore", "artifact-emit"),
 		validate: skillNode("validate", "artifact-emit"),
 		revise: skillNode("revise", "artifact-emit"),
-		"code-review": skillNode("code-review", "artifact-emit"),
+		// outputSchema gates the predicate edge into revise/commit: without it,
+		// a missing/typo'd `severeIssueCount` would coerce to 0 and silently
+		// route to commit. `retryUntilValid` runs this check before the
+		// predicate fires, so absent fields surface as a validation retry —
+		// not as a stealth termination of the workflow.
+		"code-review": skillNode("code-review", "artifact-emit", {
+			outputSchema: Type.Object({ severeIssueCount: Type.Integer({ minimum: 0 }) }, { additionalProperties: true }),
+		}),
 		"outline-test-cases": skillNode("outline-test-cases", "artifact-emit"),
 
 		// Action skills (side-effect is the work; no chained artifact).
 		"write-test-cases": skillNode("write-test-cases", "agent-end"),
 		implement: skillNode("implement", "agent-end"),
+		// Distinct node id, same skill body — lets routing reach the
+		// post-revise position in `mid` instead of looping back to the
+		// pre-validate implement via Array.indexOf.
+		"implement-after-revise": skillNode("implement", "agent-end"),
 		commit: skillNode("commit", "agent-end", { snapshot: gitHeadSnapshot, extractor: gitCommitExtractor }),
 		"annotate-guidance": skillNode("annotate-guidance", "agent-end"),
 		"migrate-to-guidance": skillNode("migrate-to-guidance", "agent-end"),

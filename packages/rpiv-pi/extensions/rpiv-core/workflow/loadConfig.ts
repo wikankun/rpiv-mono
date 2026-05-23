@@ -198,10 +198,14 @@ export function loadConfig(cwd: string): LoadedConfigWithSource {
 		nodes: WORKFLOW_DAG.nodes,
 	};
 	try {
-		const { errors } = validateDag(configDag);
+		const { errors, warnings: dagWarnings } = validateDag(configDag);
 		if (errors.length > 0) {
 			return builtInFallback(errors.map((e) => `Config validation: ${e}`));
 		}
+		// Surface advisory diagnostics (e.g. predicate edges without an
+		// outputSchema on the source) so they reach the user via the same
+		// notify channel the command handler already drains.
+		warnings.push(...dagWarnings.map((w) => `Config validation: ${w}`));
 	} catch (err) {
 		return builtInFallback([`Config validation error: ${(err as Error).message}`]);
 	}
