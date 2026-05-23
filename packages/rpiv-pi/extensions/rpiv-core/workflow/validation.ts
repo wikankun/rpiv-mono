@@ -50,6 +50,40 @@ export const MAX_VALIDATION_RETRIES = 3;
 /** Default retries when node doesn't specify. */
 export const DEFAULT_VALIDATION_RETRIES = 1;
 
+/**
+ * Default per-attempt timeout for a validation retry's `askAgentToFix → sendAndAwaitIdle`.
+ * 5 minutes — generous enough for slow agents on heavy schemas without letting a
+ * truly stuck session pin the workflow indefinitely.
+ */
+export const DEFAULT_VALIDATION_RETRY_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Hard cap on the per-attempt timeout. 30 minutes; configurable per-node up to this. */
+export const MAX_VALIDATION_RETRY_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Lower bound on the per-attempt timeout. Below this is almost certainly a misconfiguration. */
+export const MIN_VALIDATION_RETRY_TIMEOUT_MS = 1_000;
+
+/**
+ * Race a promise against a wall-clock timeout. Resolves with the promise's
+ * value on success; rejects with `new Error(message)` if the timer fires
+ * first. The underlying promise is NOT cancelled — it continues in the
+ * background. Pi's `ctx.waitForIdle()` has no abort signal today, so this
+ * is the available shape: the runner stops blocking, but the SDK keeps
+ * draining its stream. The next stage's `newSession` replaces the ctx
+ * so the dangling promise becomes inert.
+ */
+export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(message)), ms);
+	});
+	try {
+		return await Promise.race([promise, timeout]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------

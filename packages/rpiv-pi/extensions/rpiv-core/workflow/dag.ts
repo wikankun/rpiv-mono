@@ -26,7 +26,12 @@ import { BUNDLED_SKILL_NAMES } from "../paths.js";
 import { gitCommitExtractor, gitHeadSnapshot } from "./extractors/index.js";
 import type { ExtractorFn, SnapshotFn } from "./manifest.js";
 import { predicateThreshold } from "./predicates.js";
-import { MAX_VALIDATION_RETRIES, MIN_VALIDATION_RETRIES } from "./validation.js";
+import {
+	MAX_VALIDATION_RETRIES,
+	MAX_VALIDATION_RETRY_TIMEOUT_MS,
+	MIN_VALIDATION_RETRIES,
+	MIN_VALIDATION_RETRY_TIMEOUT_MS,
+} from "./validation.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,6 +105,13 @@ interface NodeCommon {
 	onValidationFailure?: "retry" | "halt";
 	/** Max validation retries. Default: 1, hard cap: 3. */
 	maxValidationRetries?: number;
+	/**
+	 * Per-attempt walltime cap for a validation retry's agent roundtrip.
+	 * Default: 5 minutes; clamped to `[MIN, MAX]_VALIDATION_RETRY_TIMEOUT_MS`.
+	 * Exceeding the timeout halts the chain with a structured error rather
+	 * than letting a hung agent pin the runner indefinitely.
+	 */
+	validationRetryTimeoutMs?: number;
 	/** TypeBox schema for validating incoming manifest.data pre-execution. */
 	inputSchema?: TSchema;
 }
@@ -170,6 +182,7 @@ export const skillNode = (
 		outputSchema?: TSchema;
 		onValidationFailure?: "retry" | "halt";
 		maxValidationRetries?: number;
+		validationRetryTimeoutMs?: number;
 		inputSchema?: TSchema;
 	},
 ): SkillNode => ({
@@ -182,6 +195,7 @@ export const skillNode = (
 	outputSchema: overrides?.outputSchema,
 	onValidationFailure: overrides?.onValidationFailure,
 	maxValidationRetries: overrides?.maxValidationRetries,
+	validationRetryTimeoutMs: overrides?.validationRetryTimeoutMs,
 	inputSchema: overrides?.inputSchema,
 });
 
@@ -423,6 +437,16 @@ function checkValidationConfig(id: string, node: DagNode, errors: string[]): voi
 	) {
 		errors.push(
 			`Node "${id}" has maxValidationRetries: ${node.maxValidationRetries} — must be ${MIN_VALIDATION_RETRIES}..${MAX_VALIDATION_RETRIES}`,
+		);
+	}
+
+	if (
+		node.validationRetryTimeoutMs !== undefined &&
+		(node.validationRetryTimeoutMs < MIN_VALIDATION_RETRY_TIMEOUT_MS ||
+			node.validationRetryTimeoutMs > MAX_VALIDATION_RETRY_TIMEOUT_MS)
+	) {
+		errors.push(
+			`Node "${id}" has validationRetryTimeoutMs: ${node.validationRetryTimeoutMs} — must be ${MIN_VALIDATION_RETRY_TIMEOUT_MS}..${MAX_VALIDATION_RETRY_TIMEOUT_MS}`,
 		);
 	}
 }

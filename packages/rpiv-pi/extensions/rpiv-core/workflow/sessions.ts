@@ -46,10 +46,13 @@ import { assertNever, type BranchEntry, classifyStop, extractArtifactPath, type 
 import type { ChainCtx, PhaseSession, StageSession } from "./types.js";
 import {
 	DEFAULT_VALIDATION_RETRIES,
+	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
 	formatValidationFailuresForAgent,
 	MAX_VALIDATION_RETRIES,
+	MAX_VALIDATION_RETRY_TIMEOUT_MS,
 	type ValidationFailure,
 	validateManifestData,
+	withTimeout,
 } from "./validation.js";
 
 // ===========================================================================
@@ -340,6 +343,10 @@ async function retryUntilValid(
 ): Promise<ExtractionOutcome> {
 	const schema = s.node.outputSchema!;
 	const maxRetries = Math.min(s.node.maxValidationRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES);
+	const timeoutMs = Math.min(
+		s.node.validationRetryTimeoutMs ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
+		MAX_VALIDATION_RETRY_TIMEOUT_MS,
+	);
 
 	let manifest = initial;
 	let result = validateManifestData(schema, manifest.data);
@@ -347,7 +354,15 @@ async function retryUntilValid(
 
 	while (!result.valid && attempts < maxRetries && s.node.onValidationFailure !== "halt") {
 		attempts++;
-		await askAgentToFix(ctx, s, attempts, result.failures);
+		try {
+			await askAgentToFix(ctx, s, attempts, result.failures, timeoutMs);
+		} catch (e) {
+			// askAgentToFix throws on walltime cap; surface as fatal so the
+			// runner halts cleanly instead of the chain unwinding through
+			// withSession with an unstructured error.
+			const msg = e instanceof Error ? e.message : String(e);
+			return { kind: "fatal", message: msg };
+		}
 
 		const reExtracted = await runExtractor(
 			deps.extractor,
@@ -367,18 +382,29 @@ async function retryUntilValid(
 	return { kind: "ok", manifest };
 }
 
-/** Notify the user + send the agent a fix request, blocking until the agent settles. */
+/**
+ * Notify the user + send the agent a fix request, blocking until the agent
+ * settles OR `timeoutMs` elapses. The timeout protects against a hung agent
+ * pinning the runner — `ctx.waitForIdle()` has no abort signal, so the
+ * underlying promise continues in the background; the next stage's
+ * `newSession` replaces the ctx and the dangling promise becomes inert.
+ */
 async function askAgentToFix(
 	ctx: ChainCtx,
 	s: StageSession,
 	attempt: number,
 	failures: ValidationFailure[],
+	timeoutMs: number,
 ): Promise<void> {
 	ctx.ui.notify(MSG_VALIDATION_RETRY(s.skill, attempt), "warning");
-	await sendAndAwaitIdle(ctx, formatValidationFailuresForAgent(s.skill, failures), {
-		sessionPolicy: s.node.sessionPolicy,
-		pi: s.pi,
-	});
+	await withTimeout(
+		sendAndAwaitIdle(ctx, formatValidationFailuresForAgent(s.skill, failures), {
+			sessionPolicy: s.node.sessionPolicy,
+			pi: s.pi,
+		}),
+		timeoutMs,
+		`${s.skill}: validation retry attempt ${attempt} exceeded ${timeoutMs}ms — agent did not settle`,
+	);
 }
 
 /** Build the validation-exhausted outcome from accumulated failures. */
