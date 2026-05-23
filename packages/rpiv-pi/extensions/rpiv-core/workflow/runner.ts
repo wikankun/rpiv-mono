@@ -155,117 +155,157 @@ function dispatchNode(node: DagNode, inputForStage: string): { prompt: string; s
 }
 
 /**
- * Run a single workflow stage at index `idx`, then chain into the next stage
- * (or finalize) using whichever ctx is valid inside withSession.
+ * Top level reads as the stage lifecycle. Each named helper either does its
+ * side effect and returns, or returns `false` to signal a halt — the caller
+ * then short-circuits. Helpers are unit-testable in isolation.
  */
 async function runStage(curCtx: ChainCtx, idx: number, run: RunContext): Promise<void> {
-	const { cwd, runId, dag, stageIds, totalStages, state } = run;
+	if (idx >= run.stageIds.length) return finalizeWorkflow(curCtx, run);
 
-	if (idx >= stageIds.length) {
-		curCtx.ui.setStatus(STATUS_KEY, undefined);
-		curCtx.ui.notify(MSG_WORKFLOW_COMPLETE(state.stagesCompleted), "info");
-		state.success = true;
-		return;
-	}
+	const stage = resolveStageNode(idx, run);
 
-	const id = stageIds[idx]!;
-	const node = dag.nodes[id];
+	if (await tryPhaseFanout(curCtx, stage.node, idx, run)) return;
+	if (!ensureUpstreamArtifact(curCtx, stage, idx, run)) return;
+
+	const inputForStage = idx === 0 ? run.state.originalInput : run.state.artifactPath!;
+	const { prompt, skillLabel } = dispatchNode(stage.node, inputForStage);
+	curCtx.ui.setStatus(STATUS_KEY, STATUS_STAGE(stage.stageNumber, run.totalStages, skillLabel));
+
+	enforceSessionInvariants(stage, run);
+	const branchOffset = computeBranchOffset(curCtx, stage.node);
+
+	if (!runStageInputValidation(curCtx, stage, run)) return;
+
+	const snapshot = await captureStageSnapshot(stage.node, idx, run);
+
+	await runStageSession(curCtx, {
+		cwd: run.cwd,
+		runId: run.runId,
+		state: run.state,
+		prompt,
+		skill: skillLabel,
+		node: stage.node,
+		stageIndex: idx,
+		snapshot,
+		pi: run.pi,
+		branchOffset,
+		onFailure: (freshCtx) => notifyPartialArtifacts(freshCtx, run.cwd, run.runId),
+		onSuccess: (freshCtx) => advanceChain(freshCtx, idx, stage.id, run),
+	});
+}
+
+// ---------------------------------------------------------------------------
+// runStage prerequisites — one helper per phase, top of runStage reads as a list
+// ---------------------------------------------------------------------------
+
+interface ResolvedStage {
+	node: DagNode;
+	id: string;
+	/** 1-based; for status line + audit. */
+	stageNumber: number;
+	/** node.skill for skill nodes; node id otherwise. */
+	nodeLabel: string;
+}
+
+function finalizeWorkflow(curCtx: ChainCtx, run: RunContext): void {
+	curCtx.ui.setStatus(STATUS_KEY, undefined);
+	curCtx.ui.notify(MSG_WORKFLOW_COMPLETE(run.state.stagesCompleted), "info");
+	run.state.success = true;
+}
+
+function resolveStageNode(idx: number, run: RunContext): ResolvedStage {
+	const id = run.stageIds[idx]!;
+	const node = run.dag.nodes[id];
 	if (!node) {
 		// validateDag should catch this; defensive for tests that bypass validation.
 		throw new Error(`runStage: node id "${id}" referenced by preset but missing from dag.nodes`);
 	}
-	const stageNumber = idx + 1;
+	const nodeLabel = node.kind === "skill" ? node.skill : id;
+	return { node, id, stageNumber: idx + 1, nodeLabel };
+}
 
-	// Phase fanout: an implement skill against a plan with `## Phase N:` headings
-	// expands into one session per phase. Keyed on node.skill so aliased
-	// implement nodes (implement-after-revise, etc.) fan out too.
-	if (node.kind === "skill" && node.skill === "implement" && state.artifactPath) {
-		const phaseCount = countPhases(state.artifactPath, cwd);
-		if (phaseCount > 0) {
-			await runImplementPhases(curCtx, idx, node.skill, 1, phaseCount, run, {
-				runPhaseSession,
-				runNextStage: runStage,
-			});
-			return;
-		}
-	}
+/**
+ * An implement skill against a plan with `## Phase N:` headings expands into
+ * one session per phase. Keyed on node.skill so aliased implement nodes
+ * (implement-after-revise, etc.) fan out too. Returns true iff fanout fired
+ * (caller should then return without running the single-stage path).
+ */
+async function tryPhaseFanout(curCtx: ChainCtx, node: DagNode, idx: number, run: RunContext): Promise<boolean> {
+	if (!(node.kind === "skill" && node.skill === "implement" && run.state.artifactPath)) return false;
+	const phaseCount = countPhases(run.state.artifactPath, run.cwd);
+	if (phaseCount === 0) return false;
+	await runImplementPhases(curCtx, idx, node.skill, 1, phaseCount, run, {
+		runPhaseSession,
+		runNextStage: runStage,
+	});
+	return true;
+}
 
-	// First stage consumes the user's brief; later stages MUST inherit an
-	// upstream artifactPath. Falling back to originalInput past idx 0 would
-	// silently hand a downstream skill the raw feature description.
-	if (idx > 0 && !state.artifactPath) {
-		const nodeLabel = node.kind === "skill" ? node.skill : id;
-		recordStage(cwd, runId, { skill: nodeLabel, status: "failed", ts: nowIso() }, state);
-		curCtx.ui.setStatus(STATUS_KEY, undefined);
-		curCtx.ui.notify(MSG_MISSING_ARTIFACT(nodeLabel), "error");
-		notifyPartialArtifacts(curCtx, cwd, runId);
-		state.error = ERR_MISSING_ARTIFACT(nodeLabel, stageNumber);
-		return;
-	}
-	const inputForStage = idx === 0 ? state.originalInput : state.artifactPath!;
-	const { prompt, skillLabel } = dispatchNode(node, inputForStage);
+/**
+ * First stage consumes the user's brief; later stages MUST inherit an
+ * upstream artifactPath. Falling back to originalInput past idx 0 would
+ * silently hand a downstream skill the raw feature description.
+ */
+function ensureUpstreamArtifact(curCtx: ChainCtx, stage: ResolvedStage, idx: number, run: RunContext): boolean {
+	if (idx === 0 || run.state.artifactPath) return true;
+	recordStage(run.cwd, run.runId, { skill: stage.nodeLabel, status: "failed", ts: nowIso() }, run.state);
+	curCtx.ui.setStatus(STATUS_KEY, undefined);
+	curCtx.ui.notify(MSG_MISSING_ARTIFACT(stage.nodeLabel), "error");
+	notifyPartialArtifacts(curCtx, run.cwd, run.runId);
+	run.state.error = ERR_MISSING_ARTIFACT(stage.nodeLabel, stage.stageNumber);
+	return false;
+}
 
-	// Status line persists across `newSession`; `ui.notify` doesn't.
-	curCtx.ui.setStatus(STATUS_KEY, STATUS_STAGE(stageNumber, totalStages, skillLabel));
-
+function enforceSessionInvariants(stage: ResolvedStage, run: RunContext): void {
+	const { node, id } = stage;
 	if (node.kind === "skill" && node.skill === "implement" && node.sessionPolicy === "continue") {
 		throw new Error(
 			`runStage: implement node "${id}" cannot use sessionPolicy "continue" — ` +
 				"phase fanout requires per-phase session isolation",
 		);
 	}
-
 	if (node.sessionPolicy === "continue" && !run.pi) {
 		throw new Error(
 			`runStage: node "${id}" uses sessionPolicy "continue" but no pi (ExtensionAPI) was provided to runWorkflow`,
 		);
 	}
+}
 
-	// Entries before this index belong to prior stages.
-	const branchOffset =
-		node.sessionPolicy === "continue"
-			? (curCtx.sessionManager.getBranch() as unknown as BranchEntry[]).length
-			: undefined;
+/** Entries before this index belong to prior stages; only meaningful for continue. */
+function computeBranchOffset(curCtx: ChainCtx, node: DagNode): number | undefined {
+	if (node.sessionPolicy !== "continue") return undefined;
+	return (curCtx.sessionManager.getBranch() as unknown as BranchEntry[]).length;
+}
 
-	const nodeLabel = node.kind === "skill" ? node.skill : id;
+function runStageInputValidation(curCtx: ChainCtx, stage: ResolvedStage, run: RunContext): boolean {
+	if (!stage.node.inputSchema || run.state.manifest?.data === undefined) return true;
+	const result = validateManifestData(stage.node.inputSchema, run.state.manifest.data);
+	if (result.valid) return true;
 
-	if (node.inputSchema && state.manifest?.data !== undefined) {
-		const result = validateManifestData(node.inputSchema, state.manifest.data);
-		if (!result.valid) {
-			const failureSummary = result.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
-			const prevSkill = state.manifest.meta.skill || "unknown";
-			recordStage(cwd, runId, { skill: nodeLabel, status: "failed", ts: nowIso() }, state);
-			curCtx.ui.setStatus(STATUS_KEY, undefined);
-			curCtx.ui.notify(MSG_INPUT_VALIDATION_FAILED(nodeLabel, prevSkill), "error");
-			notifyPartialArtifacts(curCtx, cwd, runId);
-			state.error = ERR_INPUT_VALIDATION_FAILED(nodeLabel, prevSkill, failureSummary);
-			return;
-		}
+	const failureSummary = result.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+	const prevSkill = run.state.manifest.meta.skill || "unknown";
+	recordStage(run.cwd, run.runId, { skill: stage.nodeLabel, status: "failed", ts: nowIso() }, run.state);
+	curCtx.ui.setStatus(STATUS_KEY, undefined);
+	curCtx.ui.notify(MSG_INPUT_VALIDATION_FAILED(stage.nodeLabel, prevSkill), "error");
+	notifyPartialArtifacts(curCtx, run.cwd, run.runId);
+	run.state.error = ERR_INPUT_VALIDATION_FAILED(stage.nodeLabel, prevSkill, failureSummary);
+	return false;
+}
+
+async function captureStageSnapshot(node: DagNode, idx: number, run: RunContext): Promise<unknown> {
+	if (!node.snapshot) return undefined;
+	try {
+		return await node.snapshot({
+			cwd: run.cwd,
+			runId: run.runId,
+			stageIndex: idx,
+			state: run.state,
+			pi: run.pi,
+		});
+	} catch {
+		// Snapshot failure doesn't prevent stage execution.
+		return undefined;
 	}
-
-	let snapshotResult: unknown;
-	if (node.snapshot) {
-		try {
-			snapshotResult = await node.snapshot({ cwd, runId, stageIndex: idx, state, pi: run.pi });
-		} catch {
-			// Snapshot failure doesn't prevent stage execution.
-		}
-	}
-
-	await runStageSession(curCtx, {
-		cwd,
-		runId,
-		state,
-		prompt,
-		skill: skillLabel,
-		node,
-		stageIndex: idx,
-		snapshot: snapshotResult,
-		pi: run.pi,
-		branchOffset,
-		onFailure: (freshCtx) => notifyPartialArtifacts(freshCtx, cwd, runId),
-		onSuccess: (freshCtx) => advanceChain(freshCtx, idx, id, run),
-	});
 }
 
 /**
