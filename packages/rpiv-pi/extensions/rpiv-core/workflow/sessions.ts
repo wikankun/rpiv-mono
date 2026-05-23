@@ -263,20 +263,20 @@ function readSessionOutcome(
 
 /**
  * Resolve the extractor for a node — explicit override wins, otherwise the
- * default keyed off `stopStrategy`. Switch is exhaustive: a new variant on
- * `StopStrategy` lights up `assertNever` rather than silently falling into
+ * default keyed off `completionStrategy`. Switch is exhaustive: a new variant on
+ * `CompletionStrategy` lights up `assertNever` rather than silently falling into
  * `sideEffectExtractor` (whose contract never returns `fatal`, so the
  * wrong default would record a phantom-success row for an unhandled mode).
  */
 function resolveExtractor(node: DagNode): ExtractorFn {
 	if (node.extractor) return node.extractor;
-	switch (node.stopStrategy) {
+	switch (node.completionStrategy) {
 		case "artifact-emit":
 			return artifactMdExtractor;
 		case "agent-end":
 			return sideEffectExtractor;
 		default:
-			return assertNever(node.stopStrategy);
+			return assertNever(node.completionStrategy);
 	}
 }
 
@@ -300,7 +300,7 @@ function buildExtractorCtx(s: StageSession, branch: BranchEntry[]): ExtractorCtx
 function wrapManifest(s: StageSession, payload: ExtractorPayload): Manifest {
 	return finalizeManifest(payload, {
 		skill: s.skill,
-		stage: s.state.jsonlStage + 1,
+		stageNumber: s.state.jsonlStage + 1,
 		ts: nowIso(),
 		runId: s.runId,
 	});

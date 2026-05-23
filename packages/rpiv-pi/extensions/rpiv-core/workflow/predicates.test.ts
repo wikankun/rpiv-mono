@@ -8,7 +8,7 @@ describe("predicateThreshold", () => {
 			manifest: {
 				kind: "artifact-md",
 				data: { severeIssueCount: 3 },
-				meta: { skill: "code-review", stage: 1, ts: "", runId: "" },
+				meta: { skill: "code-review", stageNumber: 1, ts: "", runId: "" },
 			},
 			state: {} as never,
 		});
@@ -21,7 +21,7 @@ describe("predicateThreshold", () => {
 			manifest: {
 				kind: "artifact-md",
 				data: { severeIssueCount: 0 },
-				meta: { skill: "code-review", stage: 1, ts: "", runId: "" },
+				meta: { skill: "code-review", stageNumber: 1, ts: "", runId: "" },
 			},
 			state: {} as never,
 		});
@@ -31,7 +31,11 @@ describe("predicateThreshold", () => {
 	it("returns ifBelow when value equals threshold (not strictly greater)", () => {
 		const pred = predicateThreshold("count", 5, "above", "below");
 		const result = pred({
-			manifest: { kind: "artifact-md", data: { count: 5 }, meta: { skill: "test", stage: 1, ts: "", runId: "" } },
+			manifest: {
+				kind: "artifact-md",
+				data: { count: 5 },
+				meta: { skill: "test", stageNumber: 1, ts: "", runId: "" },
+			},
 			state: {} as never,
 		});
 		expect(result).toBe("below");
@@ -40,7 +44,7 @@ describe("predicateThreshold", () => {
 	it("treats missing field as 0", () => {
 		const pred = predicateThreshold("missing", 0, "above", "below");
 		const result = pred({
-			manifest: { kind: "artifact-md", data: {}, meta: { skill: "test", stage: 1, ts: "", runId: "" } },
+			manifest: { kind: "artifact-md", data: {}, meta: { skill: "test", stageNumber: 1, ts: "", runId: "" } },
 			state: {} as never,
 		});
 		expect(result).toBe("below");
@@ -61,7 +65,7 @@ describe("predicateThreshold", () => {
 			manifest: {
 				kind: "artifact-md",
 				data: { field: "not a number" },
-				meta: { skill: "test", stage: 1, ts: "", runId: "" },
+				meta: { skill: "test", stageNumber: 1, ts: "", runId: "" },
 			},
 			state: {} as never,
 		});
@@ -76,7 +80,7 @@ describe("predicateOnField", () => {
 			manifest: {
 				kind: "artifact-md",
 				data: { status: "pass" },
-				meta: { skill: "test", stage: 1, ts: "", runId: "" },
+				meta: { skill: "test", stageNumber: 1, ts: "", runId: "" },
 			},
 			state: {} as never,
 		});
@@ -89,7 +93,7 @@ describe("predicateOnField", () => {
 			manifest: {
 				kind: "artifact-md",
 				data: { status: "fail" },
-				meta: { skill: "test", stage: 1, ts: "", runId: "" },
+				meta: { skill: "test", stageNumber: 1, ts: "", runId: "" },
 			},
 			state: {} as never,
 		});
@@ -99,7 +103,11 @@ describe("predicateOnField", () => {
 	it("uses strict equality (number 1 !== string '1')", () => {
 		const pred = predicateOnField<number | string>("val", 1, "yes", "no");
 		const result = pred({
-			manifest: { kind: "artifact-md", data: { val: "1" }, meta: { skill: "test", stage: 1, ts: "", runId: "" } },
+			manifest: {
+				kind: "artifact-md",
+				data: { val: "1" },
+				meta: { skill: "test", stageNumber: 1, ts: "", runId: "" },
+			},
 			state: {} as never,
 		});
 		expect(result).toBe("no");
@@ -108,7 +116,7 @@ describe("predicateOnField", () => {
 	it("returns ifFalse when field is missing", () => {
 		const pred = predicateOnField("missing", "expected", "yes", "no");
 		const result = pred({
-			manifest: { kind: "artifact-md", data: {}, meta: { skill: "test", stage: 1, ts: "", runId: "" } },
+			manifest: { kind: "artifact-md", data: {}, meta: { skill: "test", stageNumber: 1, ts: "", runId: "" } },
 			state: {} as never,
 		});
 		expect(result).toBe("no");

@@ -5,7 +5,7 @@ import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@jui
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, type vi } from "vitest";
 import { clearChildSession, isChildSession } from "./child-session.js";
-import type { DagNode, StopStrategy, WorkflowDag } from "./dag.js";
+import type { CompletionStrategy, DagNode, WorkflowDag } from "./dag.js";
 import type { PredicateContext } from "./predicates.js";
 import { countPhases, extractArtifactPath, runWorkflow } from "./runner.js";
 import { readRoutingDecisions } from "./state.js";
@@ -152,7 +152,7 @@ describe("runWorkflow", () => {
 	 * DAG factory for tests.
 	 *
 	 * Auto-populates `nodes` from the union of all preset entries — every
-	 * referenced id gets a skill-kind node with `stopStrategy: "artifact-emit"`
+	 * referenced id gets a skill-kind node with `completionStrategy: "artifact-emit"`
 	 * (the dominant case for protocol skills) and `sessionPolicy: "fresh"`.
 	 *
 	 * Two skill names get special defaults that align with their built-in
@@ -162,7 +162,7 @@ describe("runWorkflow", () => {
 	 *   - `commit`    → `"agent-end"` (action skill; no chained artifact)
 	 *
 	 * Override per-id via `nodeOverrides`. Example:
-	 *   dagWith({ tiny: ["research"] }, { research: { stopStrategy: "agent-end" } })
+	 *   dagWith({ tiny: ["research"] }, { research: { completionStrategy: "agent-end" } })
 	 */
 	const dagWith = (
 		presets: Record<string, string[]>,
@@ -171,11 +171,11 @@ describe("runWorkflow", () => {
 		const allIds = new Set(Object.values(presets).flat());
 		const nodes: Record<string, DagNode> = {};
 		for (const id of allIds) {
-			const defaultStop: StopStrategy = id === "implement" || id === "commit" ? "agent-end" : "artifact-emit";
+			const defaultStop: CompletionStrategy = id === "implement" || id === "commit" ? "agent-end" : "artifact-emit";
 			const base: DagNode = {
 				kind: "skill",
 				skill: id,
-				stopStrategy: defaultStop,
+				completionStrategy: defaultStop,
 				sessionPolicy: "fresh",
 			};
 			nodes[id] = { ...base, ...(nodeOverrides[id] ?? {}) } as DagNode;
@@ -653,9 +653,9 @@ describe("runWorkflow", () => {
 		expect(result.stagesCompleted).toBe(3); // research + 2 phases
 	});
 
-	describe("per-node stopStrategy dispatch", () => {
+	describe("per-node completionStrategy dispatch", () => {
 		it("agent-end nodes complete cleanly without producing an artifact (e.g. commit at end of preset)", async () => {
-			// `commit` defaults to stopStrategy "agent-end" via the dagWith factory.
+			// `commit` defaults to completionStrategy "agent-end" via the dagWith factory.
 			// The branch contains no .rpiv/artifacts/... path; the runner must
 			// still treat the stage as completed and finish the workflow.
 			const chain = createMockSessionChain({
@@ -706,9 +706,9 @@ describe("runWorkflow", () => {
 			]);
 		});
 
-		it("override: forcing stopStrategy to agent-end via dagWith node overrides skips artifact check", async () => {
+		it("override: forcing completionStrategy to agent-end via dagWith node overrides skips artifact check", async () => {
 			// Same skill that would normally require an artifact (research),
-			// but the DAG declares stopStrategy "agent-end" — the runner must
+			// but the DAG declares completionStrategy "agent-end" — the runner must
 			// honor the DAG, not the skill identity.
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
@@ -718,7 +718,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				preset: "tiny",
 				input: "x",
-				dag: dagWith({ tiny: ["research"] }, { research: { stopStrategy: "agent-end" } }),
+				dag: dagWith({ tiny: ["research"] }, { research: { completionStrategy: "agent-end" } }),
 			});
 
 			expect(result.success).toBe(true);
@@ -1119,15 +1119,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1167,15 +1172,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1213,15 +1223,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1270,15 +1285,20 @@ describe("runWorkflow", () => {
 				// But predicate routes to "commit" (idx 3) — that IS off-linear
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1321,15 +1341,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1366,15 +1391,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1430,9 +1460,9 @@ describe("runWorkflow", () => {
 				],
 				presets: { cycle: ["a", "b", "c"] },
 				nodes: {
-					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "skill", skill: "a", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1485,9 +1515,9 @@ describe("runWorkflow", () => {
 				],
 				presets: { cycle: ["a", "b", "c"] },
 				nodes: {
-					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "skill", skill: "a", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1527,15 +1557,20 @@ describe("runWorkflow", () => {
 				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
 				presets: { flow: ["research", "code-review", "revise", "commit"] },
 				nodes: {
-					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					research: {
+						kind: "skill",
+						skill: "research",
+						completionStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
 					"code-review": {
 						kind: "skill",
 						skill: "code-review",
-						stopStrategy: "artifact-emit",
+						completionStrategy: "artifact-emit",
 						sessionPolicy: "fresh",
 					},
-					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					revise: { kind: "skill", skill: "revise", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1572,9 +1607,9 @@ describe("runWorkflow", () => {
 				],
 				presets: { cycle: ["a", "b", "c"] },
 				nodes: {
-					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "skill", skill: "a", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1610,9 +1645,9 @@ describe("runWorkflow", () => {
 				],
 				presets: { cycle: ["a", "b", "c"] },
 				nodes: {
-					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "skill", skill: "a", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 
@@ -1640,9 +1675,9 @@ describe("runWorkflow", () => {
 				],
 				presets: { cycle: ["a", "b", "c"] },
 				nodes: {
-					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
-					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "skill", skill: "a", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				},
 			};
 

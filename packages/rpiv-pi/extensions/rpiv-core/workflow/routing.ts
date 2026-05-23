@@ -6,8 +6,9 @@
  * be in the preset sequence at or after the linear successor.
  */
 
-import type { DagEdge, WorkflowDag } from "./dag.js";
+import { type DagEdge, getEdge, type WorkflowDag } from "./dag.js";
 import type { EdgePredicate, PredicateContext } from "./predicates.js";
+import { assertNever } from "./transcript.js";
 import type { RunState } from "./types.js";
 
 /**
@@ -16,7 +17,12 @@ import type { RunState } from "./types.js";
  * - No outgoing edge → linear advance.
  * - `auto` edge      → first target.
  * - `predicate` edge → evaluate predicate, validate target is forward in preset.
- * - `choice` edge    → linear advance (user-prompt routing not yet wired).
+ * - `choice` edge    → linear advance (user-prompt routing not yet wired);
+ *                      preset linearity disambiguates aliased targets.
+ *
+ * Exhaustive over `EdgeCondition` via `assertNever` — a new condition variant
+ * lights up at this single call site instead of silently falling into the
+ * choice arm.
  */
 export function resolveNextStageId(
 	dag: WorkflowDag,
@@ -27,7 +33,7 @@ export function resolveNextStageId(
 ): string | undefined {
 	if (atEndOfPreset(preset, idx)) return undefined;
 
-	const edge = findOutgoingEdge(dag, currentNodeId);
+	const edge = getEdge(dag, currentNodeId);
 	if (!edge) return linearNextOf(preset, idx);
 
 	switch (edge.condition) {
@@ -35,9 +41,13 @@ export function resolveNextStageId(
 			return edge.to[0];
 		case "predicate":
 			return evaluatePredicateEdge(edge, preset, idx, state);
-		default:
-			// "choice" — user-prompt routing not yet wired; fall back to linear.
+		case "choice":
+			// User-prompt routing not yet wired; the choice falls through to
+			// preset linearity, which is also how per-preset aliased targets
+			// (e.g. validate → code-review vs. code-review-large) resolve today.
 			return linearNextOf(preset, idx);
+		default:
+			return assertNever(edge.condition);
 	}
 }
 
@@ -48,9 +58,6 @@ export function resolveNextStageId(
 const atEndOfPreset = (preset: string[], idx: number): boolean => idx + 1 >= preset.length;
 
 const linearNextOf = (preset: string[], idx: number): string | undefined => preset[idx + 1];
-
-const findOutgoingEdge = (dag: WorkflowDag, from: string): DagEdge | undefined =>
-	dag.edges.find((e) => e.from === from);
 
 // ---------------------------------------------------------------------------
 // Predicate evaluation

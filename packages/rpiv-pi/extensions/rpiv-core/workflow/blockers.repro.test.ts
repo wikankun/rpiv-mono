@@ -37,7 +37,7 @@ const makeState = (manifestData?: Record<string, unknown>): RunState => ({
 	originalInput: "",
 	artifactPath: undefined,
 	manifest: manifestData
-		? { kind: "artifact-md", data: manifestData, meta: { skill: "code-review", stage: 1, ts: "", runId: "" } }
+		? { kind: "artifact-md", data: manifestData, meta: { skill: "code-review", stageNumber: 1, ts: "", runId: "" } }
 		: undefined,
 	stagesCompleted: 0,
 	jsonlStage: 0,
@@ -220,7 +220,7 @@ describe("[I7] truncated reply (stopReason=length) must not record as completed"
 		const node: DagNode = {
 			kind: "skill",
 			skill: "implement",
-			stopStrategy: "agent-end",
+			completionStrategy: "agent-end",
 			sessionPolicy: "fresh",
 		};
 		return { edges: [], presets: { tiny: ["implement"] }, nodes: { implement: node } };
@@ -381,11 +381,11 @@ describe("[Q7] non-first stage with no artifactPath halts instead of reusing ori
 			edges: [],
 			presets: { tiny: ["commit", "annotate-guidance"] },
 			nodes: {
-				commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				commit: { kind: "skill", skill: "commit", completionStrategy: "agent-end", sessionPolicy: "fresh" },
 				"annotate-guidance": {
 					kind: "skill",
 					skill: "annotate-guidance",
-					stopStrategy: "agent-end",
+					completionStrategy: "agent-end",
 					sessionPolicy: "fresh",
 				},
 			},
@@ -453,11 +453,11 @@ describe("[I9] phase fanout labels by skill name, not by aliased node id", () =>
 			edges: [],
 			presets: { tiny: ["research", "implement-after-revise"] },
 			nodes: {
-				research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+				research: { kind: "skill", skill: "research", completionStrategy: "artifact-emit", sessionPolicy: "fresh" },
 				"implement-after-revise": {
 					kind: "skill",
 					skill: "implement",
-					stopStrategy: "agent-end",
+					completionStrategy: "agent-end",
 					sessionPolicy: "fresh",
 				},
 			},

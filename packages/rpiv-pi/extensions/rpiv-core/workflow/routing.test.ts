@@ -7,7 +7,7 @@ import type { RunState } from "./types.js";
 const nodeOf = (overrides: Partial<DagNode> = {}): DagNode => ({
 	kind: "skill",
 	skill: "test",
-	stopStrategy: "agent-end",
+	completionStrategy: "agent-end",
 	sessionPolicy: "fresh",
 	...overrides,
 });
@@ -16,7 +16,7 @@ const makeState = (manifestData?: Record<string, unknown>): RunState => ({
 	originalInput: "",
 	artifactPath: undefined,
 	manifest: manifestData
-		? { kind: "artifact-md", data: manifestData, meta: { skill: "source", stage: 1, ts: "", runId: "" } }
+		? { kind: "artifact-md", data: manifestData, meta: { skill: "source", stageNumber: 1, ts: "", runId: "" } }
 		: undefined,
 	stagesCompleted: 0,
 	jsonlStage: 0,

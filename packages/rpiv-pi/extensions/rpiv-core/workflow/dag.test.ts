@@ -130,7 +130,7 @@ describe("validateDag", () => {
 	const nodeOf = (skill: string, overrides: Partial<DagNode> = {}): DagNode => ({
 		kind: "skill",
 		skill,
-		stopStrategy: "agent-end",
+		completionStrategy: "agent-end",
 		sessionPolicy: "fresh",
 		...overrides,
 	});
@@ -207,7 +207,7 @@ describe("validateDag", () => {
 		const cont = skillNode("research", "artifact-emit", { sessionPolicy: "continue" });
 		expect(cont.sessionPolicy).toBe("continue");
 		expect(cont.kind).toBe("skill");
-		expect(cont.stopStrategy).toBe("artifact-emit");
+		expect(cont.completionStrategy).toBe("artifact-emit");
 	});
 
 	it("skillNode() propagates inputSchema from overrides", () => {
@@ -221,16 +221,16 @@ describe("validateDag", () => {
 		expect(node.inputSchema).toBeUndefined();
 	});
 
-	it("rejects invalid stopStrategy value", () => {
+	it("rejects invalid completionStrategy value", () => {
 		const badDag: WorkflowDag = {
 			edges: [],
 			presets: { tiny: ["research"] },
 			nodes: {
-				research: { ...nodeOf("research"), stopStrategy: "garbage" as never },
+				research: { ...nodeOf("research"), completionStrategy: "garbage" as never },
 			},
 		};
 		const { errors } = validateDag(badDag);
-		expect(errors).toEqual([expect.stringContaining(`Node "research" has invalid stopStrategy: "garbage"`)]);
+		expect(errors).toEqual([expect.stringContaining(`Node "research" has invalid completionStrategy: "garbage"`)]);
 	});
 
 	it("reports multiple errors at once", () => {

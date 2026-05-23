@@ -72,7 +72,7 @@ export type PresetName = string;
  *   where the side effect IS the work; no chained artifact is expected and the
  *   chain inherits the prior stage's `state.artifactPath`.
  */
-export type StopStrategy = "artifact-emit" | "agent-end";
+export type CompletionStrategy = "artifact-emit" | "agent-end";
 
 /**
  * Whether the runner spawns a fresh Pi session for the node or continues the
@@ -91,13 +91,13 @@ export type SessionPolicy = "fresh" | "continue";
 /** Fields shared by every node kind. */
 interface NodeCommon {
 	/** How the runner decides this node has finished. */
-	stopStrategy: StopStrategy;
+	completionStrategy: CompletionStrategy;
 	/** Whether the node runs in a new session or continues the prior one. */
 	sessionPolicy: SessionPolicy;
 	/** Optional pre-stage snapshot function. */
 	snapshot?: SnapshotFn;
 	/** Optional post-stage extractor override. When absent, the runner uses
-	 *  the default based on stopStrategy. */
+	 *  the default based on completionStrategy. */
 	extractor?: ExtractorFn;
 	/** TypeBox schema for validating manifest.data post-extraction. */
 	outputSchema?: TSchema;
@@ -156,7 +156,7 @@ export interface WorkflowDag {
  * Built-in DAG. Every node referenced in `edges` or `presets` has a matching
  * entry in `nodes` with its stop strategy and session policy.
  *
- * `stopStrategy` mapping is the protocol contract per skill:
+ * `completionStrategy` mapping is the protocol contract per skill:
  * - Artifact-producing skills (discover/research/design/plan/blueprint/explore/
  *   validate/revise/code-review/outline-test-cases) → `"artifact-emit"`.
  *   These skills' SKILL.md Step 7-ish writes `.rpiv/artifacts/<bucket>/<file>.md`.
@@ -174,7 +174,7 @@ export interface WorkflowDag {
  */
 export const skillNode = (
 	skill: string,
-	stopStrategy: StopStrategy,
+	completionStrategy: CompletionStrategy,
 	overrides?: {
 		sessionPolicy?: SessionPolicy;
 		snapshot?: SnapshotFn;
@@ -188,7 +188,7 @@ export const skillNode = (
 ): SkillNode => ({
 	kind: "skill",
 	skill,
-	stopStrategy,
+	completionStrategy,
 	sessionPolicy: overrides?.sessionPolicy ?? "fresh",
 	snapshot: overrides?.snapshot,
 	extractor: overrides?.extractor,
@@ -336,7 +336,7 @@ export const WORKFLOW_DAG: WorkflowDag = {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_STOP_STRATEGIES: ReadonlySet<StopStrategy> = new Set(["artifact-emit", "agent-end"] as const);
+const VALID_COMPLETION_STRATEGIES: ReadonlySet<CompletionStrategy> = new Set(["artifact-emit", "agent-end"] as const);
 const VALID_SESSION_POLICIES: ReadonlySet<SessionPolicy> = new Set(["fresh", "continue"] as const);
 
 /** Outcome of validating a DAG: errors block startup; warnings are advisory. */
@@ -403,16 +403,16 @@ function collectEdgeIssues(dag: WorkflowDag, errors: string[], warnings: string[
 /** Per-node shape validation: kinds, strategies, schemas, retry bounds, skill membership. */
 function collectNodeErrors(dag: WorkflowDag, errors: string[]): void {
 	for (const [id, node] of Object.entries(dag.nodes)) {
-		checkStopStrategy(id, node, errors);
+		checkCompletionStrategy(id, node, errors);
 		checkSessionPolicy(id, node, errors);
 		checkValidationConfig(id, node, errors);
 		checkNodeKind(id, node, errors);
 	}
 }
 
-function checkStopStrategy(id: string, node: DagNode, errors: string[]): void {
-	if (!VALID_STOP_STRATEGIES.has(node.stopStrategy)) {
-		errors.push(`Node "${id}" has invalid stopStrategy: "${node.stopStrategy}"`);
+function checkCompletionStrategy(id: string, node: DagNode, errors: string[]): void {
+	if (!VALID_COMPLETION_STRATEGIES.has(node.completionStrategy)) {
+		errors.push(`Node "${id}" has invalid completionStrategy: "${node.completionStrategy}"`);
 	}
 }
 

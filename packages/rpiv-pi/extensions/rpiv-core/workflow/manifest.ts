@@ -21,8 +21,10 @@ import type { RunState } from "./types.js";
 export interface ManifestMeta {
 	/** Skill name that produced this stage's output. */
 	skill: string;
-	/** 1-based stage index within the workflow run. */
-	stage: number;
+	/** 1-based stage index within the workflow run.
+	 *  Matches `WorkflowStage.stageNumber` so adjacent durable shapes use the
+	 *  same key for the same concept. */
+	stageNumber: number;
 	/** ISO-8601 timestamp of extraction completion. */
 	ts: string;
 	/** Duplicated from header for ergonomic JSONL row reads. */
@@ -180,17 +182,17 @@ export type ExtractorFn = (ctx: ExtractorCtx) => Promise<ExtractorResult> | Extr
 
 /**
  * Wrap an extractor payload in a full `Manifest` envelope, sourcing
- * `meta.{skill,stage,ts,runId}` from the extractor context + caller-supplied
- * skill/timestamp. The single place metadata is authored.
+ * `meta.{skill,stageNumber,ts,runId}` from the extractor context +
+ * caller-supplied skill/timestamp. The single place metadata is authored.
  */
 export function finalizeManifest(
 	payload: ExtractorPayload,
-	ctx: { skill: string; stage: number; ts: string; runId: string },
+	ctx: { skill: string; stageNumber: number; ts: string; runId: string },
 ): Manifest {
 	return {
 		kind: payload.kind,
 		artifact_path: payload.artifact_path,
 		data: payload.data,
-		meta: { skill: ctx.skill, stage: ctx.stage, ts: ctx.ts, runId: ctx.runId },
+		meta: { skill: ctx.skill, stageNumber: ctx.stageNumber, ts: ctx.ts, runId: ctx.runId },
 	};
 }

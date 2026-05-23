@@ -171,6 +171,11 @@ export async function runWorkflow(
 /**
  * Build the prompt + status label + audit label for a node based on its kind.
  * Only `kind: "skill"` is supported today; future variants slot in here.
+ *
+ * The default arm currently runtime-throws rather than `assertNever(node)`
+ * because `DagNode = SkillNode` is a union of one — TS won't narrow `node`
+ * to `never` after the only case, so the exhaustiveness helper doesn't
+ * typecheck. Once a second variant lands, drop the cast + use assertNever.
  */
 function dispatchNode(node: DagNode, inputForStage: string): { prompt: string; skillLabel: string } {
 	switch (node.kind) {
@@ -180,12 +185,6 @@ function dispatchNode(node: DagNode, inputForStage: string): { prompt: string; s
 				skillLabel: node.skill,
 			};
 		default: {
-			// Last-resort guard — validateDag should have rejected unknown
-			// kinds at config-load time. With only one variant in `DagNode`
-			// today the TypeScript exhaustiveness check via `const x: never =
-			// node` can't be expressed without an error; once chat/script
-			// kinds land, add their cases and switch this default to
-			// `assertNever(node)` to get type-level narrowing.
 			const unknownKind = (node as { kind?: unknown }).kind;
 			throw new Error(`runStage: unsupported node kind: ${String(unknownKind)}`);
 		}

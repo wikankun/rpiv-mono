@@ -19,6 +19,7 @@ import { runWorkflow } from "./runner.js";
 
 const MSG_INTERACTIVE_ONLY = "/rpiv requires interactive mode";
 const MSG_USAGE = "Usage: /rpiv [preset] <feature description>";
+const ERR_WORKFLOW_THROW = (reason: string) => `/rpiv: workflow runner failed unexpectedly: ${reason}`;
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -102,5 +103,15 @@ async function handleWorkflowCommand(pi: ExtensionAPI, args: string, ctx: Extens
 		return;
 	}
 
-	await runWorkflow(ctx, { preset, input, dag: config.dag, pi });
+	// runWorkflow's documented surface returns a result envelope rather than
+	// throwing — but a misconfigured DAG, a thrown predicate, or an SDK
+	// regression could still bubble. Surface unexpected throws as a user-
+	// visible error instead of letting Pi's command dispatcher print a raw
+	// stack trace.
+	try {
+		await runWorkflow(ctx, { preset, input, dag: config.dag, pi });
+	} catch (e) {
+		const reason = e instanceof Error ? e.message : String(e);
+		ctx.ui.notify(ERR_WORKFLOW_THROW(reason), "error");
+	}
 }
