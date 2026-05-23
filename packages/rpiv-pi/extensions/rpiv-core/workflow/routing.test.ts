@@ -22,6 +22,7 @@ const makeState = (manifestData?: Record<string, unknown>): RunState => ({
 	jsonlStage: 0,
 	success: false,
 	error: undefined,
+	backwardJumps: 0,
 });
 
 describe("resolveNextStageId", () => {

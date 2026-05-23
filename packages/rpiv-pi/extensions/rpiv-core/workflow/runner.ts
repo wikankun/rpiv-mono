@@ -39,7 +39,10 @@ import { WORKFLOW_DAG } from "./dag.js";
 import { countPhases, runImplementPhases } from "./implement-phases.js";
 import type { Manifest } from "./manifest.js";
 import {
+	ERR_BACKWARD_JUMP_EXHAUSTED,
 	ERR_INPUT_VALIDATION_FAILED,
+	MAX_BACKWARD_JUMPS,
+	MSG_BACKWARD_JUMP_EXHAUSTED,
 	MSG_INPUT_VALIDATION_FAILED,
 	MSG_WORKFLOW_COMPLETE,
 	STATUS_KEY,
@@ -73,6 +76,8 @@ export interface RunWorkflowOptions {
 	dag?: WorkflowDag;
 	/** ExtensionAPI — needed for "continue" stages that call pi.sendUserMessage(). */
 	pi?: ExtensionAPI;
+	/** Max backward jumps before halting. Defaults to MAX_BACKWARD_JUMPS. */
+	maxBackwardJumps?: number;
 }
 
 /** Result of a completed workflow run. */
@@ -134,7 +139,10 @@ export async function runWorkflow(
 		jsonlStage: 0,
 		success: false,
 		error: undefined as string | undefined,
+		backwardJumps: 0,
 	};
+
+	const maxBackwardJumps = options.maxBackwardJumps ?? MAX_BACKWARD_JUMPS;
 
 	// Mark every session_start fired by an inner stage as a "child" of this
 	// workflow so handlers in rpiv-core and rpiv-advisor can suppress the
@@ -142,7 +150,7 @@ export async function runWorkflow(
 	// finally so a thrown stage doesn't strand the flag.
 	markChildSession();
 	try {
-		await runStage(ctx, 0, { cwd, runId, dag, stageIds, totalStages, state, pi: options.pi });
+		await runStage(ctx, 0, { cwd, runId, dag, stageIds, totalStages, state, pi: options.pi, maxBackwardJumps });
 	} finally {
 		clearChildSession();
 	}
@@ -320,6 +328,18 @@ async function runStage(curCtx: ChainCtx, idx: number, run: RunContext): Promise
 						decision: nextId,
 						ts: nowIso(),
 					});
+				}
+
+				// --- Backward-jump cycle guard ---
+				if (nextIdx <= idx) {
+					state.backwardJumps++;
+					if (state.backwardJumps > run.maxBackwardJumps) {
+						recordStage(cwd, runId, { skill: skillLabel, status: "failed", ts: nowIso() }, state);
+						freshCtx.ui.setStatus(STATUS_KEY, undefined);
+						freshCtx.ui.notify(MSG_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps), "error");
+						state.error = ERR_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps);
+						return;
+					}
 				}
 
 				await runStage(freshCtx, nextIdx, run);

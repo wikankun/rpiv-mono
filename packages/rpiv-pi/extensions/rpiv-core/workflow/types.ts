@@ -47,6 +47,8 @@ export interface RunState {
 	success: boolean;
 	/** Set when a stage halts the chain — surfaces in `RunWorkflowResult`. */
 	error: string | undefined;
+	/** Number of times the chain has jumped backward (nextIdx <= idx). */
+	backwardJumps: number;
 }
 
 /** Per-run context that the chain carries from stage to stage. */
@@ -61,6 +63,8 @@ export interface RunContext {
 	state: RunState;
 	/** ExtensionAPI instance — needed for "continue" stages that call pi.sendUserMessage(). */
 	pi?: ExtensionAPI;
+	/** Max backward jumps before halting (threaded from RunWorkflowOptions). */
+	maxBackwardJumps: number;
 }
 
 /**

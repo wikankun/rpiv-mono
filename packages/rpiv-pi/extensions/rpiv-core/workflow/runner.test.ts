@@ -1394,6 +1394,260 @@ describe("runWorkflow", () => {
 			});
 		});
 	});
+
+	describe("backward-jump cycle guard", () => {
+		it("halts the chain when backward jumps exceed MAX_BACKWARD_JUMPS", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a3.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b3.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					// a(0) first pass — routes to b(1) forward
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					// b(1) first pass — auto edge to a(0), backward jump 1 (counter→1)
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+					// a(0) second pass — routes to b(1) forward
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					// b(1) second pass — auto edge to a(0), backward jump 2 (counter→2)
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
+					// a(0) third pass — routes to b(1) forward
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a3.md")] },
+					// b(1) third pass — auto edge to a(0), backward jump 3 (counter→3 > MAX=2), HALT
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b3.md")] },
+				],
+			});
+
+			const dag: WorkflowDag = {
+				edges: [
+					{ from: "a", to: ["b"], condition: "auto" },
+					{ from: "b", to: ["a"], condition: "auto" },
+				],
+				presets: { cycle: ["a", "b", "c"] },
+				nodes: {
+					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			const result = await runWorkflow(chain.ctx, { preset: "cycle", input: "x", dag });
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/backward-jump limit exceeded/i);
+			expect(result.error).toMatch(/3.*max 2/);
+			expect(result.stagesCompleted).toBe(6); // 3×a + 3×b
+			expect(chain.remaining()).toBe(0); // All steps consumed
+
+			const { stages } = readState(tmpDir);
+			const failedRows = stages.filter((s) => s.status === "failed");
+			expect(failedRows).toHaveLength(1);
+			expect(failedRows[0]?.skill).toBe("b");
+
+			const exhaustionNotice = chain.notifications.find((n) => /backward-jump limit exceeded/i.test(n.msg));
+			expect(exhaustionNotice?.level).toBe("error");
+		});
+
+		it("allows backward jumps within limit before halting on next exceedance", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					// a(0) first pass
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					// b(1) first pass, backward jump 1 (counter→1 ≤ maxBackwardJumps:1)
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+					// a(0) second pass
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					// b(1) second pass, backward jump 2 (counter→2 > maxBackwardJumps:1), HALT
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
+				],
+			});
+
+			const dag: WorkflowDag = {
+				edges: [
+					{ from: "a", to: ["b"], condition: "auto" },
+					{ from: "b", to: ["a"], condition: "auto" },
+				],
+				presets: { cycle: ["a", "b", "c"] },
+				nodes: {
+					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			// With maxBackwardJumps: 1, the first backward jump is allowed (counter 1 ≤ 1).
+			// The chain progresses: a, b, a, b (4 stages). The 2nd backward jump halts.
+			const result = await runWorkflow(chain.ctx, {
+				preset: "cycle",
+				input: "x",
+				dag,
+				maxBackwardJumps: 1,
+			});
+
+			// The first backward jump was ALLOWED — 4 stages completed before halt.
+			// This proves the guard does NOT block backward jumps within the limit.
+			expect(result.stagesCompleted).toBe(4); // a, b, a, b
+			expect(result.success).toBe(false); // Still fails because 2nd backward jump exceeds limit
+		});
+
+		it("does not count forward jumps as backward jumps", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/code-review/cr.md", "---\nsevereIssueCount: 0\n---\n");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/code-review/cr.md")] },
+					{ branch: [mockAssistantMessage("Committed.")] },
+				],
+			});
+
+			const predicate = (ctx: PredicateContext) => {
+				const count = Number((ctx.manifest?.data as Record<string, unknown>)?.severeIssueCount ?? 0);
+				return count > 0 ? "revise" : "commit";
+			};
+
+			const dag: WorkflowDag = {
+				edges: [{ from: "code-review", to: ["revise", "commit"], condition: "predicate", predicate }],
+				presets: { flow: ["research", "code-review", "revise", "commit"] },
+				nodes: {
+					research: { kind: "skill", skill: "research", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					"code-review": {
+						kind: "skill",
+						skill: "code-review",
+						stopStrategy: "artifact-emit",
+						sessionPolicy: "fresh",
+					},
+					revise: { kind: "skill", skill: "revise", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					commit: { kind: "skill", skill: "commit", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			const result = await runWorkflow(chain.ctx, { preset: "flow", input: "x", dag });
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(3);
+		});
+
+		it("respects custom maxBackwardJumps from RunWorkflowOptions", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					// a(0) first pass
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					// b(1) first pass, backward jump 1 (counter→1)
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+					// a(0) second pass
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					// b(1) second pass, backward jump 2 (counter→2 > maxBackwardJumps: 1), HALT
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
+				],
+			});
+
+			const dag: WorkflowDag = {
+				edges: [
+					{ from: "a", to: ["b"], condition: "auto" },
+					{ from: "b", to: ["a"], condition: "auto" },
+				],
+				presets: { cycle: ["a", "b", "c"] },
+				nodes: {
+					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			const result = await runWorkflow(chain.ctx, {
+				preset: "cycle",
+				input: "x",
+				dag,
+				maxBackwardJumps: 1,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/backward-jump limit exceeded/i);
+			expect(result.error).toMatch(/2.*max 1/);
+			expect(result.stagesCompleted).toBe(4); // 2×a + 2×b
+		});
+
+		it("clears status line on backward-jump exhaustion", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+				],
+			});
+
+			const dag: WorkflowDag = {
+				edges: [
+					{ from: "a", to: ["b"], condition: "auto" },
+					{ from: "b", to: ["a"], condition: "auto" },
+				],
+				presets: { cycle: ["a", "b", "c"] },
+				nodes: {
+					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			await runWorkflow(chain.ctx, { preset: "cycle", input: "x", dag, maxBackwardJumps: 0 });
+
+			expect(chain.statusUpdates.at(-1)).toEqual({ key: "rpiv-workflow", value: undefined });
+		});
+
+		it("records a failed stage in JSONL on backward-jump exhaustion", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+				],
+			});
+
+			const dag: WorkflowDag = {
+				edges: [
+					{ from: "a", to: ["b"], condition: "auto" },
+					{ from: "b", to: ["a"], condition: "auto" },
+				],
+				presets: { cycle: ["a", "b", "c"] },
+				nodes: {
+					a: { kind: "skill", skill: "a", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					b: { kind: "skill", skill: "b", stopStrategy: "artifact-emit", sessionPolicy: "fresh" },
+					c: { kind: "skill", skill: "c", stopStrategy: "agent-end", sessionPolicy: "fresh" },
+				},
+			};
+
+			await runWorkflow(chain.ctx, { preset: "cycle", input: "x", dag, maxBackwardJumps: 0 });
+
+			const { stages } = readState(tmpDir);
+			const failedRows = stages.filter((s) => s.status === "failed");
+			expect(failedRows).toHaveLength(1);
+			expect(failedRows[0]?.skill).toBe("b");
+		});
+	});
 });
 
 describe("transcript offset helpers", () => {

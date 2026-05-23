@@ -36,3 +36,12 @@ export const MSG_INPUT_VALIDATION_FAILED = (currentSkill: string, prevSkill: str
 	`✗ ${currentSkill} input validation failed — upstream ${prevSkill} produced invalid data`;
 export const ERR_INPUT_VALIDATION_FAILED = (currentSkill: string, prevSkill: string, failures: string) =>
 	`Input validation failed for '${currentSkill}': upstream '${prevSkill}' produced invalid data: ${failures}`;
+
+/** Hard cap on backward-jump iterations (prevents infinite recursion). */
+export const MAX_BACKWARD_JUMPS = 2;
+
+export const MSG_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
+	`rpiv: backward-jump limit exceeded (${jumps}/${max}) — stopping workflow to prevent infinite loop`;
+
+export const ERR_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
+	`Backward-jump limit exceeded: ${jumps} backward jumps (max ${max})`;
