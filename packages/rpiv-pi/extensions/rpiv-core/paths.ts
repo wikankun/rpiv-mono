@@ -25,28 +25,38 @@ export const BUNDLED_AGENTS_DIR = join(PACKAGE_ROOT, "agents");
 export const BUNDLED_SKILLS_DIR = join(PACKAGE_ROOT, "skills");
 
 /**
+ * Enumerate skill-directory names under `dir`. Fail-soft: returns an empty
+ * Set on any read failure (stripped install, EACCES, missing directory) AND
+ * logs a `[rpiv-pi]`-prefixed warning so the failure is diagnosable. Without
+ * the log, downstream `validateDag` rejects every skill node as "unknown
+ * bundled skill" and the user has no signal that the directory listing
+ * itself failed.
+ *
+ * Exported so tests can drive the failure path against a deterministic dir;
+ * production callers use the `BUNDLED_SKILL_NAMES` constant below.
+ */
+export function loadBundledSkillNames(dir: string): ReadonlySet<string> {
+	try {
+		return new Set(
+			readdirSync(dir, { withFileTypes: true })
+				.filter((e) => e.isDirectory())
+				.map((e) => e.name),
+		);
+	} catch (e) {
+		const reason = e instanceof Error ? e.message : String(e);
+		console.warn(`[rpiv-pi] could not enumerate bundled skills under ${dir}: ${reason}`);
+		return new Set<string>();
+	}
+}
+
+/**
  * Set of bundled-skill directory names under `BUNDLED_SKILLS_DIR`. Computed
- * once at module load via a single `readdirSync`. Used by:
+ * once at module load via `loadBundledSkillNames`. Used by:
  *
  *   - `workflow/dag.ts` — DAG validation: skill-kind nodes must reference a
  *     bundled skill.
  *   - `session-hooks.ts` — `[skill] rpiv:` status-line gating: only skills
  *     owned by rpiv-pi claim the status line; user-supplied or third-party
  *     skills passthrough.
- *
- * Both consumers used to compute this set independently; unifying here keeps
- * a single source of truth for "what does rpiv-pi ship" and avoids a second
- * directory walk at startup. Fail-soft: empty set on read failure so callers
- * degrade to "nothing is bundled" rather than crashing.
  */
-export const BUNDLED_SKILL_NAMES: ReadonlySet<string> = (() => {
-	try {
-		return new Set(
-			readdirSync(BUNDLED_SKILLS_DIR, { withFileTypes: true })
-				.filter((e) => e.isDirectory())
-				.map((e) => e.name),
-		);
-	} catch {
-		return new Set<string>();
-	}
-})();
+export const BUNDLED_SKILL_NAMES: ReadonlySet<string> = loadBundledSkillNames(BUNDLED_SKILLS_DIR);
