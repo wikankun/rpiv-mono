@@ -109,6 +109,12 @@ async function onSessionShutdown(): Promise<void> {
 	resetInjectedMarker();
 }
 
+// Intentionally NOT gated by `isChildSession()` — per-tool-call guidance
+// injection and the git-context cache invalidation are stage-level
+// concerns, not banner notifications. Child sessions need both: the
+// guidance injector runs once per tool call (so each child stage sees
+// the right surface), and a bash command issued mid-stage must dirty
+// the cache for the next stage's `before_agent_start` git-context read.
 async function onToolCall(event: ToolCallEvent, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	handleToolCallGuidance(event, ctx, pi);
 	if (isToolCallEventType("bash", event) && isGitMutatingCommand(event.input.command)) {
@@ -116,6 +122,11 @@ async function onToolCall(event: ToolCallEvent, ctx: ExtensionContext, pi: Exten
 	}
 }
 
+// Also intentionally not gated — `rpiv: <skill>` status is a per-stage
+// display string (each stage owns the status line during its run), and
+// the git-context injection is keyed off `takeGitContextIfChanged`
+// which is its own dedup layer. Only `onSessionStart`'s startup banner
+// needs the child-session suppressor.
 async function onBeforeAgentStart(
 	event: BeforeAgentStartEvent,
 	ctx: ExtensionContext,
