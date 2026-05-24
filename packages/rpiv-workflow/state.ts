@@ -170,14 +170,26 @@ export function readAllStages(cwd: string, runId: string): WorkflowStage[] {
 // Routing audit rows
 // ---------------------------------------------------------------------------
 
-export function appendRoutingDecision(cwd: string, runId: string, row: RoutingAuditRow): void {
+/**
+ * Returns true on successful write — callers surface the failure to the user
+ * (warning notification + result-envelope flag) so an absent row is not silently
+ * conflated with "deterministic edge, no decision recorded." Unlike `appendStage`,
+ * a dropped routing row does NOT halt the chain: the routing decision has
+ * already been made in memory (see runner.ts `nextNode`), and no in-memory
+ * state mirrors routing rows the way it mirrors stage rows — routing is
+ * write-only telemetry. Halting on telemetry failure would punish the user
+ * for transient disk weather without preserving any invariant.
+ */
+export function appendRoutingDecision(cwd: string, runId: string, row: RoutingAuditRow): boolean {
 	try {
 		const dir = resolveWorkflowsDir(cwd);
 		mkdirSync(dir, { recursive: true });
 		const filePath = resolveStateFile(cwd, runId);
 		appendFileSync(filePath, `${JSON.stringify(row)}\n`, "utf-8");
+		return true;
 	} catch (e) {
 		console.warn(`[rpiv-pi] workflow state: ${e instanceof Error ? e.message : String(e)}`);
+		return false;
 	}
 }
 

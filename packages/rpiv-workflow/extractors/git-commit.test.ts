@@ -46,6 +46,7 @@ const snapshotCtx = (cwd: string): SnapshotCtx => ({
 		success: false,
 		error: undefined,
 		backwardJumps: 0,
+		droppedRoutingRows: [],
 	},
 });
 

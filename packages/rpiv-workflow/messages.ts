@@ -39,7 +39,15 @@ export const MSG_MISSING_ARTIFACT = (currentSkill: string) =>
 export const ERR_MISSING_ARTIFACT = (currentSkill: string, stageNumber: number) =>
 	`Stage ${stageNumber} (${currentSkill}) has no upstream artifactPath; only stage 1 may consume the user's original input`;
 
-/** Hard cap on backward-jump iterations (prevents infinite recursion). */
+/**
+ * Per-loop cap on decision-edge retries. A "backward jump" is a *decision*
+ * resolving to an already-visited node — i.e. the user's predicate chose to
+ * retry. Deterministic edges through a cycle (the loop body) are NOT
+ * counted; the budget is per retry iteration, not per hop. A decision
+ * escaping the loop (target not visited) resets the counter so each
+ * independent loop in the workflow gets its own fresh budget. With 2: the
+ * loop runs once unconditionally and may retry up to 2 more times.
+ */
 export const MAX_BACKWARD_JUMPS = 2;
 
 export const MSG_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
@@ -55,3 +63,36 @@ export const ERR_AUDIT_WRITE_FAILED = (skill: string) =>
 
 export const MSG_CHAIN_ADVANCE_FAILED = (fromNode: string, reason: string) =>
 	`✗ chain advance after ${fromNode} failed: ${reason} — stopping workflow`;
+
+/**
+ * Stage threw before it could record its own audit row — covers
+ * `enforceSessionInvariants` violations, session-machinery errors, and any
+ * other path that escapes `runStage` directly. Distinguished from
+ * `MSG_CHAIN_ADVANCE_FAILED` (which is about an edge throwing AFTER a stage
+ * succeeded) — the user needs to see *which* stage failed to start, not
+ * which one preceded the failure.
+ */
+export const MSG_STAGE_THREW = (skill: string, reason: string) =>
+	`✗ stage ${skill} failed to start: ${reason} — stopping workflow`;
+
+/**
+ * Stage references a Pi skill that isn't registered with the running Pi
+ * instance. Surfaced loudly here instead of letting the `/skill:<name>` text
+ * leak verbatim into the LLM context — `rpiv-args` is the only expander on
+ * the programmatic dispatch path (`expandPromptTemplates: false`), so an
+ * unknown skill name would otherwise reach the model as a bare user-message
+ * imperative outside the `<skill>...</skill>` contract.
+ */
+export const MSG_SKILL_NOT_REGISTERED = (skill: string) =>
+	`✗ ${skill} is not a registered Pi skill — stopping workflow`;
+export const ERR_SKILL_NOT_REGISTERED = (skill: string, stageNumber: number) =>
+	`Stage ${stageNumber} requires Pi skill "${skill}" but no skill by that name is registered with Pi (check installed sibling packages and \`pi.skills\` manifest entries)`;
+
+/**
+ * Notified live when a routing-decision row could not be appended. The chain
+ * continues (the decision has already been made), but the user must know the
+ * audit trail for this run has a gap — otherwise an absent row reads as
+ * "no decision was made" rather than "decision made, write dropped."
+ */
+export const MSG_ROUTING_AUDIT_DROPPED = (fromNode: string, decision: string) =>
+	`⚠ rpiv: routing decision ${fromNode} → ${decision} not persisted to audit trail (continuing run)`;

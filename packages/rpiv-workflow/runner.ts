@@ -23,11 +23,15 @@ import {
 	ERR_BACKWARD_JUMP_EXHAUSTED,
 	ERR_INPUT_VALIDATION_FAILED,
 	ERR_MISSING_ARTIFACT,
+	ERR_SKILL_NOT_REGISTERED,
 	MAX_BACKWARD_JUMPS,
 	MSG_BACKWARD_JUMP_EXHAUSTED,
 	MSG_CHAIN_ADVANCE_FAILED,
 	MSG_INPUT_VALIDATION_FAILED,
 	MSG_MISSING_ARTIFACT,
+	MSG_ROUTING_AUDIT_DROPPED,
+	MSG_SKILL_NOT_REGISTERED,
+	MSG_STAGE_THREW,
 	MSG_WORKFLOW_COMPLETE,
 	STATUS_KEY,
 	STATUS_STAGE,
@@ -59,6 +63,15 @@ export interface RunWorkflowResult {
 	success: boolean;
 	lastArtifact?: string;
 	error?: string;
+	/**
+	 * Routing decisions made in memory but whose JSONL audit row failed to
+	 * persist. Empty in the common case. Surfaced so consumers reading the
+	 * run's JSONL can disambiguate a missing routing row ("deterministic
+	 * edge — never written") from a dropped one ("decision was made, write
+	 * failed"). The run still succeeds — routing rows are telemetry, not
+	 * reconstruction inputs.
+	 */
+	droppedRoutingRows?: Array<{ fromStage: number; fromNode: string; decision: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,11 +116,17 @@ export async function runWorkflow(
 		success: false,
 		error: undefined,
 		backwardJumps: 0,
+		droppedRoutingRows: [],
 	};
 
 	const maxBackwardJumps = options.maxBackwardJumps ?? MAX_BACKWARD_JUMPS;
 
-	await runStage(ctx, workflow.start, 0, {
+	// runStageProtected (not bare runStage) so a throw out of the start node —
+	// notably enforceSessionInvariants violations — records a JSONL failure
+	// row keyed on the failing stage rather than leaving a header-only file
+	// that every shape-filtered reader skips. Same wrapper used by
+	// advanceChain for downstream stages.
+	await runStageProtected(ctx, workflow.start, 0, {
 		cwd,
 		runId,
 		workflow,
@@ -122,6 +141,7 @@ export async function runWorkflow(
 		success: state.success,
 		lastArtifact: state.artifactPath,
 		error: state.error,
+		...(state.droppedRoutingRows.length > 0 ? { droppedRoutingRows: state.droppedRoutingRows } : {}),
 	};
 }
 
@@ -178,18 +198,49 @@ function buildPrompt(skill: string, inputForStage: string): string {
  * side effect and returns, or returns `false` to signal a halt — the caller
  * then short-circuits.
  */
+/**
+ * Wraps `runStage` so a thrown stage records a JSONL failure row attributed
+ * to the stage that actually threw — not to the prior stage in the chain.
+ * Used by both `runWorkflow` (start node) and `advanceChain` (next node) so
+ * there's exactly one place that translates "stage threw" → state.error +
+ * JSONL row. Without this, the start-stage call leaves a header-only file
+ * and `advanceChain`'s own catch mis-attributes the failure to the prior
+ * stage (`currentName` is still bound to the iteration that just succeeded).
+ *
+ * `runStage` only throws for invariant/machinery failures (e.g.
+ * `enforceSessionInvariants`); expected failures are recorded inside via
+ * `recordStage` + `state.error` and return normally.
+ */
+async function runStageProtected(curCtx: ChainCtx, name: string, idx: number, run: RunContext): Promise<void> {
+	try {
+		await runStage(curCtx, name, idx, run);
+	} catch (e) {
+		const { cwd, runId, state } = run;
+		curCtx.ui.setStatus(STATUS_KEY, undefined);
+		const reason = e instanceof Error ? e.message : String(e);
+		recordStage(cwd, runId, { skill: name, status: "failed", ts: nowIso() }, state);
+		curCtx.ui.notify(MSG_STAGE_THREW(name, reason), "error");
+		state.error = reason;
+	}
+}
+
 async function runStage(curCtx: ChainCtx, currentName: string, idx: number, run: RunContext): Promise<void> {
 	const stage = resolveStageNode(currentName, idx, run);
 
 	if (await tryPhaseFanout(curCtx, stage, idx, run)) return;
 	if (!ensureUpstreamArtifact(curCtx, stage, currentName, run)) return;
+	// Invariants (authoring-time-knowable, throw) fire before the registry
+	// check (runtime-state, fail-soft halt). Ordering matters: an
+	// implement+continue node should surface its structural violation
+	// regardless of whether the runtime skill registry happens to recognise
+	// the name.
+	enforceSessionInvariants(stage, currentName, run);
+	if (!ensureSkillRegistered(curCtx, stage, run)) return;
 
 	const isStart = currentName === run.workflow.start;
 	const inputForStage = isStart ? run.state.originalInput : run.state.artifactPath!;
 	const prompt = buildPrompt(stage.skill, inputForStage);
 	curCtx.ui.setStatus(STATUS_KEY, STATUS_STAGE(stage.stageNumber, run.totalStages, stage.skill));
-
-	enforceSessionInvariants(stage, currentName, run);
 	const branchOffset = computeBranchOffset(curCtx, stage.node);
 
 	if (!runStageInputValidation(curCtx, stage, run)) return;
@@ -259,6 +310,44 @@ async function tryPhaseFanout(curCtx: ChainCtx, stage: ResolvedStage, idx: numbe
 		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
 	});
 	return true;
+}
+
+/**
+ * Verify `stage.skill` resolves to a Pi-registered skill BEFORE the prompt
+ * is dispatched. The workflow runner emits `/skill:<name>` text via
+ * `sendUserMessage` (the programmatic path), which goes through
+ * `prompt({expandPromptTemplates: false})` — meaning Pi's built-in
+ * `_expandSkillCommand` is skipped and `rpiv-args` is the ONLY expander.
+ * If the skill isn't registered, `rpiv-args` returns `{action:"continue"}`
+ * and the raw `/skill:<name> …` text reaches the LLM as a bare user-message
+ * imperative outside the `<skill>...</skill>` contract — silent LLM-prompt
+ * corruption with no diagnostic. Catching it here turns that silent failure
+ * into a properly-attributed stage halt.
+ *
+ * `pi` is optional on `RunWorkflowOptions`; when absent we skip the check
+ * (we have no command registry to consult). Programmatic callers that opt
+ * out of pi opt out of this defense too — same fail-soft posture the rest
+ * of the pi-optional surface uses.
+ */
+function ensureSkillRegistered(curCtx: ChainCtx, stage: ResolvedStage, run: RunContext): boolean {
+	if (!run.pi) return true;
+
+	const registered = new Set<string>();
+	for (const cmd of run.pi.getCommands()) {
+		if (cmd.source !== "skill") continue;
+		// Pi prefixes skill-source commands with "skill:" (agent-session.js:1699);
+		// match args.ts:333's slice so the comparison key is the bare skill name.
+		const name = cmd.name.startsWith("skill:") ? cmd.name.slice("skill:".length) : cmd.name;
+		registered.add(name);
+	}
+	if (registered.has(stage.skill)) return true;
+
+	recordStage(run.cwd, run.runId, { skill: stage.skill, status: "failed", ts: nowIso() }, run.state);
+	curCtx.ui.setStatus(STATUS_KEY, undefined);
+	curCtx.ui.notify(MSG_SKILL_NOT_REGISTERED(stage.skill), "error");
+	notifyPartialArtifacts(curCtx, run.cwd, run.runId);
+	run.state.error = ERR_SKILL_NOT_REGISTERED(stage.skill, stage.stageNumber);
+	return false;
 }
 
 /**
@@ -335,11 +424,22 @@ async function captureStageSnapshot(node: NodeDef, idx: number, run: RunContext)
  * EdgeFn throwing lands in `state.error` rather than bubbling out of
  * withSession.
  *
- * Backward-jump semantics: a "backward jump" is re-entering a node that
- * has already been executed in this run. Adding `currentName` to `visited`
- * BEFORE consulting `nextNode` means a self-edge (`currentName === nextName`)
- * counts from the first hop — which matches the spirit of "re-entry"; the
- * stage that just finished IS being re-entered.
+ * Backward-jump semantics: a "backward jump" is a *decision-edge* resolving
+ * to an already-visited node — i.e. a deliberate retry choice. Deterministic
+ * forward edges that pass through a cycle (the body of a multi-node loop)
+ * are NOT counted, because they're consequences of the retry decision rather
+ * than independent retry events. Without this distinction the cap would
+ * trip mid-loop on any cycle longer than 2 nodes, burning the entire budget
+ * on a single retry iteration's deterministic hops.
+ *
+ * Reset-on-escape: a decision resolving to a NOT-visited node escapes the
+ * current cycle (we've moved to fresh territory), so the counter resets.
+ * This gives each independent loop in a workflow its own retry budget
+ * instead of a single global pool that drains across unrelated loops.
+ *
+ * Trip attribution targets `nextName` (the stage the guard refused to
+ * re-enter), not `currentName` (which already completed successfully).
+ * Same lesson as Q12+IB.
  */
 async function advanceChain(curCtx: ChainCtx, currentName: string, idx: number, run: RunContext): Promise<void> {
 	const { cwd, runId, workflow, state } = run;
@@ -357,37 +457,61 @@ async function advanceChain(curCtx: ChainCtx, currentName: string, idx: number, 
 		}
 
 		// Predicate-mediated transitions get audited; deterministic auto-edges
-		// don't (no decision was made).
+		// don't (no decision was made). The decision itself has already been
+		// taken by `nextNode` above — a dropped audit row degrades the trail
+		// but does NOT invalidate the run, so on write failure we surface the
+		// gap (live notify + result-envelope field) and continue. Halting here
+		// would discard a correct in-memory decision to recover from transient
+		// disk weather — the asymmetry with `recordStage` is deliberate (stage
+		// rows are reconstruction inputs; routing rows are pure telemetry).
 		if (wasDecision) {
-			appendRoutingDecision(cwd, runId, {
+			const fromStage = idx + 1;
+			const wrote = appendRoutingDecision(cwd, runId, {
 				type: "routing",
-				fromStage: idx + 1,
+				fromStage,
 				fromNode: currentName,
 				decision: nextName,
 				ts: nowIso(),
 			});
-		}
-
-		// Backward-jump guard: a re-entry into an already-executed node is
-		// "backward". The revise → implement loop legitimately triggers this;
-		// the cap stops unbounded loops.
-		if (run.visited.has(nextName)) {
-			state.backwardJumps++;
-			if (state.backwardJumps > run.maxBackwardJumps) {
-				curCtx.ui.setStatus(STATUS_KEY, undefined);
-				curCtx.ui.notify(MSG_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps), "error");
-				// Audit row so JSONL readers see the same terminal event the result envelope reports.
-				recordStage(cwd, runId, { skill: currentName, status: "failed", ts: nowIso() }, state);
-				state.error = ERR_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps);
-				return;
+			if (!wrote) {
+				state.droppedRoutingRows.push({ fromStage, fromNode: currentName, decision: nextName });
+				curCtx.ui.notify(MSG_ROUTING_AUDIT_DROPPED(currentName, nextName), "warning");
 			}
 		}
 
-		await runStage(curCtx, nextName, idx + 1, run);
+		// Backward-jump guard gated on `wasDecision` (see function docstring).
+		// Deterministic edges through a cycle are not counted; the budget
+		// applies per *decision* to retry. A decision escaping the cycle
+		// (target not visited) resets the counter so each independent loop
+		// gets its own budget.
+		if (wasDecision) {
+			if (run.visited.has(nextName)) {
+				state.backwardJumps++;
+				if (state.backwardJumps > run.maxBackwardJumps) {
+					curCtx.ui.setStatus(STATUS_KEY, undefined);
+					curCtx.ui.notify(MSG_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps), "error");
+					// Attribute to nextName — the stage the guard refused to
+					// re-enter. currentName already completed successfully.
+					recordStage(cwd, runId, { skill: nextName, status: "failed", ts: nowIso() }, state);
+					state.error = ERR_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps);
+					return;
+				}
+			} else {
+				state.backwardJumps = 0;
+			}
+		}
+
+		// runStageProtected owns the catch for throws out of the *next* stage,
+		// so the JSONL row records `nextName` (the stage that actually threw)
+		// rather than `currentName` (which would mis-attribute the failure to
+		// the prior stage that already completed successfully).
+		await runStageProtected(curCtx, nextName, idx + 1, run);
 	} catch (e) {
-		// EdgeFn / enforceSessionInvariants / runStage throws land here. Record
-		// a failure row co-extensive with state.error so JSONL readers see
-		// every terminal outcome the result envelope reports.
+		// Narrowed scope: only EdgeFn / routing-layer throws land here now —
+		// next-stage throws are absorbed by runStageProtected above. For this
+		// remaining surface `currentName` IS the correct attribution: the
+		// thrown predicate / edge function belongs to the just-completed
+		// node's outgoing edge.
 		curCtx.ui.setStatus(STATUS_KEY, undefined);
 		const reason = e instanceof Error ? e.message : String(e);
 		recordStage(cwd, runId, { skill: currentName, status: "failed", ts: nowIso() }, state);

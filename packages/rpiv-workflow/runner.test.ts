@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it, type vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompletionStrategy, EdgeTarget, NodeDef, Workflow } from "./api.js";
-import { defineWorkflow, threshold } from "./api.js";
+import { definePredicate, defineStatePredicate, defineWorkflow, threshold } from "./api.js";
 import { countPhases } from "./implement-phases.js";
 import { runWorkflow } from "./runner.js";
 import { typeboxSchema } from "./standard-schema.js";
-import { readRoutingDecisions } from "./state.js";
+import { appendRoutingDecision, readRoutingDecisions } from "./state.js";
 import { extractArtifactPath, hasAssistantMessage, lastAssistantStopReason } from "./transcript.js";
 
 // ---------------------------------------------------------------------------
@@ -655,7 +655,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research"] }).pi,
 				outerBranch: [],
 			});
 
@@ -695,7 +695,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [{ branch: sharedBranch }],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research", "design"] }).pi,
 			});
 
 			(chain.pi!.sendUserMessage as ReturnType<typeof vi.fn>).mockImplementation((content: unknown) => {
@@ -721,7 +721,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research"] }).pi,
 				outerBranch: [],
 			});
 
@@ -749,7 +749,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research"] }).pi,
 				outerBranch: [],
 			});
 
@@ -771,7 +771,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research"] }).pi,
 				outerBranch: [],
 			});
 
@@ -796,7 +796,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["commit"] }).pi,
 				outerBranch: [],
 			});
 
@@ -817,35 +817,95 @@ describe("runWorkflow", () => {
 			expect(result.lastArtifact).toBeUndefined();
 		});
 
-		it("throws when implement node has sessionPolicy continue", async () => {
+		// Invariant throws used to escape runWorkflow uncaught, leaving a
+		// header-only JSONL file invisible to every shape-filtered reader.
+		// runStageProtected now translates them into a recorded failure row
+		// + a populated error envelope, so the result describes the failure
+		// rather than the caller having to catch a stack trace.
+		it("records a failure row when implement node has sessionPolicy continue (no throw escapes)", async () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
 				pi: createMockPi().pi,
 			});
 
-			await expect(
-				runWorkflow(chain.ctx, {
-					workflow: wf("ic", ["implement"], { implement: { sessionPolicy: "continue" } }),
-					input: "x",
-					pi: chain.pi,
-				}),
-			).rejects.toThrow(/cannot use sessionPolicy.*continue/);
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("ic", ["implement"], { implement: { sessionPolicy: "continue" } }),
+				input: "x",
+				pi: chain.pi,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/cannot use sessionPolicy.*continue/);
+
+			// JSONL now carries a row attributed to the failing stage —
+			// no orphan header-only file.
+			const { stages } = readState(tmpDir);
+			const failedRows = stages.filter((s) => s.status === "failed");
+			expect(failedRows).toHaveLength(1);
+			expect(failedRows[0]?.skill).toBe("implement");
 		});
 
-		it("throws when continue node runs without pi", async () => {
+		it("records a failure row when continue node runs without pi (no throw escapes)", async () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
 			});
 
-			await expect(
-				runWorkflow(chain.ctx, {
-					workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
-					input: "x",
-					// No pi provided
-				}),
-			).rejects.toThrow(/no pi.*ExtensionAPI/);
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
+				input: "x",
+				// No pi provided
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/no pi.*ExtensionAPI/);
+
+			const { stages } = readState(tmpDir);
+			const failedRows = stages.filter((s) => s.status === "failed");
+			expect(failedRows).toHaveLength(1);
+			expect(failedRows[0]?.skill).toBe("research");
+		});
+
+		// -------------------------------------------------------------------
+		// Q12+IB — when a mid-chain stage throws (here: stage 2 hits the
+		// continue-without-pi invariant), the recorded failure must be
+		// attributed to the *failing* stage, not to the prior stage whose
+		// success triggered advanceChain. Before runStageProtected, the
+		// advanceChain catch recorded `skill: currentName` (the prior, already-
+		// completed stage), producing two rows for stage 1 (completed +
+		// failed) and zero rows for stage 2.
+		// -------------------------------------------------------------------
+		it("attributes a mid-chain runStage throw to the failing stage, not to the prior one", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+			});
+
+			// research succeeds (fresh policy, no pi needed). design has
+			// sessionPolicy: continue but the workflow runs without pi, so
+			// enforceSessionInvariants throws inside runStage when design is
+			// invoked.
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("midthrow", ["research", "design"], { design: { sessionPolicy: "continue" } }),
+				input: "x",
+				// No pi provided — triggers throw at the second stage
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/no pi.*ExtensionAPI/);
+
+			const { stages } = readState(tmpDir);
+			const completedRows = stages.filter((s) => s.status === "completed");
+			const failedRows = stages.filter((s) => s.status === "failed");
+
+			// Stage 1 completed and was recorded once. Stage 2 failed and was
+			// recorded once, keyed by ITS OWN skill name — not by "research".
+			expect(completedRows).toHaveLength(1);
+			expect(completedRows[0]?.skill).toBe("research");
+			expect(failedRows).toHaveLength(1);
+			expect(failedRows[0]?.skill).toBe("design");
 		});
 
 		it("branch offset prevents false positive from prior stage artifact", async () => {
@@ -860,7 +920,7 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [{ branch: sharedBranch }],
-				pi: createMockPi().pi,
+				pi: createMockPi({ skills: ["research", "design"] }).pi,
 			});
 
 			// Continue stage produces a message but no artifact
@@ -1218,6 +1278,10 @@ describe("runWorkflow", () => {
 
 			const result = await runWorkflow(chain.ctx, { workflow, input: "x" });
 			expect(result.success).toBe(true);
+			// Happy path: no dropped rows means the envelope omits the field.
+			// Consumers checking `result.droppedRoutingRows?.length` see undefined,
+			// not an empty array — keeps the absent-vs-present distinction crisp.
+			expect(result.droppedRoutingRows).toBeUndefined();
 
 			// Find the runId from the JSONL file
 			const dir = join(tmpDir, ".rpiv", "workflows");
@@ -1232,10 +1296,105 @@ describe("runWorkflow", () => {
 				decision: "commit",
 			});
 		});
+
+		// -------------------------------------------------------------------
+		// Q7+IH — routing-write failure is fail-soft (run continues) but
+		// MUST be observable: appendRoutingDecision returns false so the
+		// runner can notify + surface a droppedRoutingRows entry in the
+		// envelope. Asymmetric with appendStage (which halts on failure)
+		// because routing rows are pure telemetry — no in-memory state
+		// mirrors them, so halting would discard a correct in-memory
+		// decision to recover from transient disk weather.
+		// -------------------------------------------------------------------
+		it("appendRoutingDecision returns false when the JSONL write cannot land", () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				// `/dev/null/...` cannot host a directory — mkdirSync throws ENOTDIR,
+				// the catch fires, the function returns false. Same trick the
+				// recordStage failure test uses.
+				const wrote = appendRoutingDecision("/dev/null/impossible", "run-1", {
+					type: "routing",
+					fromStage: 1,
+					fromNode: "code-review",
+					decision: "commit",
+					ts: "2026-05-23T00:00:00Z",
+				});
+				expect(wrote).toBe(false);
+				expect(warnSpy).toHaveBeenCalled();
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+
+		it("appendRoutingDecision returns true on a successful write", () => {
+			const wrote = appendRoutingDecision(tmpDir, "run-1", {
+				type: "routing",
+				fromStage: 1,
+				fromNode: "code-review",
+				decision: "commit",
+				ts: "2026-05-23T00:00:00Z",
+			});
+			expect(wrote).toBe(true);
+			const rows = readRoutingDecisions(tmpDir, "run-1");
+			expect(rows).toHaveLength(1);
+		});
 	});
 
 	describe("backward-jump cycle guard", () => {
-		it("halts the chain when re-entries exceed MAX_BACKWARD_JUMPS", async () => {
+		it("halts the chain when decision-edge retries exceed MAX_BACKWARD_JUMPS", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a3.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b3.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a3.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b3.md")] },
+				],
+			});
+
+			// b → a via a decision-edge predicate (always picks "a"). `c` is
+			// declared but unreachable — exercised to confirm the runner halts
+			// via the backward-jump guard, not via running into `c`. Decision-edge
+			// (vs deterministic literal) so the new semantic counts the retry.
+			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: defineStatePredicate(["a", "c"], () => "a") });
+
+			const result = await runWorkflow(chain.ctx, { workflow, input: "x" });
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/backward-jump limit exceeded/i);
+			expect(result.error).toMatch(/3.*max 2/);
+			// Per-decision counting: each b→a is one decision retry. With cap=2:
+			// pass 1 (a→b, no retry yet) → b→a (retry 1) → pass 2 → b→a (retry 2) →
+			// pass 3 → b→a (retry 3 > 2) HALT before re-entering a.
+			// 6 stages completed: a, b, a, b, a, b. Trip fires at b's 3rd
+			// decision attempting to revisit a.
+			expect(result.stagesCompleted).toBe(6);
+			expect(chain.remaining()).toBe(0);
+
+			const { stages } = readState(tmpDir);
+			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
+			// 6 completed + 1 failed row.
+			expect(stageRows).toHaveLength(7);
+			expect(stageRows.filter((s) => s.status === "completed")).toHaveLength(6);
+			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(1);
+			// Trip attribution: failure row blames `a` (the would-be revisit
+			// target), not `b` (the just-completed stage). Q12-family lesson.
+			expect(stageRows.filter((s) => s.status === "failed")[0]?.skill).toBe("a");
+
+			const exhaustionNotice = chain.notifications.find((n) => /backward-jump limit exceeded/i.test(n.msg));
+			expect(exhaustionNotice?.level).toBe("error");
+		});
+
+		it("allows decision-edge retries within limit before halting on next exceedance", async () => {
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
@@ -1244,68 +1403,21 @@ describe("runWorkflow", () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [
-					// a first visit — advances to b (b not visited yet → forward).
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
-					// b first visit — advances to a (a visited → re-entry 1).
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
-					// a second visit — advances to b (b visited → re-entry 2).
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
-					// b second visit — advances to a (a visited → re-entry 3, exceeds MAX=2). HALT.
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
 				],
 			});
 
-			// a→b inherited from linear order; b→a override creates the cycle. `c`
-			// is declared but unreachable — exercised to confirm the runner halts
-			// via the backward-jump guard, not via running into `c`.
-			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: "a" });
-
-			const result = await runWorkflow(chain.ctx, { workflow, input: "x" });
-
-			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/backward-jump limit exceeded/i);
-			expect(result.error).toMatch(/3.*max 2/);
-			// Re-entry counter (visited-set semantics): 4 stages run (a, b, a, b)
-			// before the would-be 3rd entry into `a` exceeds MAX=2 and halts.
-			expect(result.stagesCompleted).toBe(4);
-			expect(chain.remaining()).toBe(0);
-
-			const { stages } = readState(tmpDir);
-			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
-			// 4 completed stages + 1 status:"failed" row marking where the chain
-			// halted. The failure row keeps JSONL coverage co-extensive with
-			// result.error (closes I5).
-			expect(stageRows).toHaveLength(5);
-			expect(stageRows.filter((s) => s.status === "completed")).toHaveLength(4);
-			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(1);
-
-			const exhaustionNotice = chain.notifications.find((n) => /backward-jump limit exceeded/i.test(n.msg));
-			expect(exhaustionNotice?.level).toBe("error");
-		});
-
-		it("allows re-entries within limit before halting on next exceedance", async () => {
-			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
-			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
-			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
-
-			const chain = createMockSessionChain({
-				cwd: tmpDir,
-				steps: [
-					// a first visit — advances to b (forward).
-					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
-					// b first visit — advances to a (re-entry 1, ≤ MAX=1).
-					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
-					// a second visit — advances to b (re-entry 2 > MAX=1). HALT.
-					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
-				],
-			});
-
-			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: "a" });
+			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: defineStatePredicate(["a", "c"], () => "a") });
 
 			const result = await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 1 });
 
-			// First re-entry allowed (a→b→a). Second re-entry attempt halts.
-			expect(result.stagesCompleted).toBe(3);
+			// cap=1: pass 1 (a→b) → b→a (retry 1, allowed) → pass 2 (a→b) →
+			// b→a (retry 2 > 1) HALT before re-entering a.
+			// 4 stages: a, b, a, b completed.
+			expect(result.stagesCompleted).toBe(4);
 			expect(result.success).toBe(false);
 		});
 
@@ -1340,6 +1452,7 @@ describe("runWorkflow", () => {
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
 
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
@@ -1347,25 +1460,26 @@ describe("runWorkflow", () => {
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
 				],
 			});
 
-			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: "a" });
+			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: defineStatePredicate(["a", "c"], () => "a") });
 
 			const result = await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 1 });
 
 			expect(result.success).toBe(false);
 			expect(result.error).toMatch(/backward-jump limit exceeded/i);
 			expect(result.error).toMatch(/2.*max 1/);
-			expect(result.stagesCompleted).toBe(3);
+			// cap=1: 4 stages (a, b, a, b) before the 2nd b→a decision trips.
+			expect(result.stagesCompleted).toBe(4);
 		});
 
-		it("counts a self-edge as backward-jump from the first hop", async () => {
-			// SB5 contract: `visited.add(currentName)` happens BEFORE the
-			// backward-jump check on `nextName`. For a self-loop (a → a), that
-			// means the very first re-entry counts. With maxBackwardJumps=0 we
-			// halt after one execution; with maxBackwardJumps=1 we get exactly
-			// two executions before halting.
+		it("counts a decision self-edge as backward-jump from the first hop", async () => {
+			// A self-loop authored as a *decision* predicate (a → a or stop). The
+			// `visited.add(currentName)` at the top of advanceChain happens BEFORE
+			// the backward-jump check, so the very first decision-to-self counts.
+			// cap=1 → exactly two executions of `a` before the guard halts.
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
 			const chain = createMockSessionChain({
@@ -1376,9 +1490,7 @@ describe("runWorkflow", () => {
 				],
 			});
 
-			// Single-node workflow with a self-loop. `wf` builds nodes in order;
-			// override the edge to point a → a explicitly.
-			const workflow = wf("self-loop", ["a"], {}, { a: "a" });
+			const workflow = wf("self-loop", ["a"], {}, { a: defineStatePredicate(["a", "stop"], () => "a") });
 
 			const result = await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 1 });
 
@@ -1399,10 +1511,7 @@ describe("runWorkflow", () => {
 				],
 			});
 
-			// a→b inherited from linear order; b→a override creates the cycle. `c`
-			// is declared but unreachable — exercised to confirm the runner halts
-			// via the backward-jump guard, not via running into `c`.
-			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: "a" });
+			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: defineStatePredicate(["a", "c"], () => "a") });
 
 			await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 0 });
 
@@ -1421,10 +1530,7 @@ describe("runWorkflow", () => {
 				],
 			});
 
-			// a→b inherited from linear order; b→a override creates the cycle. `c`
-			// is declared but unreachable — exercised to confirm the runner halts
-			// via the backward-jump guard, not via running into `c`.
-			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: "a" });
+			const workflow = wf("cycle", ["a", "b", "c"], {}, { b: defineStatePredicate(["a", "c"], () => "a") });
 
 			await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 0 });
 
@@ -1440,6 +1546,203 @@ describe("runWorkflow", () => {
 			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(1);
 			const stageNumbers = stageRows.map((s) => s.stageNumber).sort((a, b) => (a as number) - (b as number));
 			expect(stageNumbers).toEqual([1, 2, 3]);
+		});
+
+		// -------------------------------------------------------------------
+		// Q13+IG — the core fix: an N-node decision-mediated loop must allow
+		// MAX_BACKWARD_JUMPS retry iterations, not trip mid-iteration on the
+		// deterministic hops within the cycle body. Previously a 3-node loop
+		// burned the budget on two deterministic forward hops INSIDE the
+		// first retry; now only the decision edge counts.
+		// -------------------------------------------------------------------
+		it("counts decisions only — deterministic hops through a 3-node cycle don't drain the budget", async () => {
+			// 3-node loop: a → b → c → (decide: a or stop). With cap=1, two
+			// full passes complete (initial + 1 retry); 3rd decision trips.
+			// Under the OLD per-hop semantic, the 2nd pass's a→b deterministic
+			// hop would have ticked the counter to 2 (>cap=1) mid-iteration,
+			// halting the run with only 4 stages completed instead of 6.
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/c/c1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/a/a2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/b/b2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/c/c2.md");
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/c/c1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/a/a2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/b/b2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/c/c2.md")] },
+				],
+			});
+
+			const workflow = wf("3loop", ["a", "b", "c"], {}, { c: defineStatePredicate(["a", "stop"], () => "a") });
+
+			const result = await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 1 });
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/backward-jump limit exceeded/i);
+			// 6 stages: a,b,c,a,b,c. Then c's 3rd decision (retry 2 > cap=1) trips.
+			expect(result.stagesCompleted).toBe(6);
+		});
+
+		it("resets the counter when a decision escapes the current loop", async () => {
+			// Two sequential decision loops: A↔B then C↔D, joined by a
+			// decision-edge escape from B → C. Each loop should get its own
+			// retry budget; without the escape-reset, loop 2's first retry
+			// would inherit loop 1's exhausted counter and trip immediately.
+			writeArtifact(tmpDir, ".rpiv/artifacts/A/A1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/B/B1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/A/A2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/B/B2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/C/C1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/D/D1.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/C/C2.md");
+			writeArtifact(tmpDir, ".rpiv/artifacts/D/D2.md");
+
+			let bDecisionCount = 0;
+			let dDecisionCount = 0;
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/A/A1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/B/B1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/A/A2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/B/B2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/C/C1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/D/D1.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/C/C2.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/D/D2.md")] },
+				],
+			});
+
+			const workflow = wf(
+				"twoloops",
+				["A", "B", "C", "D"],
+				{},
+				{
+					// B → A twice, then B → C (escape to loop 2)
+					B: definePredicate(["A", "C"], () => {
+						bDecisionCount++;
+						return bDecisionCount <= 1 ? "A" : "C";
+					}),
+					// D → C twice, then D → stop. With cap=1 and NO reset, this
+					// trips on the first D→C because B's prior retry already
+					// burned the budget.
+					D: definePredicate(["C", "stop"], () => {
+						dDecisionCount++;
+						return dDecisionCount <= 1 ? "C" : "stop";
+					}),
+				},
+			);
+
+			const result = await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 1 });
+
+			// Loop 1: A → B (decide A, retry 1) → A → B (decide C, escape — counter resets to 0)
+			// Loop 2: C → D (decide C, retry 1 — counter started at 0, so within cap) → C → D (decide stop)
+			// All 8 stages complete; run succeeds. Without reset, loop 2's
+			// first retry would be retry 2 > cap=1 → trip.
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(8);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Q20+ID — workflow runner emits `/skill:<name>` via sendUserMessage, which
+	// goes through `prompt({expandPromptTemplates: false})` — Pi's built-in
+	// `_expandSkillCommand` is skipped, so `rpiv-args` is the only expander.
+	// If the skill isn't registered, `rpiv-args` returns `{action:"continue"}`
+	// and the raw text reaches the LLM as a bare imperative outside the
+	// `<skill>...</skill>` contract. ensureSkillRegistered catches this at
+	// the dispatch seam, halting the stage cleanly with attribution + a
+	// MSG_SKILL_NOT_REGISTERED notification.
+	// -----------------------------------------------------------------------
+	describe("skill-registry pre-dispatch check", () => {
+		let tmpDir: string;
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "rpiv-skill-registry-"));
+		});
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it("halts the stage when stage.skill is not in pi.getCommands()", async () => {
+			// pi registers "research" but the workflow tries to invoke "typo".
+			// Without the check, "/skill:typo x" would dispatch via
+			// sendUserMessage and leak to the LLM verbatim.
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [],
+				pi: createMockPi({ skills: ["research"] }).pi,
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("typo-wf", ["typo"]),
+				input: "x",
+				pi: chain.pi,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/Pi skill "typo".*no skill by that name is registered/);
+			expect(result.stagesCompleted).toBe(0);
+
+			// Critically: no /skill:typo text reached sendUserMessage. The
+			// halt fired BEFORE dispatch, so the LLM never sees the raw text.
+			expect(chain.sentMessages).toEqual([]);
+			expect(chain.pi!.sendUserMessage).not.toHaveBeenCalled();
+
+			// JSONL row attributed to the failing stage's skill.
+			const { stages } = readState(tmpDir);
+			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
+			expect(stageRows).toHaveLength(1);
+			expect(stageRows[0]?.skill).toBe("typo");
+			expect(stageRows[0]?.status).toBe("failed");
+
+			// User-facing notification carries the right error class.
+			const notice = chain.notifications.find((n) => /not a registered Pi skill/i.test(n.msg));
+			expect(notice?.level).toBe("error");
+		});
+
+		it("passes when pi recognizes the skill", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+				pi: createMockPi({ skills: ["research"] }).pi,
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("ok-wf", ["research"]),
+				input: "x",
+				pi: chain.pi,
+			});
+
+			expect(result.success).toBe(true);
+		});
+
+		it("skips the check when pi is not provided (no registry to consult)", async () => {
+			// Pi-less programmatic invocation opts out of this defense layer —
+			// same fail-soft posture the rest of the pi-optional surface uses.
+			// Run still proceeds; the dispatch-time behavior is whatever the
+			// caller's environment provides.
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("nopi-wf", ["research"]),
+				input: "x",
+				// No pi provided
+			});
+
+			// Run completes — the check was skipped because run.pi is undefined.
+			expect(result.success).toBe(true);
 		});
 	});
 });

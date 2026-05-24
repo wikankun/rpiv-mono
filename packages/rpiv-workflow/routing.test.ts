@@ -21,6 +21,7 @@ const makeState = (manifestData?: Record<string, unknown>): RunState => ({
 	success: false,
 	error: undefined,
 	backwardJumps: 0,
+	droppedRoutingRows: [],
 });
 
 const ctxOf = (manifestData?: Record<string, unknown>): EdgeContext => {

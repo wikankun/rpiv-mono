@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { NodeDef, SessionPolicy } from "./api.js";
+import type { NodeDef, NodeSchema, SessionPolicy } from "./api.js";
 import {
 	type AuditCtx,
 	nowIso,
@@ -51,6 +51,7 @@ import {
 	MIN_VALIDATION_RETRIES,
 	MIN_VALIDATION_RETRY_TIMEOUT_MS,
 	type ValidationFailure,
+	type ValidationResult,
 	validateManifestData,
 	withTimeout,
 } from "./validation.js";
@@ -340,7 +341,9 @@ async function retryUntilValid(
 	);
 
 	let manifest = initial;
-	let result = validateManifestData(schema, manifest.data);
+	const initialValidation = validateOrFatal(schema, manifest.data, s.skill);
+	if (initialValidation.kind === "fatal") return initialValidation;
+	let result = initialValidation.result;
 	let attempts = 0;
 
 	while (!result.valid && attempts < maxRetries && s.node.onValidationFailure !== "halt") {
@@ -375,11 +378,39 @@ async function retryUntilValid(
 		}
 
 		manifest = reExtracted.manifest;
-		result = validateManifestData(schema, manifest.data);
+		const reValidation = validateOrFatal(schema, manifest.data, s.skill);
+		if (reValidation.kind === "fatal") return reValidation;
+		result = reValidation.result;
 	}
 
 	if (!result.valid) return validationExhausted(result.failures);
 	return { kind: "ok", manifest };
+}
+
+/**
+ * Translate a thrown `validateManifestData` (the async-schema runtime check at
+ * validation.ts:70 is the known thrower) into the canonical fatal-extraction
+ * outcome. Without this, the throw escapes retryUntilValid → postStage →
+ * runStageProtected's catch, surfacing as MSG_STAGE_THREW — the wrong error
+ * class for a schema-shape constraint the workflow author owns. Routing
+ * through `kind: "fatal"` puts the failure through `haltStageWithExtractionError`,
+ * which attributes the row to `skill`, fires MSG_STAGE_FAILED, and exits
+ * cleanly through the same path validation-exhausted uses.
+ *
+ * The load-time `isAsyncSchema` probe in validate.ts is a best-effort UX hint;
+ * this is the load-bearing safety net behind it.
+ */
+function validateOrFatal(
+	schema: NodeSchema,
+	data: unknown,
+	skill: string,
+): { kind: "ok"; result: ValidationResult } | { kind: "fatal"; message: string } {
+	try {
+		return { kind: "ok", result: validateManifestData(schema, data) };
+	} catch (e) {
+		const reason = e instanceof Error ? e.message : String(e);
+		return { kind: "fatal", message: `${skill}: ${reason}` };
+	}
 }
 
 /**

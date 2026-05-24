@@ -38,6 +38,14 @@ export interface RunState {
 	success: boolean;
 	error: string | undefined;
 	backwardJumps: number;
+	/**
+	 * Routing rows whose JSONL append failed mid-run. The chain advanced past
+	 * them (routing rows are write-only telemetry, not reconstruction inputs),
+	 * but the final result envelope surfaces this so post-hoc readers can
+	 * distinguish "deterministic edge — no row written by design" from
+	 * "decision made — write was dropped." Empty in the common case.
+	 */
+	droppedRoutingRows: Array<{ fromStage: number; fromNode: string; decision: string }>;
 }
 
 /** Per-run context the chain carries from stage to stage. */

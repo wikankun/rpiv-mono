@@ -60,6 +60,7 @@ const makeState = (manifestData?: Record<string, unknown>): RunState => ({
 	success: false,
 	error: undefined,
 	backwardJumps: 0,
+	droppedRoutingRows: [],
 });
 
 const ctxOf = (manifestData?: Record<string, unknown>) => {
@@ -258,6 +259,7 @@ describe("[I3] recordStage signals success and advances stageNumber monotonicall
 		success: false,
 		error: undefined,
 		backwardJumps: 0,
+		droppedRoutingRows: [],
 	});
 
 	it("returns the assigned stageNumber on a successful write", async () => {

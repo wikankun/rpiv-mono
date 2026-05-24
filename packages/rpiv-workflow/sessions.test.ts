@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NodeDef } from "./api.js";
+import type { NodeDef, NodeSchema } from "./api.js";
 import type { Extractor, ExtractorCtx, ExtractorFn, ExtractorResult } from "./manifest.js";
 import {
 	ERR_VALIDATION_FAILED,
@@ -51,6 +51,7 @@ const freshRunState = (overrides: Partial<RunState> = {}): RunState => ({
 	success: true,
 	error: undefined,
 	backwardJumps: 0,
+	droppedRoutingRows: [],
 	...overrides,
 });
 
@@ -406,6 +407,68 @@ describe("sessions — validation retry loop", () => {
 		// No timeout error surfaced → clamp held.
 		expect(chain.notifications.some((n) => /exceeded/.test(n.msg))).toBe(false);
 		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_COMPLETE("test"))).toBe(true);
+	});
+
+	// -----------------------------------------------------------------------
+	// Q15+IC — an async-returning schema that slipped past the load-time
+	// `isAsyncSchema` probe (or a programmatic runWorkflow that bypassed
+	// loadWorkflows entirely) used to throw from validateManifestData,
+	// escape retryUntilValid → postStage, and land in runStageProtected's
+	// outer catch as MSG_STAGE_THREW — the wrong error class for a schema
+	// constraint the workflow author owns. validateOrFatal funnels the
+	// throw through the canonical kind:"fatal" path so the failure carries
+	// the right error class (MSG_STAGE_FAILED via haltStageWithExtractionError),
+	// fires onFailure, and exits cleanly without escaping the session.
+	// -----------------------------------------------------------------------
+	it("async-returning schema halts the stage via fatal-extraction, not via an escaped throw", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onSuccess = vi.fn(async () => {});
+		const onFailure = vi.fn();
+
+		// Hand-rolled async Standard Schema: validate() returns a Promise. The
+		// runtime guard at validation.ts:70 throws synchronously when it sees
+		// the Promise result; validateOrFatal catches and converts to fatal.
+		const asyncSchema: NodeSchema<unknown, unknown> = {
+			"~standard": {
+				version: 1,
+				vendor: "test-async",
+				validate: () => Promise.resolve({ issues: [] }),
+			},
+		};
+
+		await runStageSession(
+			chain.ctx as ChainCtx,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				node: node({ outputSchema: asyncSchema, extractor: scriptedExtractor([okPayload({ foo: 2 })]) }),
+				onSuccess,
+				onFailure,
+			}),
+		);
+
+		// Stage halted cleanly — onSuccess never ran, onFailure did.
+		expect(onSuccess).not.toHaveBeenCalled();
+		expect(onFailure).toHaveBeenCalledTimes(1);
+
+		// Right error class: MSG_STAGE_FAILED (fatal-extraction path).
+		// NOT MSG_STAGE_THREW (which would mean the throw escaped).
+		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_FAILED("test"))).toBe(true);
+		expect(chain.notifications.some((n) => /failed to start/.test(n.msg))).toBe(false);
+
+		// state.error carries the schema-shape diagnostic prefixed by skill,
+		// so the user can find the offending node.
+		expect(state.error).toMatch(/test:.*async schema validation is not supported/);
+
+		// JSONL row was written (not orphan) and attributed to `test`.
+		const rows = readStageRows(tmpDir);
+		const failedRows = rows.filter((r) => r.status === "failed");
+		expect(failedRows).toHaveLength(1);
+		expect(failedRows[0]?.skill).toBe("test");
 	});
 });
 

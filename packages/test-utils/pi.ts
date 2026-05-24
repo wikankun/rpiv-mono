@@ -26,7 +26,23 @@ export interface MockPi {
 	captured: CapturedPi;
 }
 
-export function createMockPi(overrides: Partial<ExtensionAPI> = {}): MockPi {
+export interface CreateMockPiOptions extends Partial<ExtensionAPI> {
+	/**
+	 * Skill names to surface from `getCommands()` as `RegisteredCommand`s with
+	 * `source: "skill"` (matching the shape Pi emits from
+	 * `agent-session.js:1699` — `name` prefixed with `"skill:"`, `source`
+	 * `"skill"`). Lets tests of programmatic `/skill:<name>` dispatch (the
+	 * `rpiv-workflow` runner gates dispatch on this registry to prevent
+	 * raw-text leakage to the LLM) register the skills their workflow uses
+	 * without hand-rolling RegisteredCommand objects.
+	 *
+	 * Overridden completely by a `getCommands` override in the same call —
+	 * `getCommands` takes precedence when both are present.
+	 */
+	skills?: readonly string[];
+}
+
+export function createMockPi(options: CreateMockPiOptions = {}): MockPi {
 	const captured: CapturedPi = {
 		tools: new Map(),
 		commands: new Map(),
@@ -36,6 +52,16 @@ export function createMockPi(overrides: Partial<ExtensionAPI> = {}): MockPi {
 		activeTools: [],
 		allTools: [],
 	};
+
+	const { skills, ...overrides } = options;
+	const skillCommands: RegisteredCommand[] = (skills ?? []).map(
+		(name) =>
+			({
+				name: `skill:${name}`,
+				source: "skill",
+				sourceInfo: { path: `/mock/skills/${name}/SKILL.md`, baseDir: `/mock/skills/${name}` },
+			}) as unknown as RegisteredCommand,
+	);
 
 	const pi = {
 		registerTool: vi.fn((tool: ToolDefinition) => {
@@ -74,6 +100,10 @@ export function createMockPi(overrides: Partial<ExtensionAPI> = {}): MockPi {
 			}),
 			on: vi.fn(() => () => {}),
 		},
+		// Default skill registry: just the user-passed `skills` list. Tests
+		// that need a custom getCommands can still pass one via overrides
+		// (it'll replace this default via the spread below).
+		getCommands: vi.fn(() => skillCommands),
 		...overrides,
 	} as unknown as ExtensionAPI;
 

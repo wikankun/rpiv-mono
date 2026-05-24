@@ -37,6 +37,7 @@ const ctxOf = (cwd: string, branch: unknown): ExtractorCtx => ({
 		success: false,
 		error: undefined,
 		backwardJumps: 0,
+		droppedRoutingRows: [],
 	},
 	branch: branch as ExtractorCtx["branch"],
 	branchOffset: undefined,
