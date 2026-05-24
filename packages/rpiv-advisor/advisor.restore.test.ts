@@ -5,9 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAdvisorEffort, getAdvisorModel, restoreAdvisorState } from "./advisor.js";
 
 const WORKFLOW_CHILD_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
+// Counter (not boolean) — see rpiv-workflow/child-session.ts. Tests flip the
+// binary state; a single mark/clear pair is sufficient because the readers
+// gate on `> 0`.
 const setChildSession = (on: boolean) => {
-	if (on) (globalThis as unknown as Record<symbol, unknown>)[WORKFLOW_CHILD_KEY] = true;
-	else delete (globalThis as unknown as Record<symbol, unknown>)[WORKFLOW_CHILD_KEY];
+	const g = globalThis as unknown as Record<symbol, number | undefined>;
+	if (on) g[WORKFLOW_CHILD_KEY] = (g[WORKFLOW_CHILD_KEY] ?? 0) + 1;
+	else delete g[WORKFLOW_CHILD_KEY];
 };
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");

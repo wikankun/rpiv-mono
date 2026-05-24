@@ -22,16 +22,34 @@ export interface PhaseFanoutDeps {
 
 const PHASE_HEADING_REGEX = /^## Phase (\d+):/gm;
 
-/** Fail-soft: 0 on missing file, no headings, or read error. */
+/**
+ * Hard cap on phases fanout. Plans authored by `plan` cap around 8 phases in
+ * practice; 32 leaves headroom for stretch plans without letting a
+ * pathological plan (or a hostile one) drive the runner into unbounded
+ * recursion via `runImplementPhases`' continuation-style self-call.
+ */
+export const MAX_PHASES = 32;
+
+/**
+ * Returns the number of `## Phase N:` headings in the plan file. 0 means
+ * "no fanout"; the caller treats that as single-stage. ENOENT/EACCES and
+ * other read errors are NOT collapsed to 0 — they throw, so `advanceChain`'s
+ * catch records a failure row and halts the run rather than silently
+ * degrading a multi-phase plan into one implement session. A plan with
+ * more than `MAX_PHASES` headings throws so the chain halts with an
+ * actionable error rather than recursing 100+ times.
+ */
 export function countPhases(planPath: string, cwd: string): number {
 	const absolutePath = planPath.startsWith("/") ? planPath : join(cwd, planPath);
-	try {
-		const content = readFileSync(absolutePath, "utf-8");
-		const matches = content.match(PHASE_HEADING_REGEX);
-		return matches ? matches.length : 0;
-	} catch {
-		return 0;
+	const content = readFileSync(absolutePath, "utf-8");
+	const matches = content.match(PHASE_HEADING_REGEX);
+	const count = matches ? matches.length : 0;
+	if (count > MAX_PHASES) {
+		throw new Error(
+			`countPhases: plan ${planPath} declares ${count} phases — exceeds MAX_PHASES (${MAX_PHASES}); split into smaller plans`,
+		);
 	}
+	return count;
 }
 
 /**

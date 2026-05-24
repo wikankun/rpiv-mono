@@ -116,8 +116,11 @@ describe("countPhases", () => {
 		expect(countPhases("plans/p.md", tmpDir)).toBe(2);
 	});
 
-	it("returns 0 for a missing file", () => {
-		expect(countPhases(join(tmpDir, "nope.md"), tmpDir)).toBe(0);
+	it("throws on a missing file (caller's advanceChain catch records a failure row)", () => {
+		// Pre-I11: bare catch returned 0, silently degrading a multi-phase plan
+		// into a single-stage path. Now: read errors bubble so advanceChain's
+		// catch can surface them as a failure row.
+		expect(() => countPhases(join(tmpDir, "nope.md"), tmpDir)).toThrow(/ENOENT|no such file/);
 	});
 
 	it("returns 0 for a file with no ## Phase N: headings", () => {
@@ -1332,9 +1335,12 @@ describe("runWorkflow", () => {
 
 			const { stages } = readState(tmpDir);
 			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
-			expect(stageRows).toHaveLength(4);
-			expect(stageRows.every((s) => s.status === "completed")).toBe(true);
-			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(0);
+			// 4 completed stages + 1 status:"failed" row marking where the chain
+			// halted. The failure row keeps JSONL coverage co-extensive with
+			// result.error (closes I5).
+			expect(stageRows).toHaveLength(5);
+			expect(stageRows.filter((s) => s.status === "completed")).toHaveLength(4);
+			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(1);
 
 			const exhaustionNotice = chain.notifications.find((n) => /backward-jump limit exceeded/i.test(n.msg));
 			expect(exhaustionNotice?.level).toBe("error");
@@ -1466,7 +1472,7 @@ describe("runWorkflow", () => {
 			expect(chain.statusUpdates.at(-1)).toEqual({ key: "rpiv-workflow", value: undefined });
 		});
 
-		it("does not write a duplicate JSONL row on backward-jump exhaustion", async () => {
+		it("records a failure row on backward-jump exhaustion (co-extensive with state.error)", async () => {
 			writeArtifact(tmpDir, ".rpiv/artifacts/a/a1.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/b/b1.md");
 
@@ -1485,15 +1491,18 @@ describe("runWorkflow", () => {
 
 			await runWorkflow(chain.ctx, { workflow, input: "x", maxBackwardJumps: 0 });
 
-			// Both stages completed successfully before the guard halted the
-			// chain — no phantom "failed" row for the same skill that just
-			// recorded "completed". (Filter on `stageNumber` to skip the
-			// routing-decision row interleaved into the JSONL.)
+			// 2 completed stages (a, b) + 1 status:"failed" row marking where the
+			// guard halted the chain. Each row carries its own stageNumber — no
+			// stageNumber is reused (precedent `3a8b07b`), no completed row is
+			// rewritten in place (precedent `1f87ad6`). Filter on `stageNumber`
+			// to skip routing-decision rows.
 			const { stages } = readState(tmpDir);
 			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
-			expect(stageRows).toHaveLength(2);
-			expect(stageRows.every((s) => s.status === "completed")).toBe(true);
-			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(0);
+			expect(stageRows).toHaveLength(3);
+			expect(stageRows.filter((s) => s.status === "completed")).toHaveLength(2);
+			expect(stageRows.filter((s) => s.status === "failed")).toHaveLength(1);
+			const stageNumbers = stageRows.map((s) => s.stageNumber).sort((a, b) => (a as number) - (b as number));
+			expect(stageNumbers).toEqual([1, 2, 3]);
 		});
 	});
 });

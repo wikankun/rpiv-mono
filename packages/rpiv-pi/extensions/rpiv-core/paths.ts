@@ -36,8 +36,9 @@ export const BUNDLED_SKILLS_DIR = join(PACKAGE_ROOT, "skills");
  * production callers use the `BUNDLED_SKILL_NAMES` constant below.
  */
 export function loadBundledSkillNames(dir: string): ReadonlySet<string> {
+	let names: Set<string>;
 	try {
-		return new Set(
+		names = new Set(
 			readdirSync(dir, { withFileTypes: true })
 				.filter((e) => e.isDirectory())
 				.map((e) => e.name),
@@ -47,16 +48,29 @@ export function loadBundledSkillNames(dir: string): ReadonlySet<string> {
 		console.warn(`[rpiv-pi] could not enumerate bundled skills under ${dir}: ${reason}`);
 		return new Set<string>();
 	}
+	// An empty Set also disables the `rpiv:` status-line ownership and is
+	// almost always a broken-install symptom (skills/ dir present but
+	// pruned by `files` array misconfig, or read returned a non-dir tree).
+	// Surface this distinctly from the catch path so the user has signal.
+	if (names.size === 0) {
+		console.warn(
+			`[rpiv-pi] bundled skills directory ${dir} contains no subdirectories — ` +
+				"the `rpiv:` skill status-line gate will not match any skill.",
+		);
+	}
+	return names;
 }
 
 /**
  * Set of bundled-skill directory names under `BUNDLED_SKILLS_DIR`. Computed
  * once at module load via `loadBundledSkillNames`. Used by:
  *
- *   - `workflow/dag.ts` — DAG validation: skill-kind nodes must reference a
- *     bundled skill.
  *   - `session-hooks.ts` — `[skill] rpiv:` status-line gating: only skills
  *     owned by rpiv-pi claim the status line; user-supplied or third-party
  *     skills passthrough.
+ *
+ * The TS-native workflow runner does NOT enforce a skill-name allowlist at
+ * load time; Pi resolves the skill at run time and surfaces a clear error
+ * if it can't load. See `@juicesharp/rpiv-workflow`'s `api.ts` `skill` field.
  */
 export const BUNDLED_SKILL_NAMES: ReadonlySet<string> = loadBundledSkillNames(BUNDLED_SKILLS_DIR);

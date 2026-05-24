@@ -7,8 +7,16 @@
 
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { action, artifact, definePredicate, defineWorkflow, type EdgeFn, threshold, type Workflow } from "./api.js";
-import { builtInWorkflows } from "./built-in.js";
+import {
+	action,
+	artifact,
+	definePredicate,
+	defineStatePredicate,
+	defineWorkflow,
+	type EdgeFn,
+	threshold,
+	type Workflow,
+} from "./api.js";
 import { typeboxSchema } from "./standard-schema.js";
 import { validateWorkflow } from "./validate.js";
 
@@ -34,19 +42,8 @@ describe("validateWorkflow — happy path", () => {
 		expect(errors(w)).toEqual([]);
 	});
 
-	it("returns zero issues for the built-in workflows", () => {
-		for (const w of builtInWorkflows) {
-			const issues = validateWorkflow(w);
-			expect(
-				issues.filter((i) => i.severity === "error"),
-				`${w.name} errors`,
-			).toEqual([]);
-			expect(
-				issues.filter((i) => i.severity === "warning"),
-				`${w.name} warnings`,
-			).toEqual([]);
-		}
-	});
+	// "Validate the bundled workflows" tests live in @juicesharp/rpiv-pi's
+	// built-in-workflows.test.ts — rpiv-workflow ships no built-ins.
 });
 
 // ---------------------------------------------------------------------------
@@ -290,22 +287,44 @@ describe("validateWorkflow — predicate-edge schema check", () => {
 		).toBe(true);
 	});
 
-	it("does NOT warn when the predicate is hand-rolled via definePredicate (no frontmatter read)", () => {
-		// definePredicate doesn't carry the READS_FRONTMATTER marker; the schema
-		// warning is exclusively for `threshold`-shaped predicates that consult
-		// `manifest.data[field]`. A state-derived predicate is exempt.
+	it("does NOT warn when the predicate is built via defineStatePredicate (no frontmatter read)", () => {
+		// defineStatePredicate skips the READS_FRONTMATTER marker — the schema
+		// warning is exclusively for predicates that consult `manifest.data[field]`.
+		// A state-derived predicate is exempt.
 		const w: Workflow = {
 			name: "state-derived",
 			start: "code-review",
 			nodes: { "code-review": artifact(), a: artifact(), b: artifact() },
 			edges: {
-				"code-review": definePredicate(["a", "b"], ({ state }) => (state.backwardJumps > 0 ? "a" : "b")),
+				"code-review": defineStatePredicate(["a", "b"], ({ state }) => (state.backwardJumps > 0 ? "a" : "b")),
 				a: "stop",
 				b: "stop",
 			},
 		};
 		const issues = validateWorkflow(w);
 		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
+	});
+
+	it("DOES warn when a hand-rolled definePredicate reads manifest.data with no upstream outputSchema", () => {
+		// definePredicate now auto-marks READS_FRONTMATTER, so any hand-rolled
+		// predicate that reads manifest.data on a node without outputSchema
+		// trips the lint — closes the I3 gap where the marker was opt-in.
+		const w: Workflow = {
+			name: "frontmatter-read",
+			start: "code-review",
+			nodes: { "code-review": artifact(), a: artifact(), b: artifact() },
+			edges: {
+				"code-review": definePredicate(["a", "b"], ({ manifest }) =>
+					(manifest?.data as Record<string, unknown> | undefined)?.status === "ok" ? "a" : "b",
+				),
+				a: "stop",
+				b: "stop",
+			},
+		};
+		const issues = validateWorkflow(w);
+		expect(
+			issues.some((i) => i.severity === "warning" && i.node === "code-review" && /outputSchema/.test(i.message)),
+		).toBe(true);
 	});
 
 	it("does not warn when the predicate source carries an outputSchema", () => {

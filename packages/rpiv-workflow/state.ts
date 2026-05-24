@@ -49,7 +49,7 @@ export interface RoutingAuditRow {
 // Run-id generation (mirrors skills/_shared/now.mjs slug pattern)
 // ---------------------------------------------------------------------------
 
-/** 2 bytes → 4 hex chars; prevents sub-second `/rpiv` collisions. */
+/** 2 bytes → 4 hex chars; prevents sub-second `/wf` collisions. */
 const RUN_ID_SUFFIX_BYTES = 2;
 const SLUG_FIELD_WIDTH = 2;
 /** "YYYY-MM-DDTHH:MM:SS" — strips fractional + timezone tail of toISOString. */
@@ -119,24 +119,39 @@ export function appendStage(cwd: string, runId: string, stage: WorkflowStage): b
  * `stageNumber: number` and no `type`. Starting at line 0 keeps the first
  * stage row recoverable even if a transient writeHeader failure left the
  * file without its header.
+ *
+ * Each line's `JSON.parse` runs in its own try/catch — a truncated trailing
+ * line (process killed mid-`appendFileSync`, ENOSPC, network FS hiccup)
+ * MUST NOT erase prior rows. Malformed lines emit a one-shot warn and are
+ * skipped; readers see every well-formed row that landed on disk.
  */
 function readJsonlRows<T>(cwd: string, runId: string, match: (row: unknown) => row is T): T[] {
+	let lines: string[];
 	try {
 		const filePath = resolveStateFile(cwd, runId);
 		if (!existsSync(filePath)) return [];
 		const content = readFileSync(filePath, "utf-8").trim();
 		if (!content) return [];
-		const lines = content.split("\n");
-		const rows: T[] = [];
-		for (const line of lines) {
-			const parsed = JSON.parse(line);
-			if (match(parsed)) rows.push(parsed);
-		}
-		return rows;
+		lines = content.split("\n");
 	} catch (e) {
 		console.warn(`[rpiv-pi] workflow state: ${e instanceof Error ? e.message : String(e)}`);
 		return [];
 	}
+
+	const rows: T[] = [];
+	for (const line of lines) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch (e) {
+			console.warn(
+				`[rpiv-pi] workflow state: skipping malformed JSONL row — ${e instanceof Error ? e.message : String(e)}`,
+			);
+			continue;
+		}
+		if (match(parsed)) rows.push(parsed);
+	}
+	return rows;
 }
 
 const isWorkflowStage = (row: unknown): row is WorkflowStage =>

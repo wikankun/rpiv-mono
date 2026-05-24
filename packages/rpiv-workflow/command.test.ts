@@ -95,45 +95,45 @@ describe("parseArgs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// /rpiv handler shape + dispatch
+// /wf handler shape + dispatch
 // ---------------------------------------------------------------------------
 
-describe("/rpiv — command shape", () => {
-	it("registers under 'rpiv'", () => {
+describe("/wf — command shape", () => {
+	it('registers under "wf"', () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
-		expect(captured.commands.has("rpiv")).toBe(true);
+		expect(captured.commands.has("wf")).toBe(true);
 	});
 });
 
-describe("/rpiv — !hasUI", () => {
+describe("/wf — !hasUI", () => {
 	it("notifies an error and exits without calling runWorkflow", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: false });
-		await captured.commands.get("rpiv")?.handler("", ctx);
+		await captured.commands.get("wf")?.handler("", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("interactive"), "error");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
 });
 
-describe("/rpiv — no input", () => {
+describe("/wf — no input", () => {
 	it("shows the workflow listing when no input is provided", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("", ctx);
+		await captured.commands.get("wf")?.handler("", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Available workflows"), "info");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
 });
 
-describe("/rpiv — valid invocation", () => {
+describe("/wf — valid invocation", () => {
 	it("calls runWorkflow with the resolved workflow object", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("mid Add dark mode", ctx);
+		await captured.commands.get("wf")?.handler("mid Add dark mode", ctx);
 		expect(runWorkflow).toHaveBeenCalledTimes(1);
 		const opts = vi.mocked(runWorkflow).mock.calls[0]?.[1];
 		expect(opts?.workflow.name).toBe("mid");
@@ -144,7 +144,7 @@ describe("/rpiv — valid invocation", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("Add dark mode", ctx);
+		await captured.commands.get("wf")?.handler("Add dark mode", ctx);
 		const opts = vi.mocked(runWorkflow).mock.calls[0]?.[1];
 		expect(opts?.workflow.name).toBe("mid");
 		expect(opts?.input).toBe("Add dark mode");
@@ -154,7 +154,7 @@ describe("/rpiv — valid invocation", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("review", ctx);
+		await captured.commands.get("wf")?.handler("review", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("workflow: review"), "info");
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Available workflows"), "info");
 		expect(runWorkflow).not.toHaveBeenCalled();
@@ -164,7 +164,7 @@ describe("/rpiv — valid invocation", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("   ", ctx);
+		await captured.commands.get("wf")?.handler("   ", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Available workflows"), "info");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
@@ -174,7 +174,7 @@ describe("/rpiv — valid invocation", () => {
 // Issue surfacing — load + validation errors
 // ---------------------------------------------------------------------------
 
-describe("/rpiv — issue surfacing", () => {
+describe("/wf — issue surfacing", () => {
 	it("surfaces validation warnings as 'warning' notifies", async () => {
 		vi.mocked(loadWorkflows).mockResolvedValueOnce({
 			workflows: [tinyWorkflow],
@@ -188,7 +188,7 @@ describe("/rpiv — issue surfacing", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("tiny Add feature", ctx);
+		await captured.commands.get("wf")?.handler("tiny Add feature", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("orphan check"), "warning");
 	});
 
@@ -203,7 +203,7 @@ describe("/rpiv — issue surfacing", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("rpiv")?.handler("tiny Add feature", ctx);
+		await captured.commands.get("wf")?.handler("tiny Add feature", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("config error"), "error");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});

@@ -82,8 +82,8 @@ describe("formatWorkflowList", () => {
 
 	it("includes both usage hints — run and preview", () => {
 		const out = formatWorkflowList(baseLoaded());
-		expect(out).toContain("Usage: /rpiv [workflow] <description>");
-		expect(out).toContain("/rpiv <workflow>");
+		expect(out).toContain("Usage: /wf [workflow] <description>");
+		expect(out).toContain("/wf <workflow>");
 		expect(out).toContain("preview stages");
 	});
 
@@ -176,6 +176,6 @@ describe("formatWorkflowDetails", () => {
 
 	it("emits a per-workflow usage hint", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "tiny");
-		expect(out).toContain("Usage: /rpiv tiny <description>");
+		expect(out).toContain("Usage: /wf tiny <description>");
 	});
 });

@@ -3,18 +3,29 @@
  * insertion order IS its linear stage order — `Object.keys(nodes)` gives
  * the natural read order for previews and traversal alike.
  *
- * Predicate edges use `threshold(...)` from `api.ts`, which attaches
- * `.targets` metadata so reachability checks (validate.ts) and graph
+ * Predicate edges use `threshold(...)` from `@juicesharp/rpiv-workflow`,
+ * which attaches `.targets` metadata so reachability checks and graph
  * introspectors can enumerate possible branches without probing.
+ *
+ * These workflows name skills bundled by rpiv-pi (research, design, plan,
+ * implement, validate, code-review, revise, commit). Installing
+ * rpiv-workflow without rpiv-pi means these workflows aren't loaded —
+ * users author their own over their own skills.
  */
 
+import {
+	action,
+	artifact,
+	defineWorkflow,
+	gitCommitExtractor,
+	threshold,
+	typeboxSchema,
+	type Workflow,
+} from "@juicesharp/rpiv-workflow";
 import { Type } from "typebox";
-import { action, artifact, defineWorkflow, threshold, type Workflow } from "./api.js";
-import { gitCommitExtractor } from "./extractors/index.js";
-import { typeboxSchema } from "./standard-schema.js";
 
 const CODE_REVIEW_SCHEMA = typeboxSchema(
-	Type.Object({ severeIssueCount: Type.Integer({ minimum: 0 }) }, { additionalProperties: true }),
+	Type.Object({ blockers_count: Type.Integer({ minimum: 0 }) }, { additionalProperties: true }),
 );
 
 // ===========================================================================
@@ -59,7 +70,7 @@ const midWorkflow = defineWorkflow({
 		blueprint: "implement",
 		implement: "validate",
 		validate: "code-review",
-		"code-review": threshold("severeIssueCount", 0, "revise", "commit"),
+		"code-review": threshold("blockers_count", 0, "revise", "commit"),
 		revise: "implement-after-revise",
 		"implement-after-revise": "commit",
 		commit: "stop",
@@ -92,7 +103,7 @@ const largeWorkflow = defineWorkflow({
 		plan: "implement",
 		implement: "validate",
 		validate: "code-review-large",
-		"code-review-large": threshold("severeIssueCount", 0, "design-after-review", "commit"),
+		"code-review-large": threshold("blockers_count", 0, "design-after-review", "commit"),
 		"design-after-review": "plan-after-review",
 		"plan-after-review": "implement-after-review",
 		"implement-after-review": "commit",

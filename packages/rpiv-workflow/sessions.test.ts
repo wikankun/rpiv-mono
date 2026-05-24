@@ -547,6 +547,64 @@ describe("sessions — outcome slicing", () => {
 		expect(captured[0]?.branchOffset).toBeUndefined();
 	});
 
+	it("continue policy + validation retry: retry passes branchOffset so prior-stage prefix is skipped (I4)", async () => {
+		// Pre-I4 fix: the retry call site spread `extractorCtx` (branchOffset
+		// undefined for continue) over freshBranch() (UNSLICED full branch),
+		// so extractArtifactPath scanned from index 0 and could silently
+		// inherit the prior stage's path. Now the retry preserves
+		// s.branchOffset for continue policy.
+		const captured: ExtractorCtx[] = [];
+		let firstCall = true;
+		const failThenPassExtractor: Extractor = {
+			extract: (ctx) => {
+				captured.push(ctx);
+				// First call: schema-invalid → triggers retry.
+				// Subsequent calls: schema-valid.
+				const data = firstCall ? { foo: 0 } : { foo: 2 };
+				firstCall = false;
+				return okPayload(data);
+			},
+		};
+
+		const priorPrefix = [mockAssistantMessage("prior stage output"), mockAssistantMessage("more prior")];
+		const currentTail = [mockAssistantMessage("current stage output")];
+		const outerBranch = [...priorPrefix, ...currentTail];
+
+		const mockPi = createMockPi().pi;
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [],
+			outerBranch,
+			pi: mockPi,
+		});
+
+		await runStageSession(
+			chain.ctx as ChainCtx,
+			stageSession({
+				cwd: tmpDir,
+				state: freshRunState(),
+				node: node({
+					sessionPolicy: "continue",
+					outputSchema: FOO_EQ_2_SCHEMA,
+					extractor: failThenPassExtractor,
+				}),
+				branchOffset: priorPrefix.length,
+				pi: mockPi,
+			}),
+		);
+
+		// At least one retry should have fired.
+		expect(captured.length).toBeGreaterThanOrEqual(2);
+		// First extraction: pre-sliced branch + branchOffset undefined (no double-slice).
+		expect(captured[0]?.branch).toHaveLength(currentTail.length);
+		expect(captured[0]?.branchOffset).toBeUndefined();
+		// Retry: full unsliced branch + branchOffset = priorPrefix.length so
+		// extractArtifactPath skips the prior content.
+		const retryCtx = captured[captured.length - 1]!;
+		expect(retryCtx.branch.length).toBeGreaterThanOrEqual(outerBranch.length);
+		expect(retryCtx.branchOffset).toBe(priorPrefix.length);
+	});
+
 	it("fresh policy: branch is full, extractorCtx.branchOffset preserved (sliced downstream)", async () => {
 		const captured: ExtractorCtx[] = [];
 		const recordingExtractor: Extractor = {

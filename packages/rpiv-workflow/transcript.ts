@@ -46,7 +46,9 @@ export function readBranch(ctx: { sessionManager: { getBranch(): unknown } }): B
 	return ctx.sessionManager.getBranch() as unknown as BranchEntry[];
 }
 
-const ARTIFACT_PATH_REGEX = /\.rpiv\/artifacts\/[\w-]+\/[\w.-]+\.md/g;
+// Bucket capture matches filename rules so dirs with dots are accepted
+// (e.g. `.rpiv/artifacts/research.v2/x.md` is a real path the agent emits).
+const ARTIFACT_PATH_REGEX = /\.rpiv\/artifacts\/[\w.-]+\/[\w.-]+\.md/g;
 
 /**
  * Last `.rpiv/artifacts/...` mentioned in assistant text content. Scans

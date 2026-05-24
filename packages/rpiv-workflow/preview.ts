@@ -6,10 +6,11 @@
  */
 
 import type { NodeDef, Workflow } from "./api.js";
-import type { ConfigLayer, LoadedWorkflows } from "./load.js";
+import { type ConfigLayer, renderConfigLayer } from "./layers.js";
+import type { LoadedWorkflows } from "./load.js";
 
-const USAGE = "Usage: /rpiv [workflow] <description>";
-const USAGE_PREVIEW = "/rpiv <workflow>           — preview stages";
+const USAGE = "Usage: /wf [workflow] <description>";
+const USAGE_PREVIEW = "/wf <workflow>             — preview stages";
 
 // ===========================================================================
 // Public formatters
@@ -20,7 +21,7 @@ export function formatWorkflowList(loaded: LoadedWorkflows): string {
 	const rows = loaded.workflows.map((w) => {
 		const layer = loaded.workflowSources.get(w.name) ?? "built-in";
 		const stages = Object.keys(w.nodes).length;
-		const tags = [`[${layer}]`];
+		const tags = [`[${renderConfigLayer(layer)}]`];
 		if (w.name === loaded.default) tags.push("(default)");
 		return `  ${w.name.padEnd(28)} ${String(stages).padStart(2)} stages  ${tags.join(" ")}`;
 	});
@@ -39,7 +40,7 @@ export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): st
 		formatStageRow(i + 1, nodeName, node, workflow),
 	);
 
-	return [heading, "", ...stageRows, "", `Usage: /rpiv ${name} <description>`].join("\n");
+	return [heading, "", ...stageRows, "", `Usage: /wf ${name} <description>`].join("\n");
 }
 
 // ===========================================================================
@@ -48,7 +49,7 @@ export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): st
 
 /** `workflow: <name>  (<layer>[, default])` — header line for details view. */
 function formatWorkflowHeading(name: string, layer: ConfigLayer, isDefault: boolean): string {
-	const tags: string[] = [layer];
+	const tags: string[] = [renderConfigLayer(layer)];
 	if (isDefault) tags.push("default");
 	return `workflow: ${name}  (${tags.join(", ")})`;
 }
@@ -79,5 +80,5 @@ function formatEdge(workflow: Workflow, from: string): string | undefined {
 
 /** "Sources: built-in + user + project" — single-line layer banner. */
 function formatLayerBanner(layers: readonly ConfigLayer[]): string {
-	return `Sources: ${layers.join(" + ")}`;
+	return `Sources: ${layers.map(renderConfigLayer).join(" + ")}`;
 }

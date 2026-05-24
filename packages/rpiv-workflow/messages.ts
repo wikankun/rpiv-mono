@@ -47,3 +47,11 @@ export const MSG_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
 
 export const ERR_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
 	`Backward-jump limit exceeded: ${jumps} backward jumps (max ${max})`;
+
+export const MSG_AUDIT_WRITE_FAILED = (skill: string) =>
+	`✗ ${skill} completed but audit row could not be written — stopping workflow`;
+export const ERR_AUDIT_WRITE_FAILED = (skill: string) =>
+	`${skill} completed but the JSONL audit row could not be appended; halting to keep in-memory state aligned with disk`;
+
+export const MSG_CHAIN_ADVANCE_FAILED = (fromNode: string, reason: string) =>
+	`✗ chain advance after ${fromNode} failed: ${reason} — stopping workflow`;

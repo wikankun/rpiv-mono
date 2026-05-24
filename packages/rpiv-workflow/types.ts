@@ -20,7 +20,7 @@ export type ChainCtx = ExtensionCommandContext & {
 
 /** Mutable per-run bookkeeping threaded through the chain by reference. */
 export interface RunState {
-	/** Frozen — the user's `/rpiv` argument. */
+	/** Frozen — the user's `/wf` argument. */
 	originalInput: string;
 	/**
 	 * Denormalised mirror of `manifest.artifact_path` — load-bearing for the

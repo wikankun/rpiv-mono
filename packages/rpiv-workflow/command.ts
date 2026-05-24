@@ -1,7 +1,8 @@
-/** /rpiv slash command: parse → loadWorkflows → runWorkflow. */
+/** /wf slash command: parse → loadWorkflows → runWorkflow. */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Workflow } from "./api.js";
+import { renderConfigLayer } from "./layers.js";
 import { type Issue, type LoadedWorkflows, loadWorkflows } from "./load.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
 import { runWorkflow } from "./runner.js";
@@ -10,10 +11,10 @@ import { runWorkflow } from "./runner.js";
 // Message constants
 // ---------------------------------------------------------------------------
 
-const MSG_INTERACTIVE_ONLY = "/rpiv requires interactive mode";
-const ERR_WORKFLOW_THROW = (reason: string) => `/rpiv: workflow runner failed unexpectedly: ${reason}`;
+const MSG_INTERACTIVE_ONLY = "/wf requires interactive mode";
+const ERR_WORKFLOW_THROW = (reason: string) => `/wf: workflow runner failed unexpectedly: ${reason}`;
 const ERR_LOAD_ABORTED = (count: number) =>
-	`/rpiv: ${count} ${count === 1 ? "config error" : "config errors"} — see warnings above (fix and re-run)`;
+	`/wf: ${count} ${count === 1 ? "config error" : "config errors"} — see warnings above (fix and re-run)`;
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -41,8 +42,8 @@ export function parseArgs(
 }
 
 export function registerWorkflowCommand(pi: ExtensionAPI): void {
-	pi.registerCommand("rpiv", {
-		description: "Run the rpiv skill pipeline: /rpiv [workflow] [description]",
+	pi.registerCommand("wf", {
+		description: "Run a skill workflow: /wf [workflow] [description]",
 		handler: (args: string, ctx: ExtensionCommandContext) => handleWorkflowCommand(pi, args, ctx),
 	});
 }
@@ -77,7 +78,7 @@ async function handleWorkflowCommand(pi: ExtensionAPI, args: string, ctx: Extens
 
 	const workflow = pickWorkflow(loaded, workflowName);
 	if (!workflow) {
-		ctx.ui.notify(`/rpiv: workflow "${workflowName}" not found`, "error");
+		ctx.ui.notify(`/wf: workflow "${workflowName}" not found`, "error");
 		return;
 	}
 
@@ -107,7 +108,7 @@ function surfaceIssues(ctx: ExtensionCommandContext, issues: readonly Issue[]): 
 function formatIssue(issue: Issue): string {
 	if (issue.kind === "load") {
 		const where = issue.path ? ` (${issue.path})` : "";
-		return `[${issue.layer} config${where}] ${issue.message}`;
+		return `[${renderConfigLayer(issue.layer)} config${where}] ${issue.message}`;
 	}
 	const nodeTag = issue.node ? ` — node "${issue.node}"` : "";
 	// When the layer is attached (issues that flowed through loadWorkflows),
@@ -115,7 +116,7 @@ function formatIssue(issue: Issue): string {
 	// (tests, future programmatic embedders) get the trimmed form.
 	if (issue.layer) {
 		const pathTag = issue.path ? ` (${issue.path})` : "";
-		return `[${issue.layer} config${pathTag}] workflow "${issue.workflow}"${nodeTag}: ${issue.message}`;
+		return `[${renderConfigLayer(issue.layer)} config${pathTag}] workflow "${issue.workflow}"${nodeTag}: ${issue.message}`;
 	}
 	return `workflow "${issue.workflow}"${nodeTag}: ${issue.message}`;
 }

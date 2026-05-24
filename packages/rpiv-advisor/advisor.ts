@@ -294,8 +294,10 @@ export function setDisabledForModels(models: Array<string | { model: string; min
 // package doesn't depend on rpiv-pi — keep the symbol string in sync with
 // rpiv-pi/extensions/rpiv-core/workflow/child-session.ts.
 const WORKFLOW_CHILD_SESSION_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
+// Counter (not boolean) — see rpiv-workflow/child-session.ts. `> 0` so nested
+// /wf invocations are visible to this gate until the outermost runner exits.
 const isWorkflowChildSession = (): boolean =>
-	Boolean((globalThis as unknown as Record<symbol, unknown>)[WORKFLOW_CHILD_SESSION_KEY]);
+	((globalThis as unknown as Record<symbol, number | undefined>)[WORKFLOW_CHILD_SESSION_KEY] ?? 0) > 0;
 
 export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	const config = loadAdvisorConfig();

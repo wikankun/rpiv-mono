@@ -26,6 +26,7 @@ import {
 	ERR_MISSING_ARTIFACT,
 	MAX_BACKWARD_JUMPS,
 	MSG_BACKWARD_JUMP_EXHAUSTED,
+	MSG_CHAIN_ADVANCE_FAILED,
 	MSG_INPUT_VALIDATION_FAILED,
 	MSG_MISSING_ARTIFACT,
 	MSG_WORKFLOW_COMPLETE,
@@ -381,6 +382,8 @@ async function advanceChain(curCtx: ChainCtx, currentName: string, idx: number, 
 			if (state.backwardJumps > run.maxBackwardJumps) {
 				curCtx.ui.setStatus(STATUS_KEY, undefined);
 				curCtx.ui.notify(MSG_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps), "error");
+				// Audit row so JSONL readers see the same terminal event the result envelope reports.
+				recordStage(cwd, runId, { skill: currentName, status: "failed", ts: nowIso() }, state);
 				state.error = ERR_BACKWARD_JUMP_EXHAUSTED(state.backwardJumps, run.maxBackwardJumps);
 				return;
 			}
@@ -388,7 +391,13 @@ async function advanceChain(curCtx: ChainCtx, currentName: string, idx: number, 
 
 		await runStage(curCtx, nextName, idx + 1, run);
 	} catch (e) {
+		// EdgeFn / enforceSessionInvariants / runStage throws land here. Record
+		// a failure row co-extensive with state.error so JSONL readers see
+		// every terminal outcome the result envelope reports.
 		curCtx.ui.setStatus(STATUS_KEY, undefined);
-		state.error = e instanceof Error ? e.message : String(e);
+		const reason = e instanceof Error ? e.message : String(e);
+		recordStage(cwd, runId, { skill: currentName, status: "failed", ts: nowIso() }, state);
+		curCtx.ui.notify(MSG_CHAIN_ADVANCE_FAILED(currentName, reason), "error");
+		state.error = reason;
 	}
 }

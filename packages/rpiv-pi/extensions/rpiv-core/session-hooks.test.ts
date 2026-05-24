@@ -32,7 +32,24 @@ import { clearGitContextCache, getGitContext, resetInjectedMarker, takeGitContex
 import { clearInjectionState } from "./guidance.js";
 import { findMissingSiblings } from "./package-checks.js";
 import { registerSessionHooks } from "./session-hooks.js";
-import { clearChildSession, isChildSession, markChildSession } from "./workflow/child-session.js";
+
+// Workflow runtime lives in @juicesharp/rpiv-workflow. Use the shared
+// process-global symbol directly so this test stays decoupled from the
+// sibling — same approach session-hooks.ts uses at runtime. Counter
+// semantics (not boolean) — see rpiv-workflow/child-session.ts.
+const WORKFLOW_CHILD_SESSION_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
+const markChildSession = (): void => {
+	const g = globalThis as unknown as Record<symbol, number | undefined>;
+	g[WORKFLOW_CHILD_SESSION_KEY] = (g[WORKFLOW_CHILD_SESSION_KEY] ?? 0) + 1;
+};
+const clearChildSession = (): void => {
+	const g = globalThis as unknown as Record<symbol, number | undefined>;
+	const n = (g[WORKFLOW_CHILD_SESSION_KEY] ?? 0) - 1;
+	if (n > 0) g[WORKFLOW_CHILD_SESSION_KEY] = n;
+	else delete g[WORKFLOW_CHILD_SESSION_KEY];
+};
+const isChildSession = (): boolean =>
+	((globalThis as unknown as Record<symbol, number | undefined>)[WORKFLOW_CHILD_SESSION_KEY] ?? 0) > 0;
 
 const emptySync: SyncResult = {
 	added: [],

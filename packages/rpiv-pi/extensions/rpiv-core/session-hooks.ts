@@ -33,7 +33,17 @@ import {
 import { ARTIFACTS_SUBDIR, clearInjectionState, handleToolCallGuidance, injectRootGuidance } from "./guidance.js";
 import { findMissingSiblings } from "./package-checks.js";
 import { BUNDLED_SKILL_NAMES } from "./paths.js";
-import { isChildSession } from "./workflow/child-session.js";
+
+// Child-session detection. Reads a process-wide nesting counter set by
+// @juicesharp/rpiv-workflow's runner around inner stage spawns. Inlined
+// here (vs. importing) so this package doesn't depend on rpiv-workflow at
+// runtime — keep the symbol string in sync with rpiv-workflow's
+// child-session.ts CHILD_SESSION_KEY. Counter (not boolean) — `> 0` so
+// nested /wf invocations stay visible to this gate until the outermost
+// runner exits.
+const WORKFLOW_CHILD_SESSION_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
+const isChildSession = (): boolean =>
+	((globalThis as unknown as Record<symbol, number | undefined>)[WORKFLOW_CHILD_SESSION_KEY] ?? 0) > 0;
 
 const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/agent/agents/`;
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
@@ -150,8 +160,7 @@ async function onAgentEnd(_event: AgentEndEvent, ctx: ExtensionContext): Promise
 // Allowlist of rpiv-pi's own skill names, sourced from the shared
 // `BUNDLED_SKILL_NAMES` constant. Prevents the status bar from claiming
 // `rpiv:` ownership of user-supplied or third-party skills. The set is
-// computed once at module load in paths.ts; both this consumer and
-// workflow/dag.ts validation share that single readdir.
+// computed once at module load in paths.ts.
 function isOwnedSkill(name: string): boolean {
 	return BUNDLED_SKILL_NAMES.has(name);
 }

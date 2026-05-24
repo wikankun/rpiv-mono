@@ -1,30 +1,47 @@
 /**
  * Tests for `loadWorkflows` — jiti-based workflow loader.
  *
- * Each test writes a `rpiv.config.ts` fixture under a temp cwd, loads it,
- * and asserts the merged `LoadedWorkflows` shape. The user-level config
- * path (`~/.config/rpiv/config.ts`) is exercised via the same temp-tree
- * pattern as `loadConfig.test.ts` used to — clean between tests so one
- * test's overlay doesn't leak into the next.
+ * Each test writes a canonical / drop-in fixture under a temp cwd, loads
+ * it, and asserts the merged `LoadedWorkflows` shape. The user-level
+ * overlays (`~/.config/rpiv/workflows.config.ts` and the `workflows/`
+ * drop-in dir) are exercised via the same temp-tree pattern — cleaned
+ * between tests so one test's overlay doesn't leak into the next.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { builtInWorkflows } from "./built-in.js";
-import { loadWorkflows, projectConfigPath, USER_CONFIG_PATH } from "./load.js";
+import { action, artifact, defineWorkflow, type Workflow } from "./api.js";
+import { __resetBuiltIns, registerBuiltIns } from "./built-ins.js";
+import { loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load.js";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
 const TEST_TMP = join(process.env.HOME!, "test-workflow-load");
-const USER_CONFIG_DIR = dirname(USER_CONFIG_PATH);
+const USER_PATHS = userOverlayPaths();
+const USER_CONFIG_DIR = dirname(USER_PATHS.canonical);
+const PROJECT_PATHS = projectOverlayPaths(TEST_TMP);
+
+// Synthetic built-ins so load tests don't depend on which sibling package
+// (rpiv-pi, etc.) happens to be registering workflows. Reset per test.
+const builtInWorkflows: readonly Workflow[] = [
+	defineWorkflow({ name: "mid", start: "x", nodes: { x: artifact() }, edges: { x: "stop" } }),
+	defineWorkflow({
+		name: "small",
+		start: "implement",
+		nodes: { implement: action() },
+		edges: { implement: "stop" },
+	}),
+];
 
 beforeEach(() => {
 	rmSync(TEST_TMP, { recursive: true, force: true });
 	rmSync(USER_CONFIG_DIR, { recursive: true, force: true });
 	mkdirSync(TEST_TMP, { recursive: true });
+	__resetBuiltIns();
+	registerBuiltIns(builtInWorkflows);
 });
 afterEach(() => {
 	rmSync(TEST_TMP, { recursive: true, force: true });
@@ -32,12 +49,25 @@ afterEach(() => {
 });
 
 const writeProjectConfig = (cwd: string, body: string): void => {
-	writeFileSync(projectConfigPath(cwd), body, "utf-8");
+	const paths = projectOverlayPaths(cwd);
+	mkdirSync(dirname(paths.canonical), { recursive: true });
+	writeFileSync(paths.canonical, body, "utf-8");
+};
+
+const writeProjectDropIn = (cwd: string, filename: string, body: string): void => {
+	const paths = projectOverlayPaths(cwd);
+	mkdirSync(paths.dropInDir, { recursive: true });
+	writeFileSync(join(paths.dropInDir, filename), body, "utf-8");
 };
 
 const writeUserConfig = (body: string): void => {
-	mkdirSync(USER_CONFIG_DIR, { recursive: true });
-	writeFileSync(USER_CONFIG_PATH, body, "utf-8");
+	mkdirSync(dirname(USER_PATHS.canonical), { recursive: true });
+	writeFileSync(USER_PATHS.canonical, body, "utf-8");
+};
+
+const writeUserDropIn = (filename: string, body: string): void => {
+	mkdirSync(USER_PATHS.dropInDir, { recursive: true });
+	writeFileSync(join(USER_PATHS.dropInDir, filename), body, "utf-8");
 };
 
 const importApi = `import { defineWorkflow, artifact, action, threshold } from "${join(__dirname, "api.ts")}";`;
@@ -61,7 +91,7 @@ describe("loadWorkflows — baseline", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadWorkflows — project overlay", () => {
-	it("merges a single-workflow default-export from rpiv.config.ts", async () => {
+	it("merges a single-workflow default-export from workflows.config.ts", async () => {
 		writeProjectConfig(
 			TEST_TMP,
 			`${importApi}
@@ -266,7 +296,7 @@ export default defineWorkflow({
 		const issue = loaded.issues.find((i) => i.kind === "validation" && i.workflow === "bad");
 		expect(issue).toBeDefined();
 		expect(issue?.layer).toBe("project");
-		expect(issue?.path).toBe(projectConfigPath(TEST_TMP));
+		expect(issue?.path).toBe(PROJECT_PATHS.canonical);
 	});
 
 	it("refuses a bare Workflow[] with >1 entry — must wrap in envelope with explicit default", async () => {
@@ -348,5 +378,142 @@ export default defineWorkflow({
 		expect(loaded.workflows.find((w) => w.name === "good")).toBeDefined();
 		expect(loaded.layers).toContain("project");
 		expect(loaded.issues.some((i) => i.kind === "load" && i.layer === "user")).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Drop-in directories — alpha-sorted, canonical wins, no `default` allowed
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — drop-in directories", () => {
+	it("loads project drop-in workflows without a canonical file", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"a-pack.ts",
+			`${importApi}
+export default defineWorkflow({ name: "from-pack", start: "x", nodes: { x: artifact() }, edges: { x: "stop" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.layers).toEqual(["built-in", "project"]);
+		expect(loaded.workflowSources.get("from-pack")).toBe("project");
+	});
+
+	it("loads user drop-in workflows without a canonical file", async () => {
+		writeUserDropIn(
+			"my-pack.ts",
+			`${importApi}
+export default defineWorkflow({ name: "user-pack", start: "x", nodes: { x: artifact() }, edges: { x: "stop" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.layers).toContain("user");
+		expect(loaded.workflowSources.get("user-pack")).toBe("user");
+	});
+
+	it("merges drop-ins in alpha order — later files override earlier ones within the same layer", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"a-first.ts",
+			`${importApi}
+export default defineWorkflow({ name: "x", start: "from-a", nodes: { "from-a": artifact() }, edges: { "from-a": "stop" } });
+`,
+		);
+		writeProjectDropIn(
+			TEST_TMP,
+			"z-last.ts",
+			`${importApi}
+export default defineWorkflow({ name: "x", start: "from-z", nodes: { "from-z": artifact() }, edges: { "from-z": "stop" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		const x = loaded.workflows.find((w) => w.name === "x")!;
+		// z-last.ts is loaded after a-first.ts (alpha order), so its workflow wins.
+		expect(x.start).toBe("from-z");
+	});
+
+	it("canonical file wins over drop-ins within the same layer", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"pack.ts",
+			`${importApi}
+export default defineWorkflow({ name: "x", start: "from-pack", nodes: { "from-pack": artifact() }, edges: { "from-pack": "stop" } });
+`,
+		);
+		writeProjectConfig(
+			TEST_TMP,
+			`${importApi}
+export default defineWorkflow({ name: "x", start: "from-canonical", nodes: { "from-canonical": artifact() }, edges: { "from-canonical": "stop" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		const x = loaded.workflows.find((w) => w.name === "x")!;
+		expect(x.start).toBe("from-canonical");
+	});
+
+	it("accepts a Workflow[] in a drop-in", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"solo-array.ts",
+			`${importApi}
+export default [
+  defineWorkflow({ name: "solo", start: "x", nodes: { x: artifact() }, edges: { x: "stop" } }),
+];
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.workflows.find((w) => w.name === "solo")).toBeDefined();
+	});
+
+	it("rejects the envelope form in a drop-in (default lives in canonical only)", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"with-envelope.ts",
+			`${importApi}
+export default {
+  workflows: [defineWorkflow({ name: "x", start: "a", nodes: { a: artifact() }, edges: { a: "stop" } })],
+  default: "x",
+};
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(
+			loaded.issues.some(
+				(i) =>
+					i.kind === "load" &&
+					i.severity === "error" &&
+					/drop-in workflow files must export a `Workflow` or `Workflow\[\]`/.test(i.message),
+			),
+		).toBe(true);
+		// File is rejected → workflow never made it in.
+		expect(loaded.workflows.find((w) => w.name === "x")).toBeUndefined();
+	});
+
+	it("attributes validation issues to the exact drop-in file the workflow came from", async () => {
+		writeProjectDropIn(
+			TEST_TMP,
+			"bad-pack.ts",
+			`${importApi}
+export default defineWorkflow({ name: "bad", start: "a", nodes: { a: artifact() }, edges: { a: "ghost" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		const issue = loaded.issues.find((i) => i.kind === "validation" && i.workflow === "bad");
+		expect(issue?.layer).toBe("project");
+		expect(issue?.path).toBe(join(PROJECT_PATHS.dropInDir, "bad-pack.ts"));
+	});
+
+	it("ignores non-.ts files in the drop-in directory", async () => {
+		writeProjectDropIn(TEST_TMP, "notes.md", "# not a workflow");
+		writeProjectDropIn(TEST_TMP, "config.json", "{}");
+		const loaded = await loadWorkflows(TEST_TMP);
+		// No errors raised, no extra workflows registered.
+		expect(loaded.issues.filter((i) => i.severity === "error")).toEqual([]);
+		expect(loaded.layers).toEqual(["built-in"]);
+	});
+
+	it("does not append a layer when only a non-existent drop-in dir is checked", async () => {
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.layers).toEqual(["built-in"]);
 	});
 });

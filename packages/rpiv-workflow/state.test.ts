@@ -199,4 +199,27 @@ describe("fail-soft I/O", () => {
 			warnSpy.mockRestore();
 		}
 	});
+
+	it("a corrupt trailing line does NOT erase prior rows (per-line resilience)", () => {
+		// Closes I1: pre-fix, a single malformed line at the tail (truncated
+		// `appendFileSync`, ENOSPC, network FS hiccup) made readJsonlRows
+		// swallow the entire parse error in its outer try/catch and return
+		// []. Every successfully-written prior row vanished from the reader's
+		// view. Now each line parses in its own try/catch.
+		const runId = "partial-write";
+		writeHeader(tmpDir, { runId, preset: "mid", input: "test", ts: "2026" });
+		appendStage(tmpDir, runId, { stageNumber: 1, skill: "research", status: "completed", ts: "2026" });
+		appendStage(tmpDir, runId, { stageNumber: 2, skill: "design", status: "completed", ts: "2026" });
+		// Simulate a truncated trailing line (e.g. process killed mid-append).
+		appendFileSync(resolveStateFile(tmpDir, runId), '{"stageNumber":3,"skill":"impl', "utf-8");
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const rows = readAllStages(tmpDir, runId);
+			expect(rows.map((r) => r.stageNumber)).toEqual([1, 2]);
+			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("skipping malformed JSONL row"));
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
 });

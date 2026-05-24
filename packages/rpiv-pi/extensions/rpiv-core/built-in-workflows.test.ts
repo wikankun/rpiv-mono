@@ -28,14 +28,20 @@ import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
+import {
+	action,
+	artifact,
+	defineWorkflow,
+	nextNode,
+	type RunState,
+	resolveStateFile,
+	resolveWorkflowsDir,
+	runWorkflow,
+	validateWorkflow,
+	type Workflow,
+} from "@juicesharp/rpiv-workflow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { action, artifact, defineWorkflow, type Workflow } from "./api.js";
-import { builtInWorkflows } from "./built-in.js";
-import { nextNode } from "./routing.js";
-import { runWorkflow } from "./runner.js";
-import { resolveStateFile, resolveWorkflowsDir } from "./state.js";
-import type { RunState } from "./types.js";
-import { validateWorkflow } from "./validate.js";
+import { builtInWorkflows } from "./built-in-workflows.js";
 
 const findWorkflow = (name: string): Workflow => {
 	const w = builtInWorkflows.find((x) => x.name === name);
@@ -109,7 +115,7 @@ describe("[I2] readers must not silently drop the first row when no header is on
 	});
 
 	it("readLastStage returns the row even when the header line is missing", async () => {
-		const { readLastStage } = await import("./state.js");
+		const { readLastStage } = await import("@juicesharp/rpiv-workflow");
 		const runId = "2026-05-23_13-05-38-abcd";
 		mkdirSync(resolveWorkflowsDir(tmpDir), { recursive: true });
 		const filePath = resolveStateFile(tmpDir, runId);
@@ -144,7 +150,7 @@ describe("[I6] code-review predicate must not silently route to commit on missin
 		const mid = findWorkflow("mid");
 		const schema = mid.nodes["code-review"]?.outputSchema;
 		if (!schema) throw new Error("code-review outputSchema missing — fix I6 first");
-		const { validateManifestData } = await import("./validation.js");
+		const { validateManifestData } = await import("@juicesharp/rpiv-workflow");
 		expect(validateManifestData(schema, {}).valid).toBe(false);
 	});
 
@@ -255,7 +261,7 @@ describe("[I3] recordStage signals success and advances stageNumber monotonicall
 	});
 
 	it("returns the assigned stageNumber on a successful write", async () => {
-		const { recordStage } = await import("./audit.js");
+		const { recordStage } = await import("@juicesharp/rpiv-workflow");
 		const state = freshState();
 		const assigned = recordStage(
 			tmpDir,
@@ -268,7 +274,7 @@ describe("[I3] recordStage signals success and advances stageNumber monotonicall
 	});
 
 	it("returns undefined on a write failure but still advances lastStageNumber (no number reuse)", async () => {
-		const { recordStage } = await import("./audit.js");
+		const { recordStage } = await import("@juicesharp/rpiv-workflow");
 		const state = freshState();
 		const failedAssignment = recordStage(
 			"/dev/null/impossible",

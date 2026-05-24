@@ -64,7 +64,11 @@ export function validateWorkflow(workflow: Workflow): ValidationIssue[] {
 	checkEdgeKeys(workflow, issues);
 	checkEdgeTargets(workflow, issues);
 	checkMissingEdges(workflow, issues);
-	checkReachability(workflow, issues);
+	// Skip reachability when an EdgeFn lacks `.targets` — the BFS would emit
+	// "unreachable from start" cascades whose root cause is the upstream error
+	// already reported by checkEdgeTargets.
+	const hasUnenumerableEdge = issues.some((i) => /\.targets` metadata/.test(i.message));
+	if (!hasUnenumerableEdge) checkReachability(workflow, issues);
 	checkNodeSemantics(workflow, issues);
 	checkPredicateSchemas(workflow, issues);
 
@@ -75,7 +79,7 @@ export function validateWorkflow(workflow: Workflow): ValidationIssue[] {
 // Individual checks
 // ===========================================================================
 
-/** `name` is what users type as `/rpiv <name>` — empty string makes the workflow unreachable. */
+/** `name` is what users type as `/wf <name>` — empty string makes the workflow unreachable. */
 function checkWorkflowName(w: Workflow, issues: ValidationIssue[]): void {
 	if (typeof w.name !== "string" || w.name.length === 0) {
 		issues.push(error("(anonymous)", undefined, "workflow name must be a non-empty string"));
@@ -208,19 +212,74 @@ function checkNodeSemantics(w: Workflow, issues: ValidationIssue[]): void {
 		if (node.sessionPolicy !== "fresh" && node.sessionPolicy !== "continue") {
 			issues.push(error(w.name, name, `sessionPolicy: "${node.sessionPolicy}" — must be "fresh" or "continue"`));
 		}
+		// Phase fanout for implement nodes requires per-phase session isolation —
+		// `continue` would replay the prior phase's branch into the next phase's
+		// session. The runner enforces this at dispatch (`enforceSessionInvariants`);
+		// surface it at load time so user-authored configs get a targeted error
+		// instead of a generic chain-advance failure on first invocation.
+		if ((node.skill === "implement" || name === "implement") && node.sessionPolicy === "continue") {
+			issues.push(
+				error(
+					w.name,
+					name,
+					`implement node "${name}" cannot use sessionPolicy "continue" — phase fanout requires per-phase session isolation`,
+				),
+			);
+		}
+		// Async schemas can't drive the runner's synchronous retry loop. Probe
+		// each schema with an empty object at load time and reject ones whose
+		// `~standard.validate` returns a Promise. Without this, the runner's
+		// extractAndValidateManifest throws mid-stage and the audit trail
+		// surfaces an opaque chain-advance error instead of a workflow-load
+		// error pointing at the offending node.
+		if (node.outputSchema && isAsyncSchema(node.outputSchema)) {
+			issues.push(
+				error(
+					w.name,
+					name,
+					"outputSchema declares an async `~standard.validate` — workflow runner is synchronous at the validation seam; refactor the schema to be synchronous or drop the schema entirely",
+				),
+			);
+		}
+		if (node.inputSchema && isAsyncSchema(node.inputSchema)) {
+			issues.push(
+				error(
+					w.name,
+					name,
+					"inputSchema declares an async `~standard.validate` — workflow runner is synchronous at the validation seam; refactor the schema to be synchronous or drop the schema entirely",
+				),
+			);
+		}
 	}
 }
 
 /**
- * Predicate edges that read `manifest.data[field]` (i.e. `threshold` and any
- * future factory that sets the `READS_FRONTMATTER` marker) should fire on
- * data the source node has validated against its `outputSchema`. If the
- * schema is absent, the validation-retry loop never runs and the predicate
- * may read an undefined field — routing decisions silently default.
+ * Probe a Standard Schema with an empty object and report whether its
+ * `~standard.validate` returned a Promise. The probe value is intentionally
+ * meaningless — we don't care about the validation outcome, only its
+ * sync/async shape. Any schema that throws on the probe is treated as
+ * "not async" (the throw bubbles to the runner anyway and surfaces under
+ * the same fatal-extraction path).
+ */
+function isAsyncSchema(schema: { "~standard": { validate: (data: unknown) => unknown } }): boolean {
+	try {
+		const result = schema["~standard"].validate({});
+		return result instanceof Promise;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Predicate edges that read `manifest.data[field]` (i.e. `definePredicate`,
+ * `threshold`, and any future factory that auto-attaches the
+ * `READS_FRONTMATTER` marker) should fire on data the source node has
+ * validated against its `outputSchema`. If the schema is absent, the
+ * validation-retry loop never runs and the predicate may read an undefined
+ * field — routing decisions silently default.
  *
- * Hand-rolled predicates (via `definePredicate`) that consult only `state`
- * or `manifest.meta` carry no marker and are exempt — the warning would be
- * a false positive there.
+ * Predicates authored via `defineStatePredicate` consult only `state` or
+ * `manifest.meta` and carry no marker — exempt from this lint.
  */
 function checkPredicateSchemas(w: Workflow, issues: ValidationIssue[]): void {
 	for (const [from, target] of Object.entries(w.edges)) {

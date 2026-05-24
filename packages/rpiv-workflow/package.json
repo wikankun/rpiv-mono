@@ -1,0 +1,74 @@
+{
+  "name": "@juicesharp/rpiv-workflow",
+  "version": "1.12.0",
+  "description": "Pi extension. Chain skills into typed multi-stage workflows with audited JSONL state, predicate routing, and per-stage manifest validation. Skill-agnostic — bring your own skills.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "rpiv",
+    "workflow",
+    "skills",
+    "orchestration",
+    "dag",
+    "pipeline"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "juicesharp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juicesharp/rpiv-mono.git",
+    "directory": "packages/rpiv-workflow"
+  },
+  "homepage": "https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-workflow#readme",
+  "bugs": {
+    "url": "https://github.com/juicesharp/rpiv-mono/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "files": [
+    "index.ts",
+    "api.ts",
+    "audit.ts",
+    "child-session.ts",
+    "command.ts",
+    "extractors",
+    "implement-phases.ts",
+    "layers.ts",
+    "load.ts",
+    "manifest.ts",
+    "messages.ts",
+    "predicates.ts",
+    "preview.ts",
+    "routing.ts",
+    "runner.ts",
+    "sessions.ts",
+    "standard-schema.ts",
+    "state.ts",
+    "transcript.ts",
+    "types.ts",
+    "validate.ts",
+    "validation.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@juicesharp/rpiv-config": "*",
+    "@standard-schema/spec": "*",
+    "jiti": "*",
+    "typebox": "*"
+  }
+}

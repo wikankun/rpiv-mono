@@ -25,7 +25,9 @@ import {
 	type Manifest,
 } from "./manifest.js";
 import {
+	ERR_AUDIT_WRITE_FAILED,
 	ERR_VALIDATION_FAILED,
+	MSG_AUDIT_WRITE_FAILED,
 	MSG_STAGE_COMPLETE,
 	MSG_STAGE_FAILED,
 	MSG_VALIDATION_EXHAUSTED,
@@ -46,6 +48,8 @@ import {
 	formatValidationFailuresForAgent,
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
+	MIN_VALIDATION_RETRIES,
+	MIN_VALIDATION_RETRY_TIMEOUT_MS,
 	type ValidationFailure,
 	validateManifestData,
 	withTimeout,
@@ -90,7 +94,7 @@ async function postStage(ctx: ChainCtx, s: StageSession): Promise<void> {
 	if (result.kind === "fatal") return haltStageWithExtractionError(ctx, s, result.message);
 	if (result.kind === "validation-exhausted") return haltStageWithValidationFailure(ctx, s, result.failureSummary);
 
-	recordStageSuccess(ctx, s, outcome.artifact, result.manifest);
+	if (!recordStageSuccess(ctx, s, outcome.artifact, result.manifest)) return;
 	await s.onSuccess(ctx, outcome.artifact);
 }
 
@@ -99,7 +103,7 @@ async function postPhase(ctx: ChainCtx, s: PhaseSession): Promise<void> {
 	const outcome = readPhaseOutcome(ctx);
 	if (outcome.stop !== "stop") return haltPhase(ctx, s, outcome.stop);
 
-	recordPhaseSuccess(s, outcome.artifact);
+	if (!recordPhaseSuccess(s, outcome.artifact)) return;
 	await s.onSuccess(ctx);
 }
 
@@ -169,37 +173,53 @@ function haltPhase(ctx: ChainCtx, s: PhaseSession, stop: Exclude<StopSignal, "st
 // SUCCESS-PERSISTENCE HELPERS
 // ===========================================================================
 
-/** Bumps `stagesCompleted` only on disk-write success — keeps result.stagesCompleted aligned with row count. */
+/**
+ * Returns true on successful write — caller gates `onSuccess` on this so the
+ * chain advances only when the audit row landed. On failure, leaves
+ * `state.artifactPath` / `state.manifest` at their prior values (the disk has
+ * no row for what just completed, so the in-memory pointers must not advance
+ * past it) and sets `state.error` to halt the run.
+ */
 function recordStageSuccess(
 	ctx: ChainCtx,
 	s: StageSession,
 	artifact: string | undefined,
 	manifest: Manifest | undefined,
-): void {
-	if (manifest?.artifact_path) s.state.artifactPath = manifest.artifact_path;
-	else if (artifact) s.state.artifactPath = artifact;
-	if (manifest) s.state.manifest = manifest;
-
+): boolean {
 	const assigned = recordStage(
 		s.cwd,
 		s.runId,
 		{ skill: s.skill, artifact, status: "completed", ts: nowIso(), manifest },
 		s.state,
 	);
+	if (assigned === undefined) {
+		ctx.ui.notify(MSG_AUDIT_WRITE_FAILED(s.skill), "error");
+		s.state.error = ERR_AUDIT_WRITE_FAILED(s.skill);
+		return false;
+	}
+	if (manifest?.artifact_path) s.state.artifactPath = manifest.artifact_path;
+	else if (artifact) s.state.artifactPath = artifact;
+	if (manifest) s.state.manifest = manifest;
+	s.state.stagesCompleted++;
 	ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
-	if (assigned !== undefined) s.state.stagesCompleted++;
+	return true;
 }
 
 /** Phase rows never notify — parent stage holds MSG_STAGE_COMPLETE until all phases finish. */
-function recordPhaseSuccess(s: PhaseSession, artifact: string | undefined): void {
-	if (artifact) s.state.artifactPath = artifact;
+function recordPhaseSuccess(s: PhaseSession, artifact: string | undefined): boolean {
 	const assigned = recordStage(
 		s.cwd,
 		s.runId,
 		{ skill: phaseRowLabel(s), artifact, status: "completed", ts: nowIso() },
 		s.state,
 	);
-	if (assigned !== undefined) s.state.stagesCompleted++;
+	if (assigned === undefined) {
+		s.state.error = ERR_AUDIT_WRITE_FAILED(phaseRowLabel(s));
+		return false;
+	}
+	if (artifact) s.state.artifactPath = artifact;
+	s.state.stagesCompleted++;
+	return true;
 }
 
 // ===========================================================================
@@ -303,10 +323,20 @@ async function retryUntilValid(
 	initial: Manifest,
 ): Promise<ExtractionOutcome> {
 	const schema = s.node.outputSchema!;
-	const maxRetries = Math.min(s.node.maxValidationRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES);
-	const timeoutMs = Math.min(
-		s.node.validationRetryTimeoutMs ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
-		MAX_VALIDATION_RETRY_TIMEOUT_MS,
+	// Defense-in-depth: validateWorkflow's checkNodeSemantics already errors
+	// on out-of-range values and command.ts blocks execution on errors, so
+	// the runtime should never see them. The lower clamps cover the path
+	// where a caller programmatically embeds runWorkflow without going
+	// through loadWorkflows. Without them, `maxValidationRetries: -1`
+	// silently disables retries and a 100 ms timeout fires before the agent
+	// emits its first token.
+	const maxRetries = Math.max(
+		MIN_VALIDATION_RETRIES,
+		Math.min(s.node.maxValidationRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES),
+	);
+	const timeoutMs = Math.max(
+		MIN_VALIDATION_RETRY_TIMEOUT_MS,
+		Math.min(s.node.validationRetryTimeoutMs ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS, MAX_VALIDATION_RETRY_TIMEOUT_MS),
 	);
 
 	let manifest = initial;
@@ -325,11 +355,20 @@ async function retryUntilValid(
 			return { kind: "fatal", message: msg };
 		}
 
-		const reExtracted = await runExtractor(
-			deps.extractor,
-			{ ...deps.extractorCtx, branch: deps.freshBranch() },
-			deps.finalize,
-		);
+		// Re-extract against the latest branch. For continue policy, freshBranch
+		// returns the UNSLICED branch (readBranch over the shared ctx), but
+		// extractorCtx.branchOffset is undefined because the FIRST extraction
+		// received a pre-sliced branch. Pass the originally-captured s.branchOffset
+		// here so extractArtifactPath skips the prior-stage prefix instead of
+		// re-finding the upstream artifact and silently passing the validation
+		// retry while routing on stale state. (Closes I4 from the 2026-05-24
+		// review — artifact-emit + continue retry inherited prior path.)
+		const retryBranch = deps.freshBranch();
+		const retryCtx =
+			s.node.sessionPolicy === "continue"
+				? { ...deps.extractorCtx, branch: retryBranch, branchOffset: s.branchOffset }
+				: { ...deps.extractorCtx, branch: retryBranch };
+		const reExtracted = await runExtractor(deps.extractor, retryCtx, deps.finalize);
 		if (reExtracted.kind === "fatal") return reExtracted;
 		if (!reExtracted.manifest) {
 			return { kind: "fatal", message: `${s.skill}: extractor returned no manifest on retry ${attempts}` };
@@ -421,7 +460,15 @@ async function sendAndAwaitIdle(
 ): Promise<void> {
 	if (opts.sessionPolicy === "continue") {
 		if (!opts.pi) throw new Error("sendAndAwaitIdle: continue requires pi");
-		opts.pi.sendUserMessage(msg);
+		// `pi.sendUserMessage` returns a Promise — pre-I5b we discarded it,
+		// so a rejected send (e.g. transport closed, agent SDK fault)
+		// surfaced as unhandledRejection past the stage boundary and the
+		// runner kept walking the chain blind. Await so the rejection lands
+		// on this stage's halt path. We don't `await ctx.waitForIdle({ signal })`
+		// because Pi's SDK doesn't expose an abort signal yet — abandoned
+		// waitForIdle from a prior retry can still settle on the next
+		// continue stage's ctx (tracked, not fixed here).
+		await opts.pi.sendUserMessage(msg);
 		await ctx.waitForIdle();
 	} else {
 		await (ctx as unknown as { sendUserMessage(msg: string): Promise<void> }).sendUserMessage(msg);

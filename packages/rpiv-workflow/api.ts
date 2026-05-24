@@ -102,7 +102,7 @@ export interface NodeDef {
 }
 
 /**
- * A complete workflow. `name` is what users type as `/rpiv <name>`; `start`
+ * A complete workflow. `name` is what users type as `/wf <name>`; `start`
  * is the entry node; `nodes` is the lexicon; `edges` is the wiring. Every
  * key in `edges` must exist in `nodes`; every string value must exist in
  * `nodes` or be `"stop"`. Validated at load time by `validate.ts`.
@@ -157,11 +157,16 @@ export function action(overrides: Partial<NodeDef> = {}): NodeDef {
 // ===========================================================================
 
 /**
- * Internal marker attached by predicate factories that read from
- * `manifest.data` (e.g. `threshold`). `validate.ts:checkPredicateSchemas`
- * scopes its `outputSchema`-missing warning to predicates carrying this
- * marker, so hand-rolled predicates that only consult `state` or
- * `manifest.meta` don't trip false positives.
+ * Marker attached to EdgeFns that read from `manifest.data`.
+ * `validate.ts:checkPredicateSchemas` warns when a node feeds a marked
+ * predicate but has no `outputSchema` — routing on un-validated frontmatter
+ * is the I6-class defect from the bcc34bc review.
+ *
+ * Default is "marked": `definePredicate` auto-marks. Hand-roll
+ * `defineStatePredicate` for the rare predicate that consults only `state`
+ * or `manifest.meta` — that's the opt-out path. The previous direction
+ * (opt-in marker, default unmarked) silently exempted every user-authored
+ * predicate from the lint.
  *
  * Exported as a `Symbol.for` so it survives `import` boundaries cleanly.
  */
@@ -174,6 +179,11 @@ export const READS_FRONTMATTER: unique symbol = Symbol.for("rpiv.workflow.readsF
  * checks see every branch; this factory is the only blessed way to author
  * a multi-branch predicate.
  *
+ * Auto-marks the returned EdgeFn with `READS_FRONTMATTER` so the
+ * predicate-schema lint fires when the source node has no `outputSchema`.
+ * If the predicate consults only `state` / `manifest.meta` and never reads
+ * `manifest.data`, use `defineStatePredicate` instead.
+ *
  * Throws if `targets` is empty — a predicate that can't return anything
  * declared is by definition a bug.
  */
@@ -183,17 +193,31 @@ export function definePredicate(targets: readonly string[], fn: EdgePredicate): 
 	}
 	const wrapped = fn as EdgeFn;
 	wrapped.targets = [...targets];
+	(wrapped as unknown as Record<symbol, boolean>)[READS_FRONTMATTER] = true;
+	return wrapped;
+}
+
+/**
+ * Like `definePredicate` but for predicates that consult only `state` or
+ * `manifest.meta` and never read `manifest.data`. Omits the
+ * `READS_FRONTMATTER` marker so `checkPredicateSchemas` doesn't warn the
+ * source node lacks an `outputSchema` (a state-derived predicate has no
+ * frontmatter-shape contract to validate).
+ */
+export function defineStatePredicate(targets: readonly string[], fn: EdgePredicate): EdgeFn {
+	if (targets.length === 0) {
+		throw new Error("defineStatePredicate: targets must declare at least one possible return value");
+	}
+	const wrapped = fn as EdgeFn;
+	wrapped.targets = [...targets];
 	return wrapped;
 }
 
 /**
  * `ifAbove` when `Number(manifest.data[field] ?? 0) > threshold`, else `ifBelow`.
- * Built on `definePredicate` so the contract is enforced structurally.
- * Marks the returned EdgeFn with `READS_FRONTMATTER` so the predicate-schema
- * lint can warn when the source node has no `outputSchema`.
+ * Built on `definePredicate` so the contract is enforced structurally; the
+ * `READS_FRONTMATTER` marker is inherited from `definePredicate`.
  */
 export function threshold(field: string, n: number, ifAbove: string, ifBelow: string): EdgeFn {
-	const fn = definePredicate([ifAbove, ifBelow], predicateThreshold(field, n, ifAbove, ifBelow));
-	(fn as unknown as Record<symbol, boolean>)[READS_FRONTMATTER] = true;
-	return fn;
+	return definePredicate([ifAbove, ifBelow], predicateThreshold(field, n, ifAbove, ifBelow));
 }
