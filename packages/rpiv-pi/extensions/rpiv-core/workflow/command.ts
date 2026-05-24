@@ -1,7 +1,8 @@
 /** /rpiv slash command: parse → loadConfig → runWorkflow. */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { type LoadedConfigWithSource, loadConfig } from "./loadConfig.js";
+import { loadConfig } from "./loadConfig.js";
+import { formatPresetDetails, formatPresetList } from "./preview.js";
 import { runWorkflow } from "./runner.js";
 
 // ---------------------------------------------------------------------------
@@ -9,7 +10,6 @@ import { runWorkflow } from "./runner.js";
 // ---------------------------------------------------------------------------
 
 const MSG_INTERACTIVE_ONLY = "/rpiv requires interactive mode";
-const MSG_USAGE = "Usage: /rpiv [preset] <feature description>";
 const ERR_WORKFLOW_THROW = (reason: string) => `/rpiv: workflow runner failed unexpectedly: ${reason}`;
 
 // ---------------------------------------------------------------------------
@@ -37,14 +37,6 @@ export function parseArgs(
 	return { preset: config.defaultPreset, input: trimmed };
 }
 
-export function formatPresetList(config: LoadedConfigWithSource): string {
-	const lines = Array.from(config.presetNames, (name) => {
-		const isDefault = name === config.defaultPreset;
-		return `  ${name}${isDefault ? " (default)" : ""}`;
-	});
-	return `Available presets [${config.source}]:\n${lines.join("\n")}\n\n${MSG_USAGE}`;
-}
-
 export function registerWorkflowCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("rpiv", {
 		description: "Run the rpiv skill pipeline: /rpiv [preset] [description]",
@@ -67,7 +59,10 @@ async function handleWorkflowCommand(pi: ExtensionAPI, args: string, ctx: Extens
 
 	const { preset, input } = parseArgs(args, config);
 	if (!input) {
-		ctx.ui.notify(formatPresetList(config), "info");
+		// Bare preset token → preview that preset. Empty / unknown token → full list.
+		const trimmed = args.trim();
+		const previewing = trimmed.length > 0 && config.presetNames.has(trimmed);
+		ctx.ui.notify(previewing ? formatPresetDetails(config, trimmed) : formatPresetList(config), "info");
 		return;
 	}
 

@@ -26,17 +26,19 @@ export interface WorkflowConfigFile {
 /** Used when a config omits `defaultPreset` AND ships in WORKFLOW_DAG.presets. */
 export const DEFAULT_PRESET_NAME = "mid";
 
+export type ConfigSource = "project" | "user" | "built-in";
+
 export interface LoadedConfig {
 	dag: WorkflowDag;
 	presetNames: ReadonlySet<string>;
 	defaultPreset: string;
-	warnings?: string[];
-}
-
-export type ConfigSource = "project" | "user" | "built-in";
-
-export interface LoadedConfigWithSource extends LoadedConfig {
+	/** Highest non-built-in layer that contributed, or "built-in" if none did. */
 	source: ConfigSource;
+	/** Every layer that contributed, low-to-high. Always starts with "built-in". */
+	layers: readonly ConfigSource[];
+	/** Which layer each effective preset name came from. */
+	presetSources: ReadonlyMap<string, ConfigSource>;
+	warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -76,58 +78,63 @@ export function readConfigFile(path: string): { data: WorkflowConfigFile | undef
 // ---------------------------------------------------------------------------
 
 /**
- * Resolution: project config > user config > WORKFLOW_DAG. Validation
- * failures fall back to built-in and reset `source` to "built-in" so help
- * listings don't lie about which layer is active. Never throws.
+ * Resolution: built-in ← user ← project, low-to-high. Both overlay files are
+ * read on every call; their `presets` blocks are merged by key (project wins
+ * on collision) and added onto the built-in preset namespace. `defaultPreset`
+ * cascades the same way. Validation runs once against the merged DAG; on
+ * failure the loader falls back wholesale to built-in so help listings don't
+ * lie about which layer is active. Never throws.
  */
-export function loadConfig(cwd: string): LoadedConfigWithSource {
+export function loadConfig(cwd: string): LoadedConfig {
 	const warnings: string[] = [];
 
 	const project = readConfigFile(projectConfigPath(cwd));
 	if (project.warning) warnings.push(project.warning);
 
-	let configFile: WorkflowConfigFile | undefined;
-	let source: ConfigSource;
+	const user = readConfigFile(USER_CONFIG_PATH);
+	if (user.warning) warnings.push(user.warning);
 
-	if (project.data) {
-		configFile = project.data;
-		source = "project";
-	} else {
-		const user = readConfigFile(USER_CONFIG_PATH);
-		if (user.warning) warnings.push(user.warning);
-		configFile = user.data;
-		source = configFile ? "user" : "built-in";
-	}
+	const overlayLayers: ConfigSource[] = [];
+	if (user.data) overlayLayers.push("user");
+	if (project.data) overlayLayers.push("project");
 
-	const builtInFallback = (extraWarnings: string[] = []): LoadedConfigWithSource => {
+	const builtInFallback = (extraWarnings: string[] = []): LoadedConfig => {
 		warnings.push(...extraWarnings);
+		// `defaultPreset` cascades even on fallback so a user who only set
+		// defaultPreset (no presets) still gets their pick if it's a built-in name.
+		const requested = project.data?.defaultPreset ?? user.data?.defaultPreset;
 		return {
 			dag: WORKFLOW_DAG,
 			presetNames: new Set(Object.keys(WORKFLOW_DAG.presets)),
-			defaultPreset: resolveDefaultPreset(WORKFLOW_DAG.presets, configFile?.defaultPreset, warnings),
+			defaultPreset: resolveDefaultPreset(WORKFLOW_DAG.presets, requested, warnings),
 			source: "built-in",
+			layers: ["built-in"],
+			presetSources: builtInPresetSources(),
 			warnings: warnings.length > 0 ? warnings : undefined,
 		};
 	};
 
-	if (!configFile?.presets || typeof configFile.presets !== "object" || Array.isArray(configFile.presets)) {
-		return builtInFallback();
+	// Shape-guard each overlay independently so a malformed key in one layer
+	// doesn't poison the other. validateDag would iterate a stray string
+	// character-by-character without this gate.
+	const userShapeErrors = collectPresetShapeErrors(user.data, "user");
+	const projectShapeErrors = collectPresetShapeErrors(project.data, "project");
+	if (userShapeErrors.length + projectShapeErrors.length > 0) {
+		return builtInFallback([...userShapeErrors, ...projectShapeErrors]);
 	}
 
-	// validateDag iterates a stray string character-by-character and emits
-	// per-character warnings without this shape guard.
-	const shapeErrors: string[] = [];
-	for (const [name, stageIds] of Object.entries(configFile.presets)) {
-		if (!Array.isArray(stageIds) || !stageIds.every((n) => typeof n === "string")) {
-			shapeErrors.push(`Config validation: preset "${name}" must be an array of strings`);
-		}
-	}
-	if (shapeErrors.length > 0) return builtInFallback(shapeErrors);
+	// Neither overlay contributed a `presets` block — collapse to built-in by
+	// reference so callers can still rely on `dag === WORKFLOW_DAG`.
+	const userHasPresets = !!user.data?.presets && Object.keys(user.data.presets).length > 0;
+	const projectHasPresets = !!project.data?.presets && Object.keys(project.data.presets).length > 0;
+	if (!userHasPresets && !projectHasPresets) return builtInFallback();
+
+	const merged = mergeConfigs(user.data, project.data);
 
 	// Phase 1 only allows preset overrides — inherit nodes + edges.
 	const configDag: WorkflowDag = {
 		edges: WORKFLOW_DAG.edges,
-		presets: configFile.presets as Record<string, string[]>,
+		presets: merged.presets,
 		nodes: WORKFLOW_DAG.nodes,
 	};
 	try {
@@ -140,15 +147,80 @@ export function loadConfig(cwd: string): LoadedConfigWithSource {
 		return builtInFallback([`Config validation error: ${(err as Error).message}`]);
 	}
 
-	const defaultPreset = resolveDefaultPreset(configDag.presets, configFile.defaultPreset, warnings);
+	const requestedDefault = project.data?.defaultPreset ?? user.data?.defaultPreset;
+	const defaultPreset = resolveDefaultPreset(configDag.presets, requestedDefault, warnings);
+	const layers: ConfigSource[] = ["built-in", ...overlayLayers];
+	// Highest non-built-in layer becomes `source` — empty overlay set falls
+	// through the fallback above, so this is always project or user here.
+	const source: ConfigSource = overlayLayers[overlayLayers.length - 1] ?? "built-in";
 
 	return {
 		dag: configDag,
 		presetNames: new Set(Object.keys(configDag.presets)),
 		defaultPreset,
 		source,
+		layers,
+		presetSources: merged.presetSources,
 		warnings: warnings.length > 0 ? warnings : undefined,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Merge helpers
+// ---------------------------------------------------------------------------
+
+interface MergedConfig {
+	presets: Record<string, string[]>;
+	presetSources: ReadonlyMap<string, ConfigSource>;
+}
+
+/**
+ * Compose built-in → user → project preset namespaces. Higher layers replace
+ * lower layers on key collision (no per-stage merging — a preset is owned
+ * outright by the layer that defined it last). The returned `presetSources`
+ * map records which layer each effective preset name came from; downstream
+ * formatters use it to annotate list output.
+ */
+function mergeConfigs(
+	userData: WorkflowConfigFile | undefined,
+	projectData: WorkflowConfigFile | undefined,
+): MergedConfig {
+	const presets: Record<string, string[]> = { ...WORKFLOW_DAG.presets };
+	const presetSources = new Map<string, ConfigSource>(
+		Object.keys(WORKFLOW_DAG.presets).map((name) => [name, "built-in"]),
+	);
+
+	if (userData?.presets) {
+		for (const [name, stages] of Object.entries(userData.presets)) {
+			presets[name] = stages as string[];
+			presetSources.set(name, "user");
+		}
+	}
+	if (projectData?.presets) {
+		for (const [name, stages] of Object.entries(projectData.presets)) {
+			presets[name] = stages as string[];
+			presetSources.set(name, "project");
+		}
+	}
+
+	return { presets, presetSources };
+}
+
+/** Per-layer shape guard — non-array values would otherwise reach validateDag. */
+function collectPresetShapeErrors(data: WorkflowConfigFile | undefined, layer: ConfigSource): string[] {
+	if (!data?.presets || typeof data.presets !== "object" || Array.isArray(data.presets)) return [];
+	const errors: string[] = [];
+	for (const [name, stageIds] of Object.entries(data.presets)) {
+		if (!Array.isArray(stageIds) || !stageIds.every((n) => typeof n === "string")) {
+			errors.push(`Config validation: preset "${name}" (${layer}) must be an array of strings`);
+		}
+	}
+	return errors;
+}
+
+/** Built-in preset names tagged as "built-in" — the bottom layer of any merge. */
+function builtInPresetSources(): ReadonlyMap<string, ConfigSource> {
+	return new Map(Object.keys(WORKFLOW_DAG.presets).map((name) => [name, "built-in" as const]));
 }
 
 /** requested → DEFAULT_PRESET_NAME → first preset key → DEFAULT_PRESET_NAME (last-resort, may not exist). */

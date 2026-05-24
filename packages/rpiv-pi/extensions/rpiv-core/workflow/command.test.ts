@@ -23,12 +23,21 @@ vi.mock("./loadConfig.js", () => ({
 		presetNames: new Set(["trivial", "small", "mid", "large", "review"]),
 		defaultPreset: "mid",
 		source: "built-in" as const,
+		layers: ["built-in"] as const,
+		presetSources: new Map([
+			["trivial", "built-in"],
+			["small", "built-in"],
+			["mid", "built-in"],
+			["large", "built-in"],
+			["review", "built-in"],
+		]),
 	})),
 }));
 
-import { formatPresetList, parseArgs, registerWorkflowCommand } from "./command.js";
-import type { LoadedConfigWithSource } from "./loadConfig.js";
+import { parseArgs, registerWorkflowCommand } from "./command.js";
+import type { LoadedConfig } from "./loadConfig.js";
 import { loadConfig } from "./loadConfig.js";
+import { formatPresetList } from "./preview.js";
 import { runWorkflow } from "./runner.js";
 
 beforeEach(() => {
@@ -90,30 +99,25 @@ describe("parseArgs", () => {
 	});
 });
 
-describe("formatPresetList", () => {
-	it("lists built-in presets with source indicator", () => {
-		const config: LoadedConfigWithSource = {
+describe("formatPresetList (re-exported wiring)", () => {
+	// Light smoke-test that command.ts wires the preview formatter through —
+	// full output assertions live in preview.test.ts.
+	it("returns a multiline string mentioning each preset and its source", () => {
+		const config: LoadedConfig = {
 			dag: { edges: [], presets: { mid: ["discover", "commit"], review: ["code-review", "commit"] }, nodes: {} },
 			presetNames: new Set(["mid", "review"]),
 			defaultPreset: "mid",
 			source: "built-in",
+			layers: ["built-in"],
+			presetSources: new Map([
+				["mid", "built-in"],
+				["review", "built-in"],
+			]),
 		};
 		const result = formatPresetList(config);
-		expect(result).toContain("[built-in]");
-		expect(result).toContain("mid (default)");
+		expect(result).toContain("mid");
 		expect(result).toContain("review");
-	});
-
-	it("lists project presets with source indicator", () => {
-		const config: LoadedConfigWithSource = {
-			dag: { edges: [], presets: { quick: ["research", "commit"] }, nodes: {} },
-			presetNames: new Set(["quick"]),
-			defaultPreset: "quick",
-			source: "project",
-		};
-		const result = formatPresetList(config);
-		expect(result).toContain("[project]");
-		expect(result).toContain("quick (default)");
+		expect(result).toContain("[built-in]");
 	});
 });
 
@@ -170,11 +174,25 @@ describe("/rpiv — valid invocation", () => {
 		expect(opts?.input).toBe("Add dark mode");
 	});
 
-	it("passes preset-only with empty input (shows listing)", async () => {
+	it("preset-only token shows that preset's detail view (not the full list)", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
 		await captured.commands.get("rpiv")?.handler("review", ctx);
+		// Detail header includes "preset: <name>" and does NOT mention "Available presets".
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("preset: review"), "info");
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Available presets"), "info");
+		expect(runWorkflow).not.toHaveBeenCalled();
+	});
+
+	it("unknown token with no further input shows the full preset list", async () => {
+		// "Add" is not a preset name → parseArgs falls through to defaultPreset
+		// with input "Add" — but that has input so it runs. To exercise the
+		// no-input-AND-not-a-preset path we hand bare whitespace.
+		const { pi, captured } = createMockPi();
+		registerWorkflowCommand(pi);
+		const ctx = createMockCommandCtx({ hasUI: true });
+		await captured.commands.get("rpiv")?.handler("   ", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Available presets"), "info");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
@@ -187,6 +205,8 @@ describe("/rpiv — config warnings", () => {
 			presetNames: new Set(["mid"]),
 			defaultPreset: "mid",
 			source: "built-in",
+			layers: ["built-in"],
+			presetSources: new Map([["mid", "built-in"]]),
 			warnings: ["Test warning"],
 		});
 		const { pi, captured } = createMockPi();

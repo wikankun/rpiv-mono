@@ -80,40 +80,33 @@ describe("loadConfig", () => {
 		expect([...result.presetNames]).toEqual(Object.keys(WORKFLOW_DAG.presets));
 	});
 
-	it("returns config presets from project-level config", () => {
+	it("layers project presets on top of built-in", () => {
 		const config = { presets: { quick: ["research", "commit"] }, defaultPreset: "quick" };
 		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify(config));
 
 		const result = loadConfig(TEST_TMP);
 		expect(result.source).toBe("project");
+		expect(result.layers).toEqual(["built-in", "project"]);
 		expect(result.defaultPreset).toBe("quick");
-		expect(result.dag.presets).toEqual({ quick: ["research", "commit"] });
+		expect(result.dag.presets.quick).toEqual(["research", "commit"]);
+		// Built-in presets remain reachable alongside the project's additions.
+		expect(result.dag.presets.mid).toEqual(WORKFLOW_DAG.presets.mid);
 		expect(result.dag.edges).toEqual(WORKFLOW_DAG.edges);
-		// presetNames mirrors the project DAG's preset keys.
-		expect([...result.presetNames]).toEqual(["quick"]);
+		expect(result.presetSources.get("quick")).toBe("project");
+		expect(result.presetSources.get("mid")).toBe("built-in");
 	});
 
-	it("returns config presets from user-level config when no project config", () => {
+	it("layers user presets on top of built-in when no project config", () => {
 		const config = { presets: { myflow: ["discover", "commit"] } };
 		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
 		writeFileSync(USER_CONFIG_PATH, JSON.stringify(config));
 
 		const result = loadConfig(TEST_TMP);
 		expect(result.source).toBe("user");
-		expect(result.dag.presets).toEqual({ myflow: ["discover", "commit"] });
-	});
-
-	it("project config overrides user config", () => {
-		// User config
-		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
-		writeFileSync(USER_CONFIG_PATH, JSON.stringify({ presets: { user: ["commit"] } }));
-
-		// Project config
-		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { project: ["research", "commit"] } }));
-
-		const result = loadConfig(TEST_TMP);
-		expect(result.source).toBe("project");
-		expect(result.dag.presets).toEqual({ project: ["research", "commit"] });
+		expect(result.layers).toEqual(["built-in", "user"]);
+		expect(result.dag.presets.myflow).toEqual(["discover", "commit"]);
+		expect(result.dag.presets.mid).toEqual(WORKFLOW_DAG.presets.mid);
+		expect(result.presetSources.get("myflow")).toBe("user");
 	});
 
 	it("falls back to WORKFLOW_DAG on invalid preset skill names", () => {
@@ -148,31 +141,23 @@ describe("loadConfig", () => {
 		expect(result.warnings?.some((w) => w.includes('"my-flow" not found'))).toBe(true);
 	});
 
-	it("falls back to first preset key when defaultPreset is omitted and 'mid' is missing", () => {
+	it("retains built-in 'mid' as default when no defaultPreset is set", () => {
+		// With layered merge, built-in presets stay available — the project's
+		// single preset doesn't displace 'mid' as the default.
 		const config = { presets: { quick: ["research", "commit"] } };
 		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify(config));
 
 		const result = loadConfig(TEST_TMP);
-		// "mid" is not in the user presets, so resolveDefaultPreset falls back
-		// to the first key ("quick") and emits a warning explaining why.
-		expect(result.defaultPreset).toBe("quick");
-		expect(result.warnings?.some((w) => w.includes('"mid" not in presets'))).toBe(true);
+		expect(result.defaultPreset).toBe("mid");
 	});
 
-	it("uses the first preset key when defaultPreset is omitted and 'mid' is missing (multiple presets)", () => {
-		const config = { presets: { alpha: ["research", "commit"], beta: ["discover", "commit"] } };
-		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify(config));
-
-		const result = loadConfig(TEST_TMP);
-		expect(result.defaultPreset).toBe("alpha");
-	});
-
-	it("falls back to first preset key when defaultPreset references a missing preset", () => {
+	it("falls back to 'mid' when defaultPreset references a missing preset", () => {
 		const config = { presets: { quick: ["research", "commit"] }, defaultPreset: "nonexistent" };
 		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify(config));
 
 		const result = loadConfig(TEST_TMP);
-		expect(result.defaultPreset).toBe("quick");
+		// "mid" is still in the merged presets via the built-in layer.
+		expect(result.defaultPreset).toBe("mid");
 		expect(result.warnings?.some((w) => w.includes('"nonexistent" not found'))).toBe(true);
 	});
 
@@ -184,7 +169,7 @@ describe("loadConfig", () => {
 
 		const result = loadConfig(TEST_TMP);
 		expect(result.dag).toBe(WORKFLOW_DAG);
-		expect(result.warnings?.some((w) => w.includes('preset "x" must be an array of strings'))).toBe(true);
+		expect(result.warnings?.some((w) => w.includes('preset "x" (project) must be an array of strings'))).toBe(true);
 		// And critically: no per-character warnings.
 		expect(result.warnings?.some((w) => /node: "[a-z]"$/.test(w))).toBeFalsy();
 	});
@@ -195,7 +180,7 @@ describe("loadConfig", () => {
 
 		const result = loadConfig(TEST_TMP);
 		expect(result.dag).toBe(WORKFLOW_DAG);
-		expect(result.warnings?.some((w) => w.includes('preset "x" must be an array of strings'))).toBe(true);
+		expect(result.warnings?.some((w) => w.includes('preset "x" (project) must be an array of strings'))).toBe(true);
 	});
 
 	it("resets source to built-in when project config fails validation", () => {
@@ -206,5 +191,86 @@ describe("loadConfig", () => {
 		// Without this fix, source would still say "project" while the DAG is built-in.
 		expect(result.source).toBe("built-in");
 		expect(result.dag).toBe(WORKFLOW_DAG);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Layered merge — both overlays present
+// ---------------------------------------------------------------------------
+
+describe("loadConfig — layered merge", () => {
+	it("merges distinct presets from user and project", () => {
+		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
+		writeFileSync(USER_CONFIG_PATH, JSON.stringify({ presets: { userflow: ["research", "commit"] } }));
+		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { projflow: ["discover", "commit"] } }));
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.source).toBe("project");
+		expect(result.layers).toEqual(["built-in", "user", "project"]);
+		expect(result.dag.presets.userflow).toEqual(["research", "commit"]);
+		expect(result.dag.presets.projflow).toEqual(["discover", "commit"]);
+		expect(result.dag.presets.mid).toEqual(WORKFLOW_DAG.presets.mid);
+		expect(result.presetSources.get("userflow")).toBe("user");
+		expect(result.presetSources.get("projflow")).toBe("project");
+	});
+
+	it("project wins on preset-name collision", () => {
+		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
+		writeFileSync(USER_CONFIG_PATH, JSON.stringify({ presets: { same: ["discover", "commit"] } }));
+		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { same: ["research", "commit"] } }));
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.dag.presets.same).toEqual(["research", "commit"]);
+		expect(result.presetSources.get("same")).toBe("project");
+	});
+
+	it("project defaultPreset wins over user defaultPreset", () => {
+		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
+		writeFileSync(
+			USER_CONFIG_PATH,
+			JSON.stringify({ presets: { userflow: ["research", "commit"] }, defaultPreset: "userflow" }),
+		);
+		writeFileSync(
+			projectConfigPath(TEST_TMP),
+			JSON.stringify({ presets: { projflow: ["discover", "commit"] }, defaultPreset: "projflow" }),
+		);
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.defaultPreset).toBe("projflow");
+	});
+
+	it("user defaultPreset wins when project omits it", () => {
+		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
+		writeFileSync(
+			USER_CONFIG_PATH,
+			JSON.stringify({ presets: { userflow: ["research", "commit"] }, defaultPreset: "userflow" }),
+		);
+		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { projflow: ["discover", "commit"] } }));
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.defaultPreset).toBe("userflow");
+	});
+
+	it("malformed user JSON does not poison project layer", () => {
+		mkdirSync(join(USER_CONFIG_PATH, ".."), { recursive: true });
+		writeFileSync(USER_CONFIG_PATH, "{ broken json");
+		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { projflow: ["research", "commit"] } }));
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.source).toBe("project");
+		expect(result.dag.presets.projflow).toEqual(["research", "commit"]);
+		expect(result.warnings?.some((w) => /Malformed JSON/.test(w))).toBe(true);
+	});
+
+	it("layer attribution survives a built-in preset being overridden by project", () => {
+		// Project redefines 'mid' — the built-in 'mid' is shadowed; presetSources
+		// must reflect the new owner so list output stays honest.
+		writeFileSync(projectConfigPath(TEST_TMP), JSON.stringify({ presets: { mid: ["discover", "commit"] } }));
+
+		const result = loadConfig(TEST_TMP);
+		expect(result.dag.presets.mid).toEqual(["discover", "commit"]);
+		expect(result.presetSources.get("mid")).toBe("project");
+		// 'small' wasn't touched — still built-in.
+		expect(result.presetSources.get("small")).toBe("built-in");
 	});
 });
