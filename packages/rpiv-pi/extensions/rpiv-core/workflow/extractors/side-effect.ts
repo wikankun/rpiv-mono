@@ -5,7 +5,7 @@
  * Used for action skills (commit, implement) where the work IS the side effect.
  */
 
-import type { ExtractorCtx, ExtractorResult } from "../manifest.js";
+import type { Extractor } from "../manifest.js";
 
 /**
  * Extract a manifest payload for an agent-end node.
@@ -13,13 +13,17 @@ import type { ExtractorCtx, ExtractorResult } from "../manifest.js";
  * Always succeeds — agent-end nodes don't produce artifacts. The payload
  * inherits the prior stage's artifact_path so the chain's path-propagation
  * invariant holds when an action skill sits between two artifact-emit skills.
+ *
+ * No `before` — side-effect nodes have no pre-stage state to capture.
  */
-export function sideEffectExtractor(ctx: ExtractorCtx): ExtractorResult {
-	return {
-		payload: {
-			kind: "side-effect",
-			artifact_path: ctx.state.artifactPath,
-			data: {},
-		},
-	};
-}
+export const sideEffectExtractor: Extractor = {
+	extract(ctx) {
+		return {
+			payload: {
+				kind: "side-effect",
+				artifact_path: ctx.state.artifactPath,
+				data: {},
+			},
+		};
+	},
+};

@@ -17,9 +17,11 @@
  */
 
 import type { TSchema } from "typebox";
-import type { ExtractorCtx, ExtractorResult, SnapshotCtx } from "./manifest.js";
+import type { Extractor } from "./manifest.js";
 import { type EdgePredicate, predicateThreshold } from "./predicates.js";
 import type { RunState } from "./types.js";
+
+export type { Extractor } from "./manifest.js";
 
 // ===========================================================================
 // Types
@@ -42,19 +44,6 @@ export type EdgeFn = EdgePredicate;
  * terminal sentinel `"stop"`, or a function chosen at run-time.
  */
 export type EdgeTarget = string | EdgeFn;
-
-/**
- * Extractors bundle the pre-stage capture (`before`) with the post-stage
- * read (`extract`). Today the only `before` user is `gitCommitExtractor`
- * — it records `HEAD` so `extract` can identify the new commit. Co-locating
- * the pair makes the relationship structural rather than convention.
- */
-export interface Extractor {
-	/** Called BEFORE the stage spawns. Return value flows into `ctx.snapshot`. */
-	before?: (ctx: SnapshotCtx) => Promise<unknown> | unknown;
-	/** Called AFTER the agent loop settles. Receives `ctx.snapshot` if `before` ran. */
-	extract: (ctx: ExtractorCtx) => Promise<ExtractorResult> | ExtractorResult;
-}
 
 /**
  * A node in the workflow graph. `skill` is resolved by Pi at run-time —

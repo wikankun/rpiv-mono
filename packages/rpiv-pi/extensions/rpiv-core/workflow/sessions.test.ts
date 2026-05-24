@@ -22,7 +22,7 @@ import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@jui
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DagNode } from "./dag.js";
-import type { ExtractorCtx, ExtractorFn, ExtractorResult } from "./manifest.js";
+import type { Extractor, ExtractorCtx, ExtractorFn, ExtractorResult } from "./manifest.js";
 import {
 	ERR_VALIDATION_FAILED,
 	MSG_STAGE_ABORTED,
@@ -78,8 +78,8 @@ const stageSession = (overrides: Partial<StageSession> & Pick<StageSession, "cwd
 	...overrides,
 });
 
-/** Stateful extractor: returns scripted payloads in sequence; ignores branch. */
-const scriptedExtractor = (results: ExtractorResult[]): ExtractorFn => {
+/** Stateful extract function: returns scripted payloads in sequence; ignores branch. */
+const scriptedExtract = (results: ExtractorResult[]): ExtractorFn => {
 	let i = 0;
 	return () => {
 		const r = results[i] ?? results[results.length - 1]!;
@@ -87,6 +87,9 @@ const scriptedExtractor = (results: ExtractorResult[]): ExtractorFn => {
 		return r;
 	};
 };
+
+/** Convenience: wrap a scripted extract fn as an Extractor (no `before`). */
+const scriptedExtractor = (results: ExtractorResult[]): Extractor => ({ extract: scriptedExtract(results) });
 
 const okPayload = (data: unknown): ExtractorResult => ({
 	payload: { kind: "test", data: data as Record<string, unknown> },
@@ -208,7 +211,8 @@ describe("sessions — validation retry loop", () => {
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
 		});
-		const extractor = vi.fn(scriptedExtractor([okPayload({ foo: 1 })]));
+		const extract = vi.fn(scriptedExtract([okPayload({ foo: 1 })]));
+		const extractor: Extractor = { extract };
 
 		await runStageSession(
 			chain.ctx as ChainCtx,
@@ -225,7 +229,7 @@ describe("sessions — validation retry loop", () => {
 		);
 
 		// Initial extract + MAX retries → MAX+1 calls total.
-		expect(extractor).toHaveBeenCalledTimes(MAX_VALIDATION_RETRIES + 1);
+		expect(extract).toHaveBeenCalledTimes(MAX_VALIDATION_RETRIES + 1);
 		// One MSG_VALIDATION_RETRY per retry attempt.
 		const retries = chain.notifications.filter((n) => /asking agent to fix/i.test(n.msg));
 		expect(retries).toHaveLength(MAX_VALIDATION_RETRIES);
@@ -236,7 +240,8 @@ describe("sessions — validation retry loop", () => {
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
 		});
-		const extractor = vi.fn(scriptedExtractor([okPayload({ foo: 1 })]));
+		const extract = vi.fn(scriptedExtract([okPayload({ foo: 1 })]));
+		const extractor: Extractor = { extract };
 		const onFailure = vi.fn();
 
 		await runStageSession(
@@ -254,7 +259,7 @@ describe("sessions — validation retry loop", () => {
 			}),
 		);
 
-		expect(extractor).toHaveBeenCalledTimes(1);
+		expect(extract).toHaveBeenCalledTimes(1);
 		expect(chain.notifications.find((n) => /asking agent to fix/i.test(n.msg))).toBeUndefined();
 		expect(onFailure).toHaveBeenCalledTimes(1);
 	});
@@ -424,7 +429,8 @@ describe("sessions — extractor resolution", () => {
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
 		});
-		const explicit = vi.fn(scriptedExtractor([okPayload({ tag: "explicit" })]));
+		const explicitExtract = vi.fn(scriptedExtract([okPayload({ tag: "explicit" })]));
+		const explicit: Extractor = { extract: explicitExtract };
 
 		await runStageSession(
 			chain.ctx as ChainCtx,
@@ -437,7 +443,7 @@ describe("sessions — extractor resolution", () => {
 			}),
 		);
 
-		expect(explicit).toHaveBeenCalledTimes(1);
+		expect(explicitExtract).toHaveBeenCalledTimes(1);
 		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_COMPLETE("test"))).toBe(true);
 	});
 
@@ -504,9 +510,11 @@ describe("sessions — outcome slicing", () => {
 
 	it("continue policy slices branch by branchOffset; extractorCtx.branchOffset stays undefined (no double-slice)", async () => {
 		const captured: ExtractorCtx[] = [];
-		const recordingExtractor: ExtractorFn = (ctx) => {
-			captured.push(ctx);
-			return okPayload({});
+		const recordingExtractor: Extractor = {
+			extract: (ctx) => {
+				captured.push(ctx);
+				return okPayload({});
+			},
 		};
 
 		// Outer ctx (continue path) — branch contains prior-stage prefix + current-stage tail.
@@ -542,9 +550,11 @@ describe("sessions — outcome slicing", () => {
 
 	it("fresh policy: branch is full, extractorCtx.branchOffset preserved (sliced downstream)", async () => {
 		const captured: ExtractorCtx[] = [];
-		const recordingExtractor: ExtractorFn = (ctx) => {
-			captured.push(ctx);
-			return okPayload({});
+		const recordingExtractor: Extractor = {
+			extract: (ctx) => {
+				captured.push(ctx);
+				return okPayload({});
+			},
 		};
 		const branch = [mockAssistantMessage("done")];
 		const chain = createMockSessionChain({ cwd: tmpDir, steps: [{ branch }] });
@@ -692,7 +702,7 @@ describe("sessions — success persistence", () => {
 				state,
 				node: node({
 					completionStrategy: "agent-end",
-					extractor: () => ({ payload: { kind: "test", artifact_path: manifestPath, data: {} } }),
+					extractor: { extract: () => ({ payload: { kind: "test", artifact_path: manifestPath, data: {} } }) },
 				}),
 			}),
 		);
@@ -872,7 +882,7 @@ describe("sessions — halt routing", () => {
 				state,
 				node: node({
 					completionStrategy: "agent-end",
-					extractor: () => ({ payload: undefined, fatal: "extractor said no" }),
+					extractor: { extract: () => ({ payload: undefined, fatal: "extractor said no" }) },
 				}),
 				onFailure,
 			}),

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { DagNode } from "./dag.js";
-import { gitCommitExtractor, gitHeadSnapshot } from "./extractors/index.js";
+import { gitCommitExtractor } from "./extractors/index.js";
 import type { LoadedConfig } from "./loadConfig.js";
 import { formatPresetDetails, formatPresetList } from "./preview.js";
 
@@ -32,7 +32,7 @@ const baseConfig = (overrides: Partial<LoadedConfig> = {}): LoadedConfig => ({
 		nodes: {
 			research: skillNode({ skill: "research", completionStrategy: "artifact-emit" }),
 			implement: skillNode({ skill: "implement" }),
-			commit: skillNode({ skill: "commit", snapshot: gitHeadSnapshot, extractor: gitCommitExtractor }),
+			commit: skillNode({ skill: "commit", extractor: gitCommitExtractor }),
 		},
 	},
 	presetNames: new Set(["mid", "tiny"]),

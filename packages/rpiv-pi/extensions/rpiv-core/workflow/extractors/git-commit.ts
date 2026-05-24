@@ -10,7 +10,14 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { ExtractorCtx, ExtractorPayload, ExtractorResult, GitCommitData, SnapshotCtx } from "../manifest.js";
+import type {
+	Extractor,
+	ExtractorCtx,
+	ExtractorPayload,
+	ExtractorResult,
+	GitCommitData,
+	SnapshotCtx,
+} from "../manifest.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -55,16 +62,27 @@ export async function gitHeadSnapshot(ctx: SnapshotCtx): Promise<GitHeadSnapshot
 }
 
 /**
- * Post-stage extractor: compare HEAD to baseline and extract commit metadata.
+ * Post-stage read: compare HEAD to baseline and extract commit metadata.
  * Always succeeds — git errors surface as a `noOp: true` payload (defensive).
  */
-export async function gitCommitExtractor(ctx: ExtractorCtx): Promise<ExtractorResult> {
+async function extractGitCommit(ctx: ExtractorCtx): Promise<ExtractorResult> {
 	const snapshot = ctx.snapshot as GitHeadSnapshot | undefined;
 	if (!snapshot?.baselineSha) return { payload: wrap(ctx, noOpData("")) };
 
 	const data = (await collectCommitData(ctx.cwd, snapshot.baselineSha)) ?? noOpData(snapshot.baselineSha);
 	return { payload: wrap(ctx, data) };
 }
+
+/**
+ * Git commit extractor — bundles `gitHeadSnapshot` (before) with `extractGitCommit`
+ * (extract). Co-located so the pre-state capture is structurally part of the
+ * extractor that consumes it. `gitHeadSnapshot` stays exported separately for
+ * users who want to compose it into their own custom extractors.
+ */
+export const gitCommitExtractor: Extractor = {
+	before: gitHeadSnapshot,
+	extract: extractGitCommit,
+};
 
 // ---------------------------------------------------------------------------
 // Commit-data collection

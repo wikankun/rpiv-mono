@@ -6,8 +6,8 @@
 
 import { type TSchema, Type } from "typebox";
 import { BUNDLED_SKILL_NAMES } from "../paths.js";
-import { gitCommitExtractor, gitHeadSnapshot } from "./extractors/index.js";
-import type { ExtractorFn, SnapshotFn } from "./manifest.js";
+import { gitCommitExtractor } from "./extractors/index.js";
+import type { Extractor } from "./manifest.js";
 import { predicateThreshold } from "./predicates.js";
 import {
 	MAX_VALIDATION_RETRIES,
@@ -51,9 +51,8 @@ export type SessionPolicy = "fresh" | "continue";
 interface NodeCommon {
 	completionStrategy: CompletionStrategy;
 	sessionPolicy: SessionPolicy;
-	snapshot?: SnapshotFn;
 	/** Defaults to artifact-md (artifact-emit) / side-effect (agent-end). */
-	extractor?: ExtractorFn;
+	extractor?: Extractor;
 	outputSchema?: TSchema;
 	/** Default: "retry". */
 	onValidationFailure?: "retry" | "halt";
@@ -90,8 +89,7 @@ export const skillNode = (
 	completionStrategy: CompletionStrategy,
 	overrides?: {
 		sessionPolicy?: SessionPolicy;
-		snapshot?: SnapshotFn;
-		extractor?: ExtractorFn;
+		extractor?: Extractor;
 		outputSchema?: TSchema;
 		onValidationFailure?: "retry" | "halt";
 		maxValidationRetries?: number;
@@ -103,7 +101,6 @@ export const skillNode = (
 	skill,
 	completionStrategy,
 	sessionPolicy: overrides?.sessionPolicy ?? "fresh",
-	snapshot: overrides?.snapshot,
 	extractor: overrides?.extractor,
 	outputSchema: overrides?.outputSchema,
 	onValidationFailure: overrides?.onValidationFailure,
@@ -211,7 +208,7 @@ export const WORKFLOW_DAG: WorkflowDag = {
 		implement: skillNode("implement", "agent-end"),
 		"implement-after-revise": skillNode("implement", "agent-end"),
 		"implement-after-review": skillNode("implement", "agent-end"),
-		commit: skillNode("commit", "agent-end", { snapshot: gitHeadSnapshot, extractor: gitCommitExtractor }),
+		commit: skillNode("commit", "agent-end", { extractor: gitCommitExtractor }),
 		"annotate-guidance": skillNode("annotate-guidance", "agent-end"),
 		"migrate-to-guidance": skillNode("migrate-to-guidance", "agent-end"),
 	},

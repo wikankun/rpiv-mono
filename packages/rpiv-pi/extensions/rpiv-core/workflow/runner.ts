@@ -293,9 +293,10 @@ function runStageInputValidation(curCtx: ChainCtx, stage: ResolvedStage, run: Ru
 }
 
 async function captureStageSnapshot(node: DagNode, idx: number, run: RunContext): Promise<unknown> {
-	if (!node.snapshot) return undefined;
+	const before = node.extractor?.before;
+	if (!before) return undefined;
 	try {
-		return await node.snapshot({
+		return await before({
 			cwd: run.cwd,
 			runId: run.runId,
 			stageIndex: idx,

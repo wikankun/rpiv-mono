@@ -18,8 +18,8 @@ import {
 import type { DagNode, SessionPolicy } from "./dag.js";
 import { artifactMdExtractor, sideEffectExtractor } from "./extractors/index.js";
 import {
+	type Extractor,
 	type ExtractorCtx,
-	type ExtractorFn,
 	type ExtractorPayload,
 	finalizeManifest,
 	type Manifest,
@@ -239,7 +239,7 @@ function readSessionOutcome(
 // ===========================================================================
 
 /** Explicit override > default-by-completionStrategy. Exhaustive — assertNever lights future variants. */
-function resolveExtractor(node: DagNode): ExtractorFn {
+function resolveExtractor(node: DagNode): Extractor {
 	if (node.extractor) return node.extractor;
 	switch (node.completionStrategy) {
 		case "artifact-emit":
@@ -276,11 +276,11 @@ function wrapManifest(s: StageSession, payload: ExtractorPayload): Manifest {
 }
 
 async function runExtractor(
-	extractor: ExtractorFn,
+	extractor: Extractor,
 	extractorCtx: ExtractorCtx,
 	finalize: (p: ExtractorPayload) => Manifest,
 ): Promise<{ kind: "ok"; manifest: Manifest | undefined } | { kind: "fatal"; message: string }> {
-	const result = await extractor(extractorCtx);
+	const result = await extractor.extract(extractorCtx);
 	if (result.fatal) return { kind: "fatal", message: result.fatal };
 	return { kind: "ok", manifest: result.payload ? finalize(result.payload) : undefined };
 }
@@ -290,7 +290,7 @@ function shouldValidateOutput(node: DagNode, manifest: Manifest | undefined): ma
 }
 
 interface RetryDeps {
-	extractor: ExtractorFn;
+	extractor: Extractor;
 	extractorCtx: ExtractorCtx;
 	finalize: (p: ExtractorPayload) => Manifest;
 	freshBranch: () => BranchEntry[];

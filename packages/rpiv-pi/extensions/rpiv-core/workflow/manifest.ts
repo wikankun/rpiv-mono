@@ -97,6 +97,18 @@ export interface ExtractorResult {
  */
 export type ExtractorFn = (ctx: ExtractorCtx) => Promise<ExtractorResult> | ExtractorResult;
 
+/**
+ * An extractor bundles the (optional) pre-stage capture with the post-stage
+ * read. `before` runs once before the agent loop spawns; its return value
+ * lands in `ctx.snapshot` for `extract`. Co-locating the pair makes the
+ * relationship structural: a `before` without an `extract` to consume it
+ * can't be declared.
+ */
+export interface Extractor {
+	before?: SnapshotFn;
+	extract: ExtractorFn;
+}
+
 /** Single source of manifest metadata authorship. */
 export function finalizeManifest(
 	payload: ExtractorPayload,

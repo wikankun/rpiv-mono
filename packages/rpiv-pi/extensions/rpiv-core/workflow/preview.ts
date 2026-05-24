@@ -57,7 +57,7 @@ function formatStageRow(idx: number, nodeId: string, node: DagNode | undefined):
 	if (!node) return `  ${num} ${nodeId.padEnd(28)} (unknown node)`;
 
 	const decorations = [node.completionStrategy.padEnd(13), node.sessionPolicy];
-	if (node.snapshot) decorations.push("snapshot");
+	if (node.extractor?.before) decorations.push("snapshot");
 	if (node.extractor) decorations.push("extractor");
 	return `  ${num} ${nodeId.padEnd(28)} ${decorations.join(" · ")}`;
 }
