@@ -6,7 +6,6 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, type vi } from "vitest";
 import type { CompletionStrategy, EdgeTarget, NodeDef, Workflow } from "./api.js";
 import { defineWorkflow, threshold } from "./api.js";
-import { clearChildSession, isChildSession } from "./child-session.js";
 import { countPhases } from "./implement-phases.js";
 import { runWorkflow } from "./runner.js";
 import { typeboxSchema } from "./standard-schema.js";
@@ -145,12 +144,10 @@ describe("runWorkflow", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-run-workflow-"));
-		clearChildSession();
 	});
 
 	afterEach(() => {
 		rmSync(tmpDir, { recursive: true, force: true });
-		clearChildSession();
 	});
 
 	/**
@@ -234,66 +231,6 @@ describe("runWorkflow", () => {
 		expect(result.error).toMatch(/start node "ghost" is not declared/);
 		expect(chain.ctx.newSession).not.toHaveBeenCalled();
 		expect(existsSync(join(tmpDir, ".rpiv", "workflows"))).toBe(false);
-	});
-
-	describe("child-session marker lifecycle", () => {
-		it("clears the marker after a successful run", async () => {
-			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
-			const chain = createMockSessionChain({
-				cwd: tmpDir,
-				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
-			});
-			expect(isChildSession()).toBe(false);
-
-			await runWorkflow(chain.ctx, {
-				workflow: wf("tiny", ["research"]),
-				input: "x",
-			});
-
-			expect(isChildSession()).toBe(false);
-		});
-
-		it("clears the marker after a failed stage (no assistant message)", async () => {
-			const chain = createMockSessionChain({
-				cwd: tmpDir,
-				steps: [{ branch: [] }],
-			});
-
-			const result = await runWorkflow(chain.ctx, {
-				workflow: wf("tiny", ["research"]),
-				input: "x",
-			});
-
-			expect(result.success).toBe(false);
-			expect(isChildSession()).toBe(false);
-		});
-
-		it("clears the marker when the chain throws mid-run (finally guarantee)", async () => {
-			const chain = createMockSessionChain({ cwd: tmpDir, steps: [] });
-			// Empty step queue → second newSession will throw inside the chain.
-			// We expect runWorkflow to propagate, but still clear the marker.
-			const workflow = wf("tiny", ["research", "plan"]);
-
-			let threw = false;
-			try {
-				await runWorkflow(chain.ctx, { workflow, input: "x" });
-			} catch {
-				threw = true;
-			}
-
-			// The first newSession has no scripted step either — chain throws on first call.
-			expect(threw).toBe(true);
-			expect(isChildSession()).toBe(false);
-		});
-
-		it("does NOT set the marker when the workflow has no declared start (early return before mark)", async () => {
-			const chain = createMockSessionChain({ cwd: tmpDir, steps: [] });
-			await runWorkflow(chain.ctx, {
-				workflow: { name: "broken", start: "ghost", nodes: {}, edges: {} },
-				input: "x",
-			});
-			expect(isChildSession()).toBe(false);
-		});
 	});
 
 	it("completes a single-step workflow on success and records header + completed step", async () => {
@@ -1563,11 +1500,9 @@ describe("totalStages denominator (countReachableNodes)", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-total-stages-"));
-		clearChildSession();
 	});
 	afterEach(() => {
 		rmSync(tmpDir, { recursive: true, force: true });
-		clearChildSession();
 	});
 
 	const stageDenominator = (statusUpdates: Array<{ key: string; value: string | undefined }>): number | undefined => {

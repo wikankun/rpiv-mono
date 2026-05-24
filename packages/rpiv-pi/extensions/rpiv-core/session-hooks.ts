@@ -34,16 +34,29 @@ import { ARTIFACTS_SUBDIR, clearInjectionState, handleToolCallGuidance, injectRo
 import { findMissingSiblings } from "./package-checks.js";
 import { BUNDLED_SKILL_NAMES } from "./paths.js";
 
-// Child-session detection. Reads a process-wide nesting counter set by
-// @juicesharp/rpiv-workflow's runner around inner stage spawns. Inlined
-// here (vs. importing) so this package doesn't depend on rpiv-workflow at
-// runtime — keep the symbol string in sync with rpiv-workflow's
-// child-session.ts CHILD_SESSION_KEY. Counter (not boolean) — `> 0` so
-// nested /wf invocations stay visible to this gate until the outermost
-// runner exits.
-const WORKFLOW_CHILD_SESSION_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
-const isChildSession = (): boolean =>
-	((globalThis as unknown as Record<symbol, number | undefined>)[WORKFLOW_CHILD_SESSION_KEY] ?? 0) > 0;
+/**
+ * Module-local "already announced" latch for the startup banner block
+ * (cleanup / agent-sync drift / missing-siblings warning). Pi fires
+ * `session_start` for every session including programmatic spawns
+ * (workflow stages, batch ops, any extension's `newSession` call).
+ * Filesystem work runs every fire — the banner notifications should NOT,
+ * or `/wf <large>` re-emits the entire startup splash 10 times.
+ *
+ * Latches on the first banner emission. Reset on `/reload` (module
+ * reload) and on process restart. Test-resettable via
+ * `__resetSessionHooksAnnounced()`.
+ *
+ * Replaces an earlier coupling to rpiv-workflow's child-session Symbol —
+ * "have I announced yet" is a per-extension concern, not a per-spawner
+ * one. No other package needs to know whether session_start came from
+ * the user or from a programmatic spawner.
+ */
+let bannerAnnounced = false;
+
+/** Test reset — wired into test/setup.ts `beforeEach`. */
+export function __resetSessionHooksAnnounced(): void {
+	bannerAnnounced = false;
+}
 
 const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/agent/agents/`;
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
@@ -94,14 +107,14 @@ async function onSessionStart(
 	await injectGitContext(pi, (msg) => sendGitContextMessage(pi, msg));
 	const cleanup = cleanupPerCwdAgents(ctx.cwd);
 	const agents = syncBundledAgents(false);
-	// Suppress the startup-banner notifications when this session_start was
-	// fired by a workflow stage spawn — the parent session already printed
-	// them and re-emitting would double up the user's status line. Filesystem
-	// work above still runs unconditionally.
-	if (ctx.hasUI && !isChildSession()) {
+	// Banner emits once per module load (process start or /reload). Programmatic
+	// session spawns (workflow stages, any other extension's newSession) inherit
+	// the latched state and stay silent. Filesystem work above always runs.
+	if (ctx.hasUI && !bannerAnnounced) {
 		notifyCleanup(ctx.ui, cleanup);
 		notifyAgentSyncDrift(ctx.ui, agents);
 		warnMissingSiblings(ctx.ui);
+		bannerAnnounced = true;
 	}
 }
 
@@ -119,12 +132,11 @@ async function onSessionShutdown(): Promise<void> {
 	resetInjectedMarker();
 }
 
-// Intentionally NOT gated by `isChildSession()` — per-tool-call guidance
-// injection and the git-context cache invalidation are stage-level
-// concerns, not banner notifications. Child sessions need both: the
-// guidance injector runs once per tool call (so each child stage sees
-// the right surface), and a bash command issued mid-stage must dirty
-// the cache for the next stage's `before_agent_start` git-context read.
+// Runs unconditionally — per-tool-call guidance injection and git-context
+// cache invalidation are per-event concerns, not user-facing announcements.
+// The guidance injector runs once per tool call so each stage sees the
+// right surface; a bash command mid-stage must dirty the git cache for
+// the next stage's `before_agent_start` git-context read.
 async function onToolCall(event: ToolCallEvent, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	handleToolCallGuidance(event, ctx, pi);
 	if (isToolCallEventType("bash", event) && isGitMutatingCommand(event.input.command)) {
@@ -132,11 +144,9 @@ async function onToolCall(event: ToolCallEvent, ctx: ExtensionContext, pi: Exten
 	}
 }
 
-// Also intentionally not gated — `rpiv: <skill>` status is a per-stage
-// display string (each stage owns the status line during its run), and
-// the git-context injection is keyed off `takeGitContextIfChanged`
-// which is its own dedup layer. Only `onSessionStart`'s startup banner
-// needs the child-session suppressor.
+// Runs every fire — `rpiv: <skill>` is a per-stage display string (each
+// stage owns the status line during its run), and the git-context injection
+// is keyed off `takeGitContextIfChanged` which is its own dedup layer.
 async function onBeforeAgentStart(
 	event: BeforeAgentStartEvent,
 	ctx: ExtensionContext,

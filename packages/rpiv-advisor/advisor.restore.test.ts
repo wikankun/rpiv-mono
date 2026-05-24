@@ -1,18 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createMockCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getAdvisorEffort, getAdvisorModel, restoreAdvisorState } from "./advisor.js";
-
-const WORKFLOW_CHILD_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
-// Counter (not boolean) — see rpiv-workflow/child-session.ts. Tests flip the
-// binary state; a single mark/clear pair is sufficient because the readers
-// gate on `> 0`.
-const setChildSession = (on: boolean) => {
-	const g = globalThis as unknown as Record<symbol, number | undefined>;
-	if (on) g[WORKFLOW_CHILD_KEY] = (g[WORKFLOW_CHILD_KEY] ?? 0) + 1;
-	else delete g[WORKFLOW_CHILD_KEY];
-};
+import { describe, expect, it, vi } from "vitest";
+import { __resetAdvisorAnnounced, getAdvisorEffort, getAdvisorModel, restoreAdvisorState } from "./advisor.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
 
@@ -74,12 +64,15 @@ describe("restoreAdvisorState", () => {
 		expect(captured.activeTools).not.toContain("advisor");
 	});
 
-	describe("workflow child-session filtering", () => {
-		afterEach(() => {
-			setChildSession(false);
-		});
+	describe("notify-once latch", () => {
+		// Pi fires `session_start` for every session including programmatic
+		// spawns (workflow stages, batch ops, etc.). State mutation must run
+		// each fire; the user-facing announcement must NOT — repeating it
+		// once per stage spams the status line. The latch flips on the first
+		// notify and stays until `__resetAdvisorAnnounced()` (test reset) or
+		// `/reload` (production module reload).
 
-		it("suppresses the 'Advisor restored' notify on the happy path when child-session flag is set", () => {
+		it("first call notifies the 'Advisor restored' message and mutates state", () => {
 			writeConfig({ modelKey: "a:m", effort: "high" });
 			const model = { provider: "a", id: "m", name: "M" } as never;
 			const { pi, captured } = createMockPi();
@@ -87,28 +80,59 @@ describe("restoreAdvisorState", () => {
 			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => model) } as never;
 			const notify = ctx.ui.notify as ReturnType<typeof vi.fn>;
 
-			setChildSession(true);
 			restoreAdvisorState(ctx, pi);
 
-			// State mutation still happened.
 			expect(getAdvisorModel()).toEqual(model);
 			expect(getAdvisorEffort()).toBe("high");
 			expect(captured.activeTools).toContain("advisor");
-			// But the cosmetic notify was suppressed.
-			expect(notify).not.toHaveBeenCalled();
+			expect(notify).toHaveBeenCalledTimes(1);
 		});
 
-		it("suppresses the 'no longer available' warning when child-session flag is set", () => {
+		it("second call (e.g. workflow child session_start) re-runs state mutation but does NOT re-notify", () => {
+			writeConfig({ modelKey: "a:m", effort: "high" });
+			const model = { provider: "a", id: "m", name: "M" } as never;
+			const { pi } = createMockPi();
+			const ctx = createMockCtx({ hasUI: true });
+			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => model) } as never;
+			const notify = ctx.ui.notify as ReturnType<typeof vi.fn>;
+
+			restoreAdvisorState(ctx, pi);
+			restoreAdvisorState(ctx, pi);
+			restoreAdvisorState(ctx, pi);
+
+			// State mutation happens every call.
+			expect(getAdvisorModel()).toEqual(model);
+			// Notify only on the first call.
+			expect(notify).toHaveBeenCalledTimes(1);
+		});
+
+		it("`__resetAdvisorAnnounced()` re-arms the latch (covers /reload)", () => {
+			writeConfig({ modelKey: "a:m", effort: "high" });
+			const model = { provider: "a", id: "m", name: "M" } as never;
+			const { pi } = createMockPi();
+			const ctx = createMockCtx({ hasUI: true });
+			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => model) } as never;
+			const notify = ctx.ui.notify as ReturnType<typeof vi.fn>;
+
+			restoreAdvisorState(ctx, pi);
+			restoreAdvisorState(ctx, pi);
+			__resetAdvisorAnnounced();
+			restoreAdvisorState(ctx, pi);
+
+			expect(notify).toHaveBeenCalledTimes(2);
+		});
+
+		it("'no longer available' warning also latches once per process", () => {
 			writeConfig({ modelKey: "unknown:model" });
 			const { pi } = createMockPi();
 			const ctx = createMockCtx({ hasUI: true });
 			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => undefined) } as never;
 			const notify = ctx.ui.notify as ReturnType<typeof vi.fn>;
 
-			setChildSession(true);
+			restoreAdvisorState(ctx, pi);
 			restoreAdvisorState(ctx, pi);
 
-			expect(notify).not.toHaveBeenCalled();
+			expect(notify).toHaveBeenCalledTimes(1);
 		});
 	});
 });

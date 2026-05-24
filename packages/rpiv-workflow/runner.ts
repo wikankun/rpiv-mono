@@ -18,7 +18,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { NodeDef, Workflow } from "./api.js";
 import { notifyPartialArtifacts, nowIso, recordStage } from "./audit.js";
-import { clearChildSession, markChildSession } from "./child-session.js";
 import { countPhases, runImplementPhases } from "./implement-phases.js";
 import {
 	ERR_BACKWARD_JUMP_EXHAUSTED,
@@ -108,21 +107,16 @@ export async function runWorkflow(
 
 	const maxBackwardJumps = options.maxBackwardJumps ?? MAX_BACKWARD_JUMPS;
 
-	markChildSession();
-	try {
-		await runStage(ctx, workflow.start, 0, {
-			cwd,
-			runId,
-			workflow,
-			totalStages,
-			state,
-			visited: new Set(),
-			pi: options.pi,
-			maxBackwardJumps,
-		});
-	} finally {
-		clearChildSession();
-	}
+	await runStage(ctx, workflow.start, 0, {
+		cwd,
+		runId,
+		workflow,
+		totalStages,
+		state,
+		visited: new Set(),
+		pi: options.pi,
+		maxBackwardJumps,
+	});
 	return {
 		stagesCompleted: state.stagesCompleted,
 		success: state.success,

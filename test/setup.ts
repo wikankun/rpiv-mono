@@ -53,6 +53,7 @@ beforeEach(async () => {
 	advisor.setAdvisorModel(undefined);
 	advisor.setAdvisorEffort(undefined);
 	advisor.setDisabledForModels([]);
+	advisor.__resetAdvisorAnnounced();
 
 	const args = await import("../packages/rpiv-args/args.js");
 	args.invalidateSkillIndex();
@@ -65,6 +66,8 @@ beforeEach(async () => {
 	const gitContext = await import("../packages/rpiv-pi/extensions/rpiv-core/git-context.js");
 	gitContext.clearGitContextCache();
 	gitContext.resetInjectedMarker();
+	const sessionHooks = await import("../packages/rpiv-pi/extensions/rpiv-core/session-hooks.js");
+	sessionHooks.__resetSessionHooksAnnounced();
 
 	const titleSpinner = await import("../packages/rpiv-warp/title-spinner.js");
 	titleSpinner.__resetState();

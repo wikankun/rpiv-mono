@@ -34,7 +34,6 @@
     "index.ts",
     "api.ts",
     "audit.ts",
-    "child-session.ts",
     "command.ts",
     "extractors",
     "implement-phases.ts",

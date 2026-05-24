@@ -445,24 +445,16 @@ export function handleBeforeAgentStart(event: BeforeAgentStartEvent): BeforeAgen
 // without new module-level state.
 // ---------------------------------------------------------------------------
 
-// Child-session detection. Reads a process-wide flag set by rpiv-pi's workflow
-// runner around inner stage spawns. Inlined here (vs. importing) so this
-// package doesn't depend on rpiv-pi — keep the symbol string in sync with
-// rpiv-pi/extensions/rpiv-core/workflow/child-session.ts.
-const WORKFLOW_CHILD_SESSION_KEY = Symbol.for("@juicesharp/rpiv-workflow:child-session");
-// Counter (not boolean) — see rpiv-workflow/child-session.ts. `> 0` so nested
-// /wf invocations are visible to this gate until the outermost runner exits.
-const isWorkflowChildSession = (): boolean =>
-	((globalThis as unknown as Record<symbol, number | undefined>)[WORKFLOW_CHILD_SESSION_KEY] ?? 0) > 0;
-
 export function registerArgsHandler(pi: ExtensionAPI): void {
 	pi.on("input", async (event, ctx) => handleInput(event, ctx, pi));
 	pi.on("before_agent_start", (event) => handleBeforeAgentStart(event));
 	pi.on("session_start", (event) => {
-		// Skill set on disk doesn't change between parent and workflow-child
-		// sessions — invalidating the index per stage just costs a re-enumeration.
-		// Parent-session reload/startup still invalidates as before.
-		if ((event.reason === "reload" || event.reason === "startup") && !isWorkflowChildSession()) {
+		// Pi fires session_start for every session including programmatic
+		// spawns. Re-enumerating the skill set per spawn is cheap (one
+		// readdir per declared skillPath); the prior workflow-aware gate
+		// shaved that work but coupled this package to rpiv-workflow's
+		// internal Symbol. Drop the gate — correctness > microseconds.
+		if (event.reason === "reload" || event.reason === "startup") {
 			invalidateSkillIndex();
 		}
 	});

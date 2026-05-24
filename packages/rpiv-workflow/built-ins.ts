@@ -12,13 +12,12 @@
  * `registerBuiltIns(...)` from their extension entry point with workflows
  * that name their own bundled skills.
  *
- * The registry array is anchored on a `Symbol.for` slot on `globalThis`
- * (same pattern as `child-session.ts`). Pi may load this module more than
- * once — once for the rpiv-workflow extension itself, and once via the
- * rpiv-pi `import { registerBuiltIns } from "@juicesharp/rpiv-workflow"`
- * cross-package resolution — and module-local state would be siloed
- * between those copies. `globalThis[KEY]` is process-wide and survives the
- * dup load.
+ * The registry array is anchored on a `Symbol.for` slot on `globalThis`.
+ * Pi may load this module more than once — once for the rpiv-workflow
+ * extension itself, and once via the rpiv-pi `import { registerBuiltIns }
+ * from "@juicesharp/rpiv-workflow"` cross-package resolution — and
+ * module-local state would be siloed between those copies.
+ * `globalThis[KEY]` is process-wide and survives the dup load.
  */
 
 import type { Workflow } from "./api.js";
