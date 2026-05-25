@@ -59,29 +59,29 @@ describe("nextNode", () => {
 			nodes: baseNodes,
 			edges: { a: "b", b: "c", c: "d", d: "stop" },
 		};
-		expect(nextNode(workflow, "a", ctxOf())).toBe("b");
-		expect(nextNode(workflow, "b", ctxOf())).toBe("c");
-		expect(nextNode(workflow, "c", ctxOf())).toBe("d");
+		expect(nextNode(workflow, "a", ctxOf())).toEqual({ kind: "next", node: "b" });
+		expect(nextNode(workflow, "b", ctxOf())).toEqual({ kind: "next", node: "c" });
+		expect(nextNode(workflow, "c", ctxOf())).toEqual({ kind: "next", node: "d" });
 	});
 
-	it('returns null for the "stop" sentinel', () => {
+	it('returns { kind: "stop" } for the "stop" sentinel', () => {
 		const workflow: Workflow = {
 			name: "terminal",
 			start: "a",
 			nodes: baseNodes,
 			edges: { a: "stop" },
 		};
-		expect(nextNode(workflow, "a", ctxOf())).toBeNull();
+		expect(nextNode(workflow, "a", ctxOf())).toEqual({ kind: "stop" });
 	});
 
-	it("returns null for a node with no outgoing edge (implicit terminal)", () => {
+	it('returns { kind: "stop" } for a node with no outgoing edge (implicit terminal)', () => {
 		const workflow: Workflow = {
 			name: "implicit",
 			start: "a",
 			nodes: baseNodes,
 			edges: { a: "b" }, // b has no edge
 		};
-		expect(nextNode(workflow, "b", ctxOf())).toBeNull();
+		expect(nextNode(workflow, "b", ctxOf())).toEqual({ kind: "stop" });
 	});
 
 	it("evaluates an EdgeFn against the supplied context", () => {
@@ -91,8 +91,8 @@ describe("nextNode", () => {
 			nodes: baseNodes,
 			edges: { a: threshold("count", 0, "c", "b") },
 		};
-		expect(nextNode(workflow, "a", ctxOf({ count: 5 }))).toBe("c");
-		expect(nextNode(workflow, "a", ctxOf({ count: 0 }))).toBe("b");
+		expect(nextNode(workflow, "a", ctxOf({ count: 5 }))).toEqual({ kind: "next", node: "c" });
+		expect(nextNode(workflow, "a", ctxOf({ count: 0 }))).toEqual({ kind: "next", node: "b" });
 	});
 
 	it("an EdgeFn returning the stop sentinel terminates the chain", () => {
@@ -102,30 +102,34 @@ describe("nextNode", () => {
 			nodes: baseNodes,
 			edges: { a: () => "stop" },
 		};
-		expect(nextNode(workflow, "a", ctxOf())).toBeNull();
+		expect(nextNode(workflow, "a", ctxOf())).toEqual({ kind: "stop" });
 	});
 
-	it("throws when an EdgeFn returns a target that is not a declared node", () => {
+	it('returns { kind: "err" } when an EdgeFn returns a target that is not a declared node', () => {
 		const workflow: Workflow = {
 			name: "rogue",
 			start: "a",
 			nodes: baseNodes,
 			edges: { a: () => "ghost" },
 		};
-		expect(() => nextNode(workflow, "a", ctxOf())).toThrow(/"ghost" which is not a declared node/);
+		const result = nextNode(workflow, "a", ctxOf());
+		expect(result.kind).toBe("err");
+		if (result.kind === "err") expect(result.reason).toMatch(/"ghost" which is not a declared node/);
 	});
 
-	it("throws when a string edge target is not a declared node (defensive)", () => {
+	it('returns { kind: "err" } when a string edge target is not a declared node (defensive)', () => {
 		const workflow: Workflow = {
 			name: "rogue-string",
 			start: "a",
 			nodes: baseNodes,
 			edges: { a: "ghost" },
 		};
-		expect(() => nextNode(workflow, "a", ctxOf())).toThrow(/"ghost" which is not a declared node/);
+		const result = nextNode(workflow, "a", ctxOf());
+		expect(result.kind).toBe("err");
+		if (result.kind === "err") expect(result.reason).toMatch(/"ghost" which is not a declared node/);
 	});
 
-	it("wraps an EdgeFn that throws with a helpful message", () => {
+	it('returns { kind: "err" } with a helpful message when an EdgeFn throws', () => {
 		const workflow: Workflow = {
 			name: "thrower",
 			start: "a",
@@ -136,7 +140,9 @@ describe("nextNode", () => {
 				},
 			},
 		};
-		expect(() => nextNode(workflow, "a", ctxOf())).toThrow(/edge function at "a" threw: predicate exploded/);
+		const result = nextNode(workflow, "a", ctxOf());
+		expect(result.kind).toBe("err");
+		if (result.kind === "err") expect(result.reason).toMatch(/edge function at "a" threw: predicate exploded/);
 	});
 });
 

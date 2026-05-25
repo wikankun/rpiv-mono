@@ -476,9 +476,14 @@ async function captureStageSnapshot(node: NodeDef, idx: number, run: RunContext)
 /**
  * Routing layer after a successful stage: ask the workflow's edge for the
  * next node, audit non-trivial decisions (EdgeFn branches), enforce the
- * backward-jump guard, then recurse. Wraps the body in try/catch so an
- * EdgeFn throwing lands in `state.termination.error` rather than bubbling out of
- * withSession.
+ * backward-jump guard, then recurse. Switches on the `RoutingResult` kind
+ * from `nextNode` — `"err"` routes through `recordTerminalFailure` (same
+ * shape as any other halt site), `"stop"` finalizes, `"next"` advances.
+ *
+ * No try/catch wrap: `nextNode` returns errors instead of throwing
+ * (post-Phase 5.B), and `runStageOrRecordFailure` owns its own catch for
+ * downstream-stage throws. Attribution: routing errors target
+ * `currentName` (the edge belongs to the just-completed node).
  *
  * Backward-jump semantics: a "backward jump" is a *decision-edge* resolving
  * to an already-visited node — i.e. a deliberate retry choice. Deterministic
@@ -503,87 +508,85 @@ async function advanceChain(curCtx: RunnerCtx, currentName: string, idx: number,
 	// A thrown EdgeFn would otherwise leave currentName un-marked, opening a
 	// (narrow) window where a recovery path could under-count revisits.
 	run.visited.add(currentName);
-	try {
-		const wasDecision = edgeIsDecision(workflow, currentName);
-		const nextName = nextNode(workflow, currentName, { manifest: state.manifest, state });
 
-		if (!nextName) {
-			finalizeWorkflow(curCtx, run);
-			return;
-		}
+	const wasDecision = edgeIsDecision(workflow, currentName);
+	const result = nextNode(workflow, currentName, { manifest: state.manifest, state });
 
-		// Predicate-mediated transitions get audited; deterministic auto-edges
-		// don't (no decision was made). The decision itself has already been
-		// taken by `nextNode` above — a dropped audit row degrades the trail
-		// but does NOT invalidate the run, so on write failure we surface the
-		// gap (live notify + result-envelope field) and continue. Halting here
-		// would discard a correct in-memory decision to recover from transient
-		// disk weather — the asymmetry with `recordStage` is deliberate (stage
-		// rows are reconstruction inputs; routing rows are pure telemetry).
-		if (wasDecision) {
-			const fromStage = idx + 1;
-			const wrote = appendRoutingDecision(cwd, runId, {
-				type: "routing",
-				fromStage,
-				fromNode: currentName,
-				decision: nextName,
-				ts: nowIso(),
-			});
-			if (!wrote) {
-				state.telemetry.droppedRoutingRows.push({ fromStage, fromNode: currentName, decision: nextName });
-				curCtx.ui.notify(MSG_ROUTING_AUDIT_DROPPED(currentName, nextName), "warning");
-			}
-		}
-
-		// Backward-jump guard gated on `wasDecision` (see function docstring).
-		// Deterministic edges through a cycle are not counted; the budget
-		// applies per *decision* to retry. A decision escaping the cycle
-		// (target not visited) resets the counter so each independent loop
-		// gets its own budget.
-		if (wasDecision) {
-			if (run.visited.has(nextName)) {
-				state.telemetry.backwardJumps++;
-				if (state.telemetry.backwardJumps > run.maxBackwardJumps) {
-					// Attribute to nextName — the stage the guard refused to
-					// re-enter. currentName already completed successfully.
-					recordTerminalFailure(
-						curCtx,
-						{ cwd, runId, state, skill: nextName },
-						{
-							status: "failed",
-							notifyMsg: MSG_BACKWARD_JUMP_EXHAUSTED(state.telemetry.backwardJumps, run.maxBackwardJumps),
-							notifyLevel: "error",
-							errMsg: ERR_BACKWARD_JUMP_EXHAUSTED(state.telemetry.backwardJumps, run.maxBackwardJumps),
-						},
-					);
-					return;
-				}
-			} else {
-				state.telemetry.backwardJumps = 0;
-			}
-		}
-
-		// runStageOrRecordFailure owns the catch for throws out of the *next* stage,
-		// so the JSONL row records `nextName` (the stage that actually threw)
-		// rather than `currentName` (which would mis-attribute the failure to
-		// the prior stage that already completed successfully).
-		await runStageOrRecordFailure(curCtx, nextName, idx + 1, run);
-	} catch (e) {
-		// Narrowed scope: only EdgeFn / routing-layer throws land here now —
-		// next-stage throws are absorbed by runStageOrRecordFailure above. For this
-		// remaining surface `currentName` IS the correct attribution: the
-		// thrown predicate / edge function belongs to the just-completed
-		// node's outgoing edge.
-		const reason = e instanceof Error ? e.message : String(e);
+	if (result.kind === "err") {
 		recordTerminalFailure(
 			curCtx,
 			{ cwd, runId, state, skill: currentName },
 			{
 				status: "failed",
-				notifyMsg: MSG_CHAIN_ADVANCE_FAILED(currentName, reason),
+				notifyMsg: MSG_CHAIN_ADVANCE_FAILED(currentName, result.reason),
 				notifyLevel: "error",
-				errMsg: reason,
+				errMsg: result.reason,
 			},
 		);
+		return;
 	}
+
+	if (result.kind === "stop") {
+		finalizeWorkflow(curCtx, run);
+		return;
+	}
+
+	const nextName = result.node;
+
+	// Predicate-mediated transitions get audited; deterministic auto-edges
+	// don't (no decision was made). The decision itself has already been
+	// taken by `nextNode` above — a dropped audit row degrades the trail
+	// but does NOT invalidate the run, so on write failure we surface the
+	// gap (live notify + result-envelope field) and continue. Halting here
+	// would discard a correct in-memory decision to recover from transient
+	// disk weather — the asymmetry with `recordStage` is deliberate (stage
+	// rows are reconstruction inputs; routing rows are pure telemetry).
+	if (wasDecision) {
+		const fromStage = idx + 1;
+		const wrote = appendRoutingDecision(cwd, runId, {
+			type: "routing",
+			fromStage,
+			fromNode: currentName,
+			decision: nextName,
+			ts: nowIso(),
+		});
+		if (!wrote) {
+			state.telemetry.droppedRoutingRows.push({ fromStage, fromNode: currentName, decision: nextName });
+			curCtx.ui.notify(MSG_ROUTING_AUDIT_DROPPED(currentName, nextName), "warning");
+		}
+	}
+
+	// Backward-jump guard gated on `wasDecision` (see function docstring).
+	// Deterministic edges through a cycle are not counted; the budget
+	// applies per *decision* to retry. A decision escaping the cycle
+	// (target not visited) resets the counter so each independent loop
+	// gets its own budget.
+	if (wasDecision) {
+		if (run.visited.has(nextName)) {
+			state.telemetry.backwardJumps++;
+			if (state.telemetry.backwardJumps > run.maxBackwardJumps) {
+				// Attribute to nextName — the stage the guard refused to
+				// re-enter. currentName already completed successfully.
+				recordTerminalFailure(
+					curCtx,
+					{ cwd, runId, state, skill: nextName },
+					{
+						status: "failed",
+						notifyMsg: MSG_BACKWARD_JUMP_EXHAUSTED(state.telemetry.backwardJumps, run.maxBackwardJumps),
+						notifyLevel: "error",
+						errMsg: ERR_BACKWARD_JUMP_EXHAUSTED(state.telemetry.backwardJumps, run.maxBackwardJumps),
+					},
+				);
+				return;
+			}
+		} else {
+			state.telemetry.backwardJumps = 0;
+		}
+	}
+
+	// runStageOrRecordFailure owns the catch for throws out of the *next* stage,
+	// so the JSONL row records `nextName` (the stage that actually threw)
+	// rather than `currentName` (which would mis-attribute the failure to
+	// the prior stage that already completed successfully).
+	await runStageOrRecordFailure(curCtx, nextName, idx + 1, run);
 }

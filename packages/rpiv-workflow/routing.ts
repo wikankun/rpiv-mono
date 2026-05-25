@@ -2,34 +2,43 @@
  * Next-node lookup over a `Workflow`'s edge graph.
  *
  * `nextNode` is the single chokepoint: given the current node name + the
- * runtime context, it returns the next node name or `null` (terminal).
- * Edge targets that resolve to the string `"stop"` collapse to `null` so
- * the runner only has to check one terminator.
+ * runtime context, it returns a `RoutingResult` — `{ kind: "next", node }`
+ * if the chain continues, `{ kind: "stop" }` for terminal nodes (no
+ * outgoing edge OR explicit `STOP`), `{ kind: "err", reason }` if the
+ * routing layer detected a violation (an `EdgeFn` body threw, or an
+ * `EdgeFn` returned an undeclared target).
  *
- * EdgeFn invocation is wrapped to surface a clear error when a user
- * predicate throws — the caller (runner) decides whether to halt the
- * workflow or re-raise.
+ * Errors are returned, not thrown. The caller (runner) switches on
+ * `kind` and routes `"err"` through `recordTerminalFailure` — same as
+ * any other halt site.
  */
 
 import { type EdgeContext, type EdgeFn, STOP, type Workflow } from "./api.js";
 
 /**
- * Returns the next node name, or `null` if `current` is a terminal (no
- * outgoing edge OR explicit `"stop"`).
- *
- * Throws if an `EdgeFn` returns a target that isn't a declared node and
- * isn't `"stop"` — that means the predicate's contract was violated at
- * runtime. Load-time `validateWorkflow` should catch this for predicates
- * with `.targets` metadata; the runtime check is the last line of defense.
+ * Three-way return from `nextNode`. Matches the convention established by
+ * `sessions.ts:ExtractionOutcome` and `load.ts:NormalizeResult` — every
+ * multi-state result in the package carries an explicit `kind` discriminator.
  */
-export function nextNode(workflow: Workflow, current: string, ctx: EdgeContext): string | null {
+export type RoutingResult = { kind: "next"; node: string } | { kind: "stop" } | { kind: "err"; reason: string };
+
+/**
+ * Returns `{ kind: "next", node }` to advance, `{ kind: "stop" }` for
+ * terminal nodes (no outgoing edge OR explicit `STOP`), or
+ * `{ kind: "err", reason }` when an `EdgeFn` threw or returned an
+ * undeclared target. Load-time `validateWorkflow` should catch the
+ * undeclared-target case for predicates with `.targets` metadata; the
+ * runtime check is the last line of defense.
+ */
+export function nextNode(workflow: Workflow, current: string, ctx: EdgeContext): RoutingResult {
 	const target = workflow.edges[current];
-	if (target === undefined || target === STOP) return null;
-	if (typeof target === "string") return assertKnownTarget(workflow, current, target);
+	if (target === undefined || target === STOP) return { kind: "stop" };
+	if (typeof target === "string") return resolveTarget(workflow, current, target);
 
 	const picked = invokeEdgeFn(target, ctx, current);
-	if (picked === STOP) return null;
-	return assertKnownTarget(workflow, current, picked);
+	if (picked.kind === "err") return picked;
+	if (picked.value === STOP) return { kind: "stop" };
+	return resolveTarget(workflow, current, picked.value);
 }
 
 /**
@@ -45,18 +54,26 @@ export function edgeIsDecision(workflow: Workflow, current: string): boolean {
 // Internals
 // ---------------------------------------------------------------------------
 
-function invokeEdgeFn(fn: EdgeFn, ctx: EdgeContext, current: string): string {
+function invokeEdgeFn(
+	fn: EdgeFn,
+	ctx: EdgeContext,
+	current: string,
+): { kind: "ok"; value: string } | { kind: "err"; reason: string } {
 	try {
-		return fn(ctx);
+		return { kind: "ok", value: fn(ctx) };
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
-		throw new Error(`workflow edge function at "${current}" threw: ${msg}`);
+		return {
+			kind: "err",
+			reason: `workflow edge function at "${current}" threw: ${msg}`,
+		};
 	}
 }
 
-function assertKnownTarget(workflow: Workflow, current: string, target: string): string {
-	if (workflow.nodes[target]) return target;
-	throw new Error(
-		`workflow edge from "${current}" returned "${target}" which is not a declared node in workflow "${workflow.name}"`,
-	);
+function resolveTarget(workflow: Workflow, current: string, target: string): RoutingResult {
+	if (workflow.nodes[target]) return { kind: "next", node: target };
+	return {
+		kind: "err",
+		reason: `workflow edge from "${current}" returned "${target}" which is not a declared node in workflow "${workflow.name}"`,
+	};
 }

@@ -79,12 +79,15 @@ const ctxOf = (manifestData?: Record<string, unknown>) => {
 describe("[I1] validate → code-review routing in built-in workflows", () => {
 	it("routes validate → code-review in mid", () => {
 		const mid = findWorkflow("mid");
-		expect(nextNode(mid, "validate", ctxOf({ severeIssueCount: 0 }))).toBe("code-review");
+		expect(nextNode(mid, "validate", ctxOf({ severeIssueCount: 0 }))).toEqual({ kind: "next", node: "code-review" });
 	});
 
 	it("routes validate → code-review-large in large", () => {
 		const large = findWorkflow("large");
-		expect(nextNode(large, "validate", ctxOf({ severeIssueCount: 0 }))).toBe("code-review-large");
+		expect(nextNode(large, "validate", ctxOf({ severeIssueCount: 0 }))).toEqual({
+			kind: "next",
+			node: "code-review-large",
+		});
 	});
 
 	it("every node in every built-in workflow is reachable from start", () => {
@@ -99,7 +102,7 @@ describe("[I1] validate → code-review routing in built-in workflows", () => {
 
 	it("revise routes forward to implement-after-revise (not the original implement)", () => {
 		const mid = findWorkflow("mid");
-		expect(nextNode(mid, "revise", ctxOf())).toBe("implement-after-revise");
+		expect(nextNode(mid, "revise", ctxOf())).toEqual({ kind: "next", node: "implement-after-revise" });
 	});
 });
 
