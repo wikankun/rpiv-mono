@@ -11,16 +11,24 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { currentArtifactPath } from "../internal-utils.js";
-import type {
-	Extractor,
-	ExtractorCtx,
-	ExtractorPayload,
-	ExtractorResult,
-	GitCommitData,
-	SnapshotCtx,
-} from "../manifest.js";
+import type { Extractor, ExtractorCtx, ExtractorPayload, ExtractorResult, SnapshotCtx } from "../manifest.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Manifest data shape produced by `gitCommitExtractor` — co-located with
+ * the extractor that emits it. The `GitCommitManifest` alias in
+ * `manifest.ts` re-imports this type so downstream nodes can narrow on
+ * `manifest.kind === "git-commit"` without reaching into per-extractor
+ * paths.
+ */
+export interface GitCommitData {
+	sha: string;
+	prevSha: string;
+	subject: string;
+	filesChanged: number;
+	noOp?: boolean;
+}
 
 /** Baseline snapshot captured before the stage runs. */
 export interface GitHeadSnapshot {
@@ -75,10 +83,13 @@ async function extractGitCommit(ctx: ExtractorCtx): Promise<ExtractorResult> {
 }
 
 /**
- * Git commit extractor — bundles `gitHeadSnapshot` (before) with `extractGitCommit`
- * (extract). Co-located so the pre-state capture is structurally part of the
- * extractor that consumes it. `gitHeadSnapshot` stays exported separately for
- * users who want to compose it into their own custom extractors.
+ * Git commit extractor — bundles `gitHeadSnapshot` (before) with
+ * `extractGitCommit` (extract). Co-located so the pre-state capture is
+ * structurally part of the extractor that consumes it. `gitHeadSnapshot`
+ * is exposed via the main package barrel (`@juicesharp/rpiv-workflow`) as
+ * a composition building block: wrap it in any custom extractor whose
+ * `extract` reads a git baseline (not just commit detection — also "did
+ * this stage touch files?", "what changed since the last save?", etc.).
  */
 export const gitCommitExtractor: Extractor = {
 	before: gitHeadSnapshot,

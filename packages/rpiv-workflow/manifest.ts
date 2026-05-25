@@ -5,6 +5,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { GitCommitData } from "./extractors/git-commit.js";
 import type { BranchEntry } from "./transcript.js";
 import type { RunState } from "./types.js";
 
@@ -32,18 +33,16 @@ export interface Manifest<K extends string = string, D = unknown> {
 
 // ---------------------------------------------------------------------------
 // Built-in manifest kinds
+//
+// Aliases enable consumer-side tagged-union narrowing on `manifest.kind` —
+// the value of the abstraction is the narrowing pattern, not the count of
+// current importers. Data shapes live with their producing extractors;
+// `GitCommitData` is sourced from `extractors/git-commit.ts` (type-only
+// import — no runtime cycle).
 // ---------------------------------------------------------------------------
 
 export type ArtifactMdManifest = Manifest<"artifact-md", Record<string, unknown>>;
 export type SideEffectManifest = Manifest<"side-effect", Record<string, never>>;
-
-export interface GitCommitData {
-	sha: string;
-	prevSha: string;
-	subject: string;
-	filesChanged: number;
-	noOp?: boolean;
-}
 export type GitCommitManifest = Manifest<"git-commit", GitCommitData>;
 
 // ---------------------------------------------------------------------------

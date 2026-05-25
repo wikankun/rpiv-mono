@@ -42,8 +42,17 @@ export {
 export { nowIso, recordStage } from "./audit.js";
 export { __resetBuiltIns, getBuiltIns, registerBuiltIns } from "./built-ins.js";
 // Bundled extractors — re-exported so sibling workflows can build commit /
-// artifact-md nodes without reaching into per-module paths.
-export { artifactMdExtractor, gitCommitExtractor, sideEffectExtractor } from "./extractors/index.js";
+// artifact-md nodes without reaching into per-module paths. `gitHeadSnapshot`
+// is the composition building block: wrap it inside a custom extractor to
+// capture a git baseline before any stage (not just commit stages).
+export {
+	artifactMdExtractor,
+	type GitCommitData,
+	type GitHeadSnapshot,
+	gitCommitExtractor,
+	gitHeadSnapshot,
+	sideEffectExtractor,
+} from "./extractors/index.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
 export type {
@@ -51,7 +60,6 @@ export type {
 	ExtractorCtx,
 	ExtractorPayload,
 	ExtractorResult,
-	GitCommitData,
 	Manifest,
 	ManifestMeta,
 	SnapshotCtx,

@@ -70,6 +70,26 @@ export default function (pi: ExtensionAPI): void {
 
 These workflows are merged into the lowest layer (`built-in`); user/project overlays still override by name.
 
+## Custom extractors
+
+A stage's manifest is produced by an `Extractor` — `before` runs once before the agent session (its return value lands in `ctx.snapshot`), `extract` runs after the session settles. Compose the bundled `gitHeadSnapshot` into your own `before` to read a git baseline from any extractor:
+
+```ts
+import type { Extractor, GitHeadSnapshot } from "@juicesharp/rpiv-workflow";
+import { gitHeadSnapshot } from "@juicesharp/rpiv-workflow";
+
+const touchedFilesExtractor: Extractor<GitHeadSnapshot | undefined, "touched-files", { files: number }> = {
+  before: gitHeadSnapshot,
+  async extract(ctx) {
+    if (!ctx.snapshot) return { kind: "ok", payload: { kind: "touched-files", data: { files: 0 } } };
+    const files = await countChangedFiles(ctx.cwd, ctx.snapshot.baselineSha);
+    return { kind: "ok", payload: { kind: "touched-files", data: { files } } };
+  },
+};
+```
+
+`Extractor<Snap, Kind, Data>` is generic over the snapshot type and the payload's `kind` + `data` — so downstream predicates can narrow on `manifest.kind === "touched-files"` and read `manifest.data.files` with full type inference.
+
 ## Architecture
 
 See [`.rpiv/guidance/packages/rpiv-workflow/architecture.md`](../../.rpiv/guidance/packages/rpiv-workflow/architecture.md).
