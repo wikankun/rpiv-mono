@@ -120,57 +120,81 @@ interface ParsedConfig {
 }
 
 /**
+ * Mutable bag of state threaded through `loadLayer` → `loadOverlayFile`
+ * → `mergeOverlay`. Each helper writes into `acc.issues` /
+ * `acc.workflowMap` / `acc.sources` / `acc.sourcePaths` in place;
+ * `loadWorkflows` reads them at the end to project the public
+ * `LoadedWorkflows` envelope.
+ *
+ * Lives in a struct so future loader features add fields here rather
+ * than threading another mutable parameter through three call layers.
+ */
+interface LoadAccumulator {
+	issues: Issue[];
+	workflowMap: Map<string, Workflow>;
+	sources: Map<string, ConfigLayer>;
+	sourcePaths: Map<string, string | undefined>;
+}
+
+/**
+ * What a per-layer load returns to the orchestrator. `contributed`
+ * controls the `LoadedWorkflows.layers` banner; `canonicalDefault`
+ * feeds `resolveDefault` (drop-in files don't set defaults — see
+ * `normalizeDefaultExport`'s drop-in hard-reject).
+ */
+interface LayerOutcome {
+	contributed: boolean;
+	canonicalDefault: string | undefined;
+}
+
+function loadError(acc: LoadAccumulator, layer: ConfigLayer, path: string | undefined, message: string): void {
+	acc.issues.push({ kind: "load", layer, path, severity: "error", message });
+}
+
+/**
  * Load every active layer, merge by workflow name, validate, and return the
  * resolved set. Never throws — load + validation errors flow through `issues`.
  */
 export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
-	const issues: Issue[] = [];
+	const acc: LoadAccumulator = {
+		issues: [],
+		workflowMap: new Map(),
+		sources: new Map(),
+		sourcePaths: new Map(),
+	};
 	const layers: ConfigLayer[] = getBuiltIns().length > 0 ? ["built-in"] : [];
 
-	// `workflowSources` maps name → layer for the public API; `sourcePaths`
-	// tracks the exact file each surviving workflow came from so validation
-	// issues attribute to the right path (drop-ins vs canonical).
-	const workflowMap = new Map<string, Workflow>();
-	const sources = new Map<string, ConfigLayer>();
-	const sourcePaths = new Map<string, string | undefined>();
 	for (const w of getBuiltIns()) {
-		workflowMap.set(w.name, w);
-		sources.set(w.name, "built-in");
-		sourcePaths.set(w.name, undefined);
+		acc.workflowMap.set(w.name, w);
+		acc.sources.set(w.name, "built-in");
+		acc.sourcePaths.set(w.name, undefined);
 	}
 
-	const userParsed = await loadLayer(userOverlayPaths(), "user", issues, workflowMap, sources, sourcePaths);
-	if (userParsed) layers.push("user");
+	const userOutcome = await loadLayer(userOverlayPaths(), "user", acc);
+	if (userOutcome.contributed) layers.push("user");
 
-	const projectParsed = await loadLayer(
-		projectOverlayPaths(cwd),
-		"project",
-		issues,
-		workflowMap,
-		sources,
-		sourcePaths,
-	);
-	if (projectParsed) layers.push("project");
+	const projectOutcome = await loadLayer(projectOverlayPaths(cwd), "project", acc);
+	if (projectOutcome.contributed) layers.push("project");
 
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user
 	// errors. Each issue is attributed to the exact file the surviving workflow
 	// came from (drop-in or canonical) so `/wf` previews can render
 	// `[<layer> config (<path>)] workflow "X": ...` errors.
-	for (const w of workflowMap.values()) {
-		const layer = sources.get(w.name) ?? "built-in";
-		const path = sourcePaths.get(w.name);
-		for (const v of validateWorkflow(w)) issues.push({ ...v, kind: "validation", layer, path });
+	for (const w of acc.workflowMap.values()) {
+		const layer = acc.sources.get(w.name) ?? "built-in";
+		const path = acc.sourcePaths.get(w.name);
+		for (const v of validateWorkflow(w)) acc.issues.push({ ...v, kind: "validation", layer, path });
 	}
 
-	const defaultName = resolveDefault(projectParsed, userParsed, workflowMap, issues);
+	const defaultName = resolveDefault(projectOutcome.canonicalDefault, userOutcome.canonicalDefault, acc);
 
 	return {
-		workflows: [...workflowMap.values()],
+		workflows: [...acc.workflowMap.values()],
 		default: defaultName,
-		workflowSources: sources,
+		workflowSources: acc.sources,
 		layers,
-		issues,
+		issues: acc.issues,
 	};
 }
 
@@ -180,42 +204,37 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 
 /**
  * Load one layer's drop-ins (alpha-sorted) then its canonical file, merging
- * into `workflowMap`/`sources`/`sourcePaths` in that order so the canonical
- * file's workflows win over drop-ins of the same name. Returns the canonical
- * `ParsedConfig` (used only for its `default` field) — drop-in `default`
- * fields are rejected, so they never participate in default resolution.
+ * into the accumulator in that order so the canonical file's workflows win
+ * over drop-ins of the same name. The returned `LayerOutcome.canonicalDefault`
+ * carries the canonical file's `default` field (or `undefined`) — drop-in
+ * `default` fields are rejected at normalisation, so they never participate
+ * in default resolution.
  *
- * Returns `undefined` only when neither the canonical file nor any drop-in
- * existed; that signals to `loadWorkflows` not to append the layer to the
- * `layers` banner.
+ * `LayerOutcome.contributed` is `false` only when neither the canonical
+ * file nor any drop-in existed; that signals to `loadWorkflows` not to
+ * append the layer to the `layers` banner.
  */
-async function loadLayer(
-	paths: OverlayPaths,
-	layer: ConfigLayer,
-	issues: Issue[],
-	workflowMap: Map<string, Workflow>,
-	sources: Map<string, ConfigLayer>,
-	sourcePaths: Map<string, string | undefined>,
-): Promise<ParsedConfig | undefined> {
+async function loadLayer(paths: OverlayPaths, layer: ConfigLayer, acc: LoadAccumulator): Promise<LayerOutcome> {
 	let contributed = false;
+	let canonicalDefault: string | undefined;
 
 	for (const dropInPath of enumerateDropIns(paths.dropInDir)) {
-		const parsed = await loadOverlayFile(dropInPath, layer, issues, "drop-in");
+		const parsed = await loadOverlayFile(dropInPath, layer, acc, "drop-in");
 		if (!parsed) continue;
-		mergeOverlay(parsed, layer, dropInPath, workflowMap, sources, sourcePaths);
+		mergeOverlay(parsed, layer, dropInPath, acc);
 		contributed = true;
 	}
 
-	let canonicalParsed: ParsedConfig | undefined;
 	if (existsSync(paths.canonical)) {
-		canonicalParsed = await loadOverlayFile(paths.canonical, layer, issues, "canonical");
+		const canonicalParsed = await loadOverlayFile(paths.canonical, layer, acc, "canonical");
 		if (canonicalParsed) {
-			mergeOverlay(canonicalParsed, layer, paths.canonical, workflowMap, sources, sourcePaths);
+			mergeOverlay(canonicalParsed, layer, paths.canonical, acc);
+			canonicalDefault = canonicalParsed.default;
 			contributed = true;
 		}
 	}
 
-	return contributed ? (canonicalParsed ?? { workflows: [] }) : undefined;
+	return { contributed, canonicalDefault };
 }
 
 /** Alpha-sorted `*.ts` files directly under `dir`. Empty array if `dir` doesn't exist. */
@@ -242,26 +261,20 @@ type FileKind = "canonical" | "drop-in";
 async function loadOverlayFile(
 	path: string,
 	layer: ConfigLayer,
-	issues: Issue[],
+	acc: LoadAccumulator,
 	kind: FileKind,
 ): Promise<ParsedConfig | undefined> {
 	let raw: unknown;
 	try {
 		raw = await jiti.import(path, { default: true });
 	} catch (e) {
-		issues.push({
-			kind: "load",
-			layer,
-			path,
-			severity: "error",
-			message: `failed to import ${path}: ${formatError(e)}`,
-		});
+		loadError(acc, layer, path, `failed to import ${path}: ${formatError(e)}`);
 		return undefined;
 	}
 
 	const parsed = normalizeDefaultExport(raw, kind);
 	if (parsed.kind === "err") {
-		issues.push({ kind: "load", layer, path, severity: "error", message: parsed.error });
+		loadError(acc, layer, path, parsed.error);
 		return undefined;
 	}
 	return parsed.value;
@@ -360,18 +373,11 @@ function formatError(e: unknown): string {
 // Merge + default resolution
 // ---------------------------------------------------------------------------
 
-function mergeOverlay(
-	parsed: ParsedConfig,
-	layer: ConfigLayer,
-	path: string,
-	workflowMap: Map<string, Workflow>,
-	sources: Map<string, ConfigLayer>,
-	sourcePaths: Map<string, string | undefined>,
-): void {
+function mergeOverlay(parsed: ParsedConfig, layer: ConfigLayer, path: string, acc: LoadAccumulator): void {
 	for (const w of parsed.workflows) {
-		workflowMap.set(w.name, w);
-		sources.set(w.name, layer);
-		sourcePaths.set(w.name, path);
+		acc.workflowMap.set(w.name, w);
+		acc.sources.set(w.name, layer);
+		acc.sourcePaths.set(w.name, path);
 	}
 }
 
@@ -383,31 +389,25 @@ function mergeOverlay(
  * load time.
  */
 function resolveDefault(
-	project: ParsedConfig | undefined,
-	user: ParsedConfig | undefined,
-	workflowMap: Map<string, Workflow>,
-	issues: Issue[],
+	projectDefault: string | undefined,
+	userDefault: string | undefined,
+	acc: LoadAccumulator,
 ): string {
 	const candidates: Array<{ name: string | undefined; layer: ConfigLayer }> = [
-		{ name: project?.default, layer: "project" },
-		{ name: user?.default, layer: "user" },
+		{ name: projectDefault, layer: "project" },
+		{ name: userDefault, layer: "user" },
 	];
 
 	for (const { name, layer } of candidates) {
 		if (!name) continue;
-		if (workflowMap.has(name)) return name;
-		issues.push({
-			kind: "load",
-			layer,
-			severity: "error",
-			message: `default workflow "${name}" (from ${layer} config) is not declared`,
-		});
+		if (acc.workflowMap.has(name)) return name;
+		loadError(acc, layer, undefined, `default workflow "${name}" (from ${layer} config) is not declared`);
 	}
 
-	if (workflowMap.has(FALLBACK_DEFAULT_WORKFLOW)) return FALLBACK_DEFAULT_WORKFLOW;
+	if (acc.workflowMap.has(FALLBACK_DEFAULT_WORKFLOW)) return FALLBACK_DEFAULT_WORKFLOW;
 
-	// Last resort: first workflow we have. workflowMap is non-empty because
-	// built-in workflows always populate it.
-	const first = workflowMap.keys().next().value;
+	// Last resort: first workflow we have. workflowMap is non-empty when at
+	// least one layer (built-in or overlay) contributed.
+	const first = acc.workflowMap.keys().next().value;
 	return first ?? FALLBACK_DEFAULT_WORKFLOW;
 }
