@@ -85,7 +85,7 @@ async function postStage(ctx: RunnerCtx, s: StageSession): Promise<void> {
 	const outcome = readStageOutcome(ctx, s);
 	if (outcome.stop !== "stop") return haltStage(ctx, s, outcome.stop);
 
-	const result = await extractAndValidateManifest(ctx, s, outcome.branch, freshBranchOf(ctx));
+	const result = await extractAndValidateManifest(ctx, s, outcome.branch);
 	if (result.kind === "fatal") return haltStageWithExtractionError(ctx, s, result.message);
 	if (result.kind === "validation-exhausted") return haltStageWithValidationFailure(ctx, s, result.failureSummary);
 
@@ -111,12 +111,11 @@ type ExtractionOutcome =
 	| { kind: "fatal"; message: string }
 	| { kind: "validation-exhausted"; failureSummary: string };
 
-/** Retry loop re-extracts against the latest branch after each fix request — hence `freshBranch`. */
+/** Retry loop re-extracts against the latest branch after each fix request — `retryUntilValid` reads the branch directly. */
 async function extractAndValidateManifest(
 	ctx: RunnerCtx,
 	s: StageSession,
 	branch: BranchEntry[],
-	freshBranch: () => BranchEntry[],
 ): Promise<ExtractionOutcome> {
 	const extractor = resolveExtractor(s.node);
 	const extractorCtx = buildExtractorCtx(s, branch);
@@ -126,7 +125,7 @@ async function extractAndValidateManifest(
 	if (first.kind === "fatal") return first;
 	if (!shouldValidateOutput(s.node, first.manifest)) return first;
 
-	return retryUntilValid(ctx, s, { extractor, extractorCtx, finalize, freshBranch }, first.manifest);
+	return retryUntilValid(ctx, s, { extractor, extractorCtx, finalize }, first.manifest);
 }
 
 // ===========================================================================
@@ -323,7 +322,6 @@ interface RetryDeps {
 	extractor: Extractor;
 	extractorCtx: ExtractorCtx;
 	finalize: (p: ExtractorPayload) => Manifest;
-	freshBranch: () => BranchEntry[];
 }
 
 async function retryUntilValid(
@@ -367,15 +365,15 @@ async function retryUntilValid(
 			return { kind: "fatal", message: msg };
 		}
 
-		// Re-extract against the latest branch. For continue policy, freshBranch
-		// returns the UNSLICED branch (readBranch over the shared ctx), but
-		// extractorCtx.branchOffset is undefined because the FIRST extraction
-		// received a pre-sliced branch. Pass the originally-captured s.branchOffset
-		// here so extractArtifactPath skips the prior-stage prefix instead of
-		// re-finding the upstream artifact and silently passing the validation
-		// retry while routing on stale state. (Closes I4 from the 2026-05-24
-		// review — artifact-emit + continue retry inherited prior path.)
-		const retryBranch = deps.freshBranch();
+		// Re-extract against the latest branch. `readBranch(ctx)` returns the
+		// UNSLICED branch over the shared ctx; for continue policy, the FIRST
+		// extraction received a pre-sliced branch (so its extractorCtx.branchOffset
+		// is undefined). Pass the originally-captured s.branchOffset here so
+		// extractArtifactPath skips the prior-stage prefix instead of re-finding
+		// the upstream artifact and silently passing the validation retry while
+		// routing on stale state. (Closes I4 from the 2026-05-24 review —
+		// artifact-emit + continue retry inherited prior path.)
+		const retryBranch = readBranch(ctx);
 		const retryCtx =
 			s.node.sessionPolicy === "continue"
 				? { ...deps.extractorCtx, branch: retryBranch, branchOffset: s.branchOffset }
@@ -526,6 +524,3 @@ const auditFor = (s: StageSession | PhaseSession): AuditCtx => ({
 	state: s.state,
 	skill: s.skill,
 });
-
-/** Thunk that re-reads the current branch — used by the retry loop after each agent reply. */
-const freshBranchOf = (ctx: RunnerCtx) => () => readBranch(ctx);
