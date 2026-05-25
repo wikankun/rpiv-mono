@@ -21,14 +21,17 @@ import { registerWorkflowCommand } from "./command.js";
 export {
 	action,
 	artifact,
+	type CompletionStrategy,
 	definePredicate,
 	defineStatePredicate,
 	defineWorkflow,
+	type EdgeContext,
 	type EdgeFn,
 	type EdgeTarget,
 	type NodeDef,
 	type NodeSchema,
 	READS_FRONTMATTER,
+	type SessionPolicy,
 	threshold,
 	type Workflow,
 } from "./api.js";
@@ -49,7 +52,6 @@ export type {
 	ManifestMeta,
 	SnapshotCtx,
 } from "./manifest.js";
-export type { EdgePredicate, PredicateContext } from "./predicates.js";
 export { nextNode } from "./routing.js";
 export { type RunWorkflowOptions, type RunWorkflowResult, runWorkflow } from "./runner.js";
 export { typeboxSchema } from "./standard-schema.js";

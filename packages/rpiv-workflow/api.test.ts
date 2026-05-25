@@ -12,6 +12,7 @@ import {
 	action,
 	artifact,
 	definePredicate,
+	defineStatePredicate,
 	defineWorkflow,
 	type EdgeFn,
 	type Extractor,
@@ -157,6 +158,19 @@ describe("threshold", () => {
 		expect(pick({ manifest: undefined, state: {} as never })).toBe("commit");
 	});
 
+	it("picks ifBelow when value coerces to NaN (non-numeric field)", () => {
+		expect(
+			pick({
+				manifest: {
+					kind: "artifact-md",
+					data: { severeIssueCount: "not a number" },
+					meta: { skill: "code-review", stageNumber: 1, ts: "", runId: "" },
+				},
+				state: {} as never,
+			}),
+		).toBe("commit");
+	});
+
 	it("threshold attaches .targets so validation can enumerate branches", () => {
 		expect(pick.targets).toEqual(["revise", "commit"]);
 	});
@@ -186,6 +200,21 @@ describe("definePredicate", () => {
 
 	it("throws when the targets array is empty", () => {
 		expect(() => definePredicate([], () => "x")).toThrow(/at least one possible return value/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// defineStatePredicate — same .targets contract; no READS_FRONTMATTER marker
+// ---------------------------------------------------------------------------
+
+describe("defineStatePredicate", () => {
+	it("attaches the declared targets to the returned function", () => {
+		const fn = defineStatePredicate(["a", "b"], () => "a");
+		expect(fn.targets).toEqual(["a", "b"]);
+	});
+
+	it("throws when the targets array is empty", () => {
+		expect(() => defineStatePredicate([], () => "x")).toThrow(/at least one possible return value/);
 	});
 });
 

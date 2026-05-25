@@ -9,7 +9,7 @@
  * A `Workflow` is a typed graph: a named entry point, a node table, and an
  * edge table that maps each node to either another node name, the sentinel
  * `STOP`, or an `EdgeFn` that picks at runtime. Edges live INSIDE each
- * workflow — there is no parallel preset/edge split.
+ * workflow.
  *
  * Factories are pure passthroughs that apply sane defaults. Same idiom as
  * `defineConfig` in Vite/Astro/Tailwind: zero runtime cost, exists solely
@@ -18,7 +18,6 @@
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { Extractor } from "./manifest.js";
-import { type EdgePredicate, predicateThreshold } from "./predicates.js";
 import type { RunState } from "./types.js";
 
 export type { Extractor } from "./manifest.js";
@@ -56,13 +55,21 @@ export type SessionPolicy = "fresh" | "continue";
 // ===========================================================================
 
 /**
- * Runtime context handed to an `EdgeFn`. Same shape as the existing
- * `PredicateContext` — re-exported under the public name for new authors.
+ * Runtime context handed to an `EdgeFn`. The sole context shape for both
+ * frontmatter-reading (`definePredicate`) and state-only
+ * (`defineStatePredicate`) authoring paths.
  */
 export interface EdgeContext {
 	manifest: import("./manifest.js").Manifest | undefined;
 	state: Readonly<RunState>;
 }
+
+/**
+ * Body-type alias for hand-rolled predicates. Internal — users wrap via
+ * `definePredicate` / `defineStatePredicate`, which return an `EdgeFn`
+ * (this alias plus a `.targets` field).
+ */
+type EdgePredicate = (ctx: EdgeContext) => string;
 
 /**
  * A function that picks the next node name given current state + manifest.
@@ -194,6 +201,24 @@ export function marksFrontmatter(fn: EdgeFn): boolean {
 }
 
 /**
+ * Shared body for `definePredicate` + `defineStatePredicate`. Validates the
+ * `targets` invariant, attaches `.targets` to the function, and (when
+ * `marker` is true) sets the `READS_FRONTMATTER` symbol so the load-time
+ * predicate-schema lint can distinguish frontmatter-reading predicates
+ * from state-only ones. `factory` is used only to brand the throw message
+ * so the offending call site is obvious in stack traces.
+ */
+function wrapEdgeFn(factory: string, targets: readonly string[], fn: EdgePredicate, marker: boolean): EdgeFn {
+	if (targets.length === 0) {
+		throw new Error(`${factory}: targets must declare at least one possible return value`);
+	}
+	const wrapped = fn as EdgeFn;
+	wrapped.targets = [...targets];
+	if (marker) (wrapped as unknown as Record<symbol, boolean>)[READS_FRONTMATTER] = true;
+	return wrapped;
+}
+
+/**
  * Promote a hand-rolled `EdgePredicate` to an `EdgeFn` by structurally
  * attaching the set of possible returns. `validate.ts` requires every
  * EdgeFn to carry `.targets` so reachability and load-time edge-target
@@ -209,13 +234,7 @@ export function marksFrontmatter(fn: EdgeFn): boolean {
  * declared is by definition a bug.
  */
 export function definePredicate(targets: readonly string[], fn: EdgePredicate): EdgeFn {
-	if (targets.length === 0) {
-		throw new Error("definePredicate: targets must declare at least one possible return value");
-	}
-	const wrapped = fn as EdgeFn;
-	wrapped.targets = [...targets];
-	(wrapped as unknown as Record<symbol, boolean>)[READS_FRONTMATTER] = true;
-	return wrapped;
+	return wrapEdgeFn("definePredicate", targets, fn, true);
 }
 
 /**
@@ -226,13 +245,20 @@ export function definePredicate(targets: readonly string[], fn: EdgePredicate): 
  * frontmatter-shape contract to validate).
  */
 export function defineStatePredicate(targets: readonly string[], fn: EdgePredicate): EdgeFn {
-	if (targets.length === 0) {
-		throw new Error("defineStatePredicate: targets must declare at least one possible return value");
-	}
-	const wrapped = fn as EdgeFn;
-	wrapped.targets = [...targets];
-	return wrapped;
+	return wrapEdgeFn("defineStatePredicate", targets, fn, false);
 }
+
+/**
+ * Internal body for `threshold`. Reads `manifest.data[field]`, coerces via
+ * `Number(...)`, and picks `ifAbove` / `ifBelow` on strict greater-than. The
+ * caller-facing missing-field policy lives in `threshold`'s JSDoc.
+ */
+const predicateThreshold =
+	(field: string, n: number, ifAbove: string, ifBelow: string): EdgePredicate =>
+	({ manifest }) => {
+		const value = Number((manifest?.data as Record<string, unknown>)?.[field]);
+		return value > n ? ifAbove : ifBelow;
+	};
 
 /**
  * Routes to `ifAbove` when `Number(manifest.data[field]) > n`; otherwise to

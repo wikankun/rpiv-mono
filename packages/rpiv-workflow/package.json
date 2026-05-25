@@ -42,7 +42,6 @@
     "load.ts",
     "manifest.ts",
     "messages.ts",
-    "predicates.ts",
     "preview.ts",
     "routing.ts",
     "runner.ts",
