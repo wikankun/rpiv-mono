@@ -691,7 +691,7 @@ describe("sessions — resolver ctx (always-unsliced branch + policy-derived off
 				state: freshRunState(),
 				node: node({ sessionPolicy: "continue", outcome: recordingOutcome }),
 				branchOffset: priorPrefix.length,
-				pi: mockPi,
+				host: mockPi,
 			}),
 		);
 
@@ -736,7 +736,7 @@ describe("sessions — resolver ctx (always-unsliced branch + policy-derived off
 					outcome: failThenPassOutcome,
 				}),
 				branchOffset: priorPrefix.length,
-				pi: mockPi,
+				host: mockPi,
 			}),
 		);
 
@@ -805,7 +805,7 @@ describe("sessions — spawn primitive", () => {
 				state: freshRunState(),
 				node: node({ sessionPolicy: "continue" }),
 				branchOffset: 0,
-				pi: mockPi,
+				host: mockPi,
 				prompt: "/skill:test continue-prompt",
 			}),
 		);
@@ -859,7 +859,7 @@ describe("sessions — spawn primitive", () => {
 				state: freshRunState(),
 				node: node({ sessionPolicy: "continue" }),
 				branchOffset: 0,
-				pi: mockPi,
+				host: mockPi,
 				onFailure,
 			}),
 		);

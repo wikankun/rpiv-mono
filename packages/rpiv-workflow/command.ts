@@ -18,10 +18,10 @@ import { runWorkflow } from "./runner/index.js";
 // Public entry
 // ---------------------------------------------------------------------------
 
-export function registerWorkflowCommand(pi: WorkflowHost): void {
-	pi.registerCommand("wf", {
+export function registerWorkflowCommand(host: WorkflowHost): void {
+	host.registerCommand("wf", {
 		description: CMD_DESCRIPTION,
-		handler: (args: string, ctx: WorkflowCommandHost) => handleWorkflowCommand(pi, args, ctx),
+		handler: (args: string, ctx: WorkflowCommandHost) => handleWorkflowCommand(host, args, ctx),
 	});
 }
 
@@ -29,7 +29,7 @@ export function registerWorkflowCommand(pi: WorkflowHost): void {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-async function handleWorkflowCommand(pi: WorkflowHost, args: string, ctx: WorkflowCommandHost): Promise<void> {
+async function handleWorkflowCommand(host: WorkflowHost, args: string, ctx: WorkflowCommandHost): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify(MSG_INTERACTIVE_ONLY, "error");
 		return;
@@ -77,7 +77,7 @@ async function handleWorkflowCommand(pi: WorkflowHost, args: string, ctx: Workfl
 	// thrown predicate or invariant could still bubble. Catch so Pi's
 	// dispatcher doesn't print a raw stack.
 	try {
-		await runWorkflow(ctx, { workflow, input, pi });
+		await runWorkflow(ctx, { workflow, input, host });
 	} catch (e) {
 		const reason = e instanceof Error ? e.message : String(e);
 		ctx.ui.notify(MSG_WORKFLOW_THREW(reason), "error");

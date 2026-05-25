@@ -207,6 +207,6 @@ export type { RunState } from "./types.js";
 export { type SchemaValidationFailure, validateManifestData } from "./validate-manifest.js";
 export { validateWorkflow, type WorkflowValidationIssue } from "./validate-workflow.js";
 
-export default function (pi: WorkflowHost): void {
-	registerWorkflowCommand(pi);
+export default function (host: WorkflowHost): void {
+	registerWorkflowCommand(host);
 }

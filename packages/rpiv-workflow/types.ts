@@ -1,7 +1,7 @@
 /**
  * Runtime types. Three nouns flow through the workflow runtime:
  *
- *  - `RunContext` — per-run carry (cwd, runId, workflow, state, visited, pi,
+ *  - `RunContext` — per-run carry (cwd, runId, workflow, state, visited, host,
  *    maxBackwardJumps). Read by every layer; mutated only by the runner.
  *  - `RunState` — mutable bookkeeping (manifest, counters, telemetry,
  *    termination). Read by every layer; mutated by the runner + the audit
@@ -102,7 +102,7 @@ export interface RunContext {
 	 */
 	visited: Set<string>;
 	/** Required for "continue"-policy stages. */
-	pi?: WorkflowHost;
+	host?: WorkflowHost;
 	maxBackwardJumps: number;
 }
 
@@ -129,7 +129,7 @@ export interface StageSession extends SessionContext {
 	/** Pre-stage baseline value (undefined if the node's `outcome` has no `baseline`). */
 	baseline: unknown;
 	/** Required iff `node.sessionPolicy === "continue"`. */
-	pi?: WorkflowHost;
+	host?: WorkflowHost;
 	/** Only set for continue stages — branch slice offset. */
 	branchOffset?: number;
 	onFailure?: (ctx: RunnerCtx) => void;

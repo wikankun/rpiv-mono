@@ -666,7 +666,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(true);
@@ -702,7 +702,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("fc", ["research", "design"], { design: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(true);
@@ -730,7 +730,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -755,7 +755,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -780,7 +780,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -805,7 +805,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["commit"], { commit: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(true);
@@ -830,7 +830,7 @@ describe("runWorkflow", () => {
 					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
 				}),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -853,11 +853,11 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("cont", ["research"], { research: { sessionPolicy: "continue" } }),
 				input: "x",
-				// No pi provided — caught by the preflight before any stage runs.
+				// No host provided — caught by the preflight before any stage runs.
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toBe("workflow contains continue-policy nodes which require a workflow host (pi)");
+			expect(result.error).toBe("workflow contains continue-policy nodes which require a workflow host");
 			expect(result.stagesCompleted).toBe(0);
 
 			// Preflight short-circuits before writeHeader / any recordStage call —
@@ -893,7 +893,7 @@ describe("runWorkflow", () => {
 					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
 				}),
 				input: "x",
-				pi: mockPi.pi,
+				host: mockPi.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -935,7 +935,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("fc", ["research", "design"], { design: { sessionPolicy: "continue" } }),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			// Stage 2 failed — no artifact produced by the continue stage
@@ -1717,7 +1717,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("typo-wf", ["typo"]),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
@@ -1752,7 +1752,7 @@ describe("runWorkflow", () => {
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("ok-wf", ["research"]),
 				input: "x",
-				pi: chain.pi,
+				host: chain.pi,
 			});
 
 			expect(result.success).toBe(true);

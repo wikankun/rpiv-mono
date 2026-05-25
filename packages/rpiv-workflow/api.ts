@@ -60,7 +60,7 @@ export type CompletionStrategy = (typeof COMPLETION_STRATEGIES)[number];
 
 /**
  * - `"fresh"` — wraps the stage in `ctx.newSession({ withSession })`.
- * - `"continue"` — reuses the prior session via `pi.sendUserMessage()` +
+ * - `"continue"` — reuses the prior session via `host.sendUserMessage()` +
  *   `ctx.waitForIdle()`; branch sliced by `branchOffset`.
  */
 export const SESSION_POLICIES = ["fresh", "continue"] as const;

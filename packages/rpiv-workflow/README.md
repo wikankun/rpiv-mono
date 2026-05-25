@@ -92,7 +92,7 @@ Sibling packages contribute workflows at extension load:
 import { registerBuiltIns, type WorkflowHost } from "@juicesharp/rpiv-workflow";
 import { myWorkflows } from "./my-workflows.js";
 
-export default function (pi: WorkflowHost): void {
+export default function (host: WorkflowHost): void {
   registerBuiltIns(myWorkflows);
 }
 ```
@@ -132,7 +132,7 @@ import { runWorkflow } from "@juicesharp/rpiv-workflow";
 const result = await runWorkflow({
   workflow: myFlow,
   input: "task description",
-  pi: piHost,  // any WorkflowHost-shaped value
+  host: piHost,  // any WorkflowHost-shaped value
 });
 ```
 

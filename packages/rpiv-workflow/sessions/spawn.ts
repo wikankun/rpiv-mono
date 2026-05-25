@@ -22,17 +22,17 @@ import type { RunnerCtx } from "../types.js";
  *     stage-side captured value (it's `undefined` from
  *     `computeBranchOffset` for fresh stages anyway); continue returns
  *     it as-is.
- *   - `spawn(ctx, prompt, body, pi?)` — open the session and run `body`
+ *   - `spawn(ctx, prompt, body, host?)` — open the session and run `body`
  *     on whichever ctx is valid for that policy (fresh → freshCtx
  *     inside `withSession`; continue → the supplied ctx, after a
  *     send+waitForIdle settles the existing session). `cancelled: true`
  *     means a fresh session was cancelled before `withSession` ran.
- *   - `send(ctx, msg, pi?)` — send into an already-established session
+ *   - `send(ctx, msg, host?)` — send into an already-established session
  *     and wait for it to settle (used by the validation-retry path).
  *
- * `pi` is required for continue (caller passes `s.pi`; the start-of-run
- * preflight has already rejected any workflow that needs continue
- * without pi). Fresh ignores the `pi` parameter.
+ * `host` is required for continue (caller passes `s.host`; the
+ * start-of-run preflight has already rejected any workflow that needs
+ * continue without a host). Fresh ignores the `host` parameter.
  */
 export interface SessionPolicyHandler {
 	branchOffset(capturedOffset: number | undefined): number | undefined;
@@ -40,9 +40,9 @@ export interface SessionPolicyHandler {
 		ctx: RunnerCtx,
 		prompt: string,
 		body: (sessionCtx: RunnerCtx) => Promise<void>,
-		pi?: WorkflowHost,
+		host?: WorkflowHost,
 	): Promise<{ cancelled: boolean }>;
-	send(ctx: RunnerCtx, msg: string, pi?: WorkflowHost): Promise<void>;
+	send(ctx: RunnerCtx, msg: string, host?: WorkflowHost): Promise<void>;
 }
 
 export const FRESH_HANDLER: SessionPolicyHandler = {
@@ -63,9 +63,9 @@ export const FRESH_HANDLER: SessionPolicyHandler = {
 
 export const CONTINUE_HANDLER: SessionPolicyHandler = {
 	branchOffset: (captured) => captured,
-	async spawn(ctx, prompt, body, pi) {
-		if (!pi) throw new Error("CONTINUE_HANDLER.spawn: continue policy requires a workflow host (pi)");
-		// `pi.sendUserMessage` returns a Promise — pre-I5b we discarded it,
+	async spawn(ctx, prompt, body, host) {
+		if (!host) throw new Error("CONTINUE_HANDLER.spawn: continue policy requires a workflow host");
+		// `host.sendUserMessage` returns a Promise — pre-I5b we discarded it,
 		// so a rejected send (e.g. transport closed, agent SDK fault)
 		// surfaced as unhandledRejection past the stage boundary and the
 		// runner kept walking the chain blind. Await so the rejection lands
@@ -73,14 +73,14 @@ export const CONTINUE_HANDLER: SessionPolicyHandler = {
 		// because Pi's SDK doesn't expose an abort signal yet — abandoned
 		// waitForIdle from a prior retry can still settle on the next
 		// continue stage's ctx (tracked, not fixed here).
-		await pi.sendUserMessage(prompt);
+		await host.sendUserMessage(prompt);
 		await ctx.waitForIdle();
 		await body(ctx);
 		return { cancelled: false };
 	},
-	async send(ctx, msg, pi) {
-		if (!pi) throw new Error("CONTINUE_HANDLER.send: continue policy requires a workflow host (pi)");
-		await pi.sendUserMessage(msg);
+	async send(ctx, msg, host) {
+		if (!host) throw new Error("CONTINUE_HANDLER.send: continue policy requires a workflow host");
+		await host.sendUserMessage(msg);
 		await ctx.waitForIdle();
 	},
 };

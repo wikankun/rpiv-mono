@@ -58,8 +58,8 @@ export interface RunWorkflowOptions {
 	workflow: Workflow;
 	/** Passed to the start node as its argument. */
 	input: string;
-	/** Required for "continue"-policy stages (pi.sendUserMessage). */
-	pi?: WorkflowHost;
+	/** Required for "continue"-policy stages (host.sendUserMessage). */
+	host?: WorkflowHost;
 	/** Defaults to MAX_BACKWARD_JUMPS. */
 	maxBackwardJumps?: number;
 }
@@ -120,11 +120,11 @@ export async function runWorkflow(ctx: WorkflowCommandHost, options: RunWorkflow
 	// sendUserMessage; if no host was passed, enforceSessionInvariants would
 	// throw at the first such stage.
 	// Reject at workflow entry so embedders get a clean envelope instead of a throw.
-	if (options.pi === undefined && Object.values(workflow.nodes).some((n) => n.sessionPolicy === "continue")) {
+	if (options.host === undefined && Object.values(workflow.nodes).some((n) => n.sessionPolicy === "continue")) {
 		return {
 			stagesCompleted: 0,
 			success: false,
-			error: "workflow contains continue-policy nodes which require a workflow host (pi)",
+			error: "workflow contains continue-policy nodes which require a workflow host",
 		};
 	}
 
@@ -169,7 +169,7 @@ export async function runWorkflow(ctx: WorkflowCommandHost, options: RunWorkflow
 		totalStages,
 		state,
 		visited: new Set(),
-		pi: options.pi,
+		host: options.host,
 		maxBackwardJumps,
 	});
 	return {

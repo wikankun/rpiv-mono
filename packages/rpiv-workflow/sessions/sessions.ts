@@ -45,7 +45,7 @@ import { FRESH_HANDLER, handlerFor } from "./spawn.js";
 /** Execute one DAG stage in its own session. */
 export async function runStageSession(ctx: RunnerCtx, s: StageSession): Promise<void> {
 	const handler = handlerFor(s.node.sessionPolicy);
-	const { cancelled } = await handler.spawn(ctx, s.prompt, (sessionCtx) => postStage(sessionCtx, s), s.pi);
+	const { cancelled } = await handler.spawn(ctx, s.prompt, (sessionCtx) => postStage(sessionCtx, s), s.host);
 	if (cancelled) recordCancellation(ctx, auditFor(s));
 }
 

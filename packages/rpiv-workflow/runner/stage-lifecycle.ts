@@ -142,7 +142,7 @@ export async function runStage(curCtx: RunnerCtx, currentName: string, idx: numb
 		node: stage.node,
 		stageIndex: idx,
 		baseline,
-		pi: run.pi,
+		host: run.host,
 		branchOffset,
 		onFailure: (freshCtx) => notifyPartialArtifacts(freshCtx, run.cwd, run.runId),
 		onSuccess: (freshCtx) => advanceChain(freshCtx, currentName, idx, run),
@@ -198,14 +198,14 @@ async function tryFanout(curCtx: RunnerCtx, stage: ResolvedStage, idx: number, r
  *
  * `pi` is optional on `RunWorkflowOptions`; when absent we skip the check
  * (we have no command registry to consult). Programmatic callers that opt
- * out of pi opt out of this defense too — same fail-soft posture the rest
- * of the pi-optional surface uses.
+ * out of passing a host opt out of this defense too — same fail-soft
+ * posture the rest of the host-optional surface uses.
  */
 function ensureSkillRegistered(stage: ResolvedStage, run: RunContext): void {
-	if (!run.pi) return;
+	if (!run.host) return;
 
 	const registered = new Set<string>();
-	for (const cmd of run.pi.getCommands()) {
+	for (const cmd of run.host.getCommands()) {
 		if (cmd.source !== "skill") continue;
 		// Pi prefixes skill-source commands with "skill:" (agent-session.js:1699);
 		// match args.ts:333's slice so the comparison key is the bare skill name.
@@ -246,8 +246,8 @@ function enforceSessionInvariants(stage: ResolvedStage, run: RunContext): void {
 			"fanout requires per-unit session isolation";
 		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
 	}
-	if (stage.node.sessionPolicy === "continue" && !run.pi) {
-		const reason = `runStage: node "${stage.name}" uses sessionPolicy "continue" but no workflow host (pi) was provided to runWorkflow`;
+	if (stage.node.sessionPolicy === "continue" && !run.host) {
+		const reason = `runStage: node "${stage.name}" uses sessionPolicy "continue" but no workflow host was provided to runWorkflow`;
 		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
 	}
 }
