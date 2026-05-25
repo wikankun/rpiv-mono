@@ -11,13 +11,64 @@
  * `skillPaths[]`). This package ships ZERO built-in workflows. Bundles
  * like `@juicesharp/rpiv-pi` opt in by calling `registerBuiltIns(...)`
  * from their own extension entry.
+ *
+ * ─── Public surface, grouped by audience ────────────────────────────────
+ *
+ *   1. Authoring DSL — `./api.js`, `./typebox-adapter.js`
+ *      What a `workflows.config.ts` author imports to declare a workflow:
+ *      `defineWorkflow`, `artifact`, `action`, `threshold`, `Workflow`,
+ *      `NodeDef`, `EdgeFn`, `EdgeTarget`, `EdgeContext`, `NodeSchema`,
+ *      `CompletionStrategy`, `SessionPolicy`, `definePredicate`,
+ *      `defineStatePredicate`, `READS_FRONTMATTER`, the runtime-mirror
+ *      `*_VALUES` arrays, and `typeboxSchema` (the TypeBox adapter).
+ *
+ *   2. Runner (programmatic embedders) — `./runner/index.js`
+ *      Drive a workflow from outside `/wf`: `runWorkflow`,
+ *      `RunWorkflowOptions`, `RunWorkflowResult`.
+ *
+ *   3. Loader (programmatic embedders) — `./load/index.js`
+ *      Materialise the merged workflow registry: `loadWorkflows`,
+ *      `LoadedWorkflows`, `Issue`, `LoadIssue`, `ConfigLayer`,
+ *      `OverlayPaths`, `projectOverlayPaths`, `userOverlayPaths`.
+ *
+ *   4. Built-in registry (sibling packages) — `./built-ins.js`
+ *      Contribute workflows to the lowest config layer:
+ *      `registerBuiltIns`, `getBuiltIns`.
+ *
+ *   5. Manifest envelope + extractors — `./manifest.js`,
+ *      `./extractors/index.js`
+ *      Inter-stage data channel (`Manifest<K, D>`, `ManifestMeta`) +
+ *      bundled extractors (`artifactMdExtractor`, `sideEffectExtractor`,
+ *      `gitCommitExtractor`, `GitCommitData`, `gitHeadSnapshot`,
+ *      `GitHeadSnapshot`).
+ *
+ *   6. Custom-extractor authoring surface — `./manifest.js`
+ *      `Extractor<Snap, Kind, Data>`, `ExtractorCtx`,
+ *      `ExtractorPayload`, `ExtractorResult`, `SnapshotCtx`.
+ *
+ *   7. Validation surfaces — `./validate-workflow.js`,
+ *      `./validate-manifest.js`
+ *      `validateWorkflow`, `WorkflowValidationIssue`,
+ *      `validateManifestData`, `SchemaValidationFailure`.
+ *
+ *   8. Persistence (low-level — JSONL inspect) — `./state/index.js`
+ *      Read past runs at `<cwd>/.rpiv/workflows/<run-id>.jsonl`:
+ *      `listRuns`, `readHeader`, `readLastStage`, `listArtifacts`,
+ *      `resolveStateFile`, `resolveWorkflowsDir`, `RunSummary`,
+ *      `WorkflowHeader`, `WorkflowStage`. `recordStage` (from
+ *      `./audit.js`) is exposed only for rpiv-pi's `[I3]` regression
+ *      test; runner owns row writes — embedders never need it.
+ *
+ *   9. Runtime types — `./types.js`
+ *      `RunContext`, `RunState`.
+ *
+ * Per-module deep imports (`from "@juicesharp/rpiv-workflow/api.js"`)
+ * are NOT supported across the package boundary.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerWorkflowCommand } from "./command.js";
 
-// Public API — re-exported so consumers can `import { ... } from "@juicesharp/rpiv-workflow"`
-// without reaching into per-module paths.
 export {
 	action,
 	artifact,
@@ -39,12 +90,8 @@ export {
 	threshold,
 	type Workflow,
 } from "./api.js";
-export { nowIso, recordStage } from "./audit.js";
-export { __resetBuiltIns, getBuiltIns, registerBuiltIns } from "./built-ins.js";
-// Bundled extractors — re-exported so sibling workflows can build commit /
-// artifact-md nodes without reaching into per-module paths. `gitHeadSnapshot`
-// is the composition building block: wrap it inside a custom extractor to
-// capture a git baseline before any stage (not just commit stages).
+export { recordStage } from "./audit.js";
+export { getBuiltIns, registerBuiltIns } from "./built-ins.js";
 export {
 	artifactMdExtractor,
 	type GitCommitData,
