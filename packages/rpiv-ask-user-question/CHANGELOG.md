@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `rpiv:ask-user:prompt` event emitted before showing the questionnaire, with a typed payload and importable event contract from `@juicesharp/rpiv-ask-user-question/events`.
+
 ## [1.12.0] - 2026-05-21
 
 ## [1.11.0] - 2026-05-20
