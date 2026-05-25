@@ -37,7 +37,7 @@ import {
 	MSG_VALIDATION_RETRY_PROMPT,
 } from "./messages.js";
 import { type BranchEntry, classifyStop, extractArtifactPath, readBranch, type StopSignal } from "./transcript.js";
-import type { PhaseSession, RunnerCtx, StageSession } from "./types.js";
+import type { PhaseSession, RunnerCtx, SessionContext, StageSession } from "./types.js";
 import {
 	DEFAULT_VALIDATION_RETRIES,
 	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
@@ -169,6 +169,32 @@ function haltPhase(ctx: RunnerCtx, s: PhaseSession, stop: Exclude<StopSignal, "s
 // ===========================================================================
 
 /**
+ * Write + counter-increment guard shared by `recordStageSuccess` and
+ * `recordPhaseSuccess`. Returns `true` iff the JSONL row landed. Manifest
+ * assignment lives here so both callers get the same "manifest is set iff
+ * the row that carried it landed" invariant. Caller-specific bits (notify,
+ * `state.termination.error`, `state.fallbackArtifactPath`) stay outside.
+ */
+function tryRecordStage(s: SessionContext, label: string, args: { artifact?: string; manifest?: Manifest }): boolean {
+	const assigned = recordStage(
+		s.cwd,
+		s.runId,
+		{
+			skill: label,
+			artifact: args.artifact,
+			status: "completed",
+			ts: nowIso(),
+			manifest: args.manifest,
+		},
+		s.state,
+	);
+	if (assigned === undefined) return false;
+	if (args.manifest) s.state.manifest = args.manifest;
+	s.state.stagesCompleted++;
+	return true;
+}
+
+/**
  * Returns true on successful write — caller gates `onSuccess` on this so the
  * chain advances only when the audit row landed. On failure, leaves
  * `state.manifest` / `state.fallbackArtifactPath` at their prior values (the
@@ -181,44 +207,28 @@ function recordStageSuccess(
 	artifact: string | undefined,
 	manifest: Manifest | undefined,
 ): boolean {
-	const assigned = recordStage(
-		s.cwd,
-		s.runId,
-		{ skill: s.skill, artifact, status: "completed", ts: nowIso(), manifest },
-		s.state,
-	);
-	if (assigned === undefined) {
+	if (!tryRecordStage(s, s.skill, { artifact, manifest })) {
 		ctx.ui.notify(MSG_AUDIT_WRITE_FAILED(s.skill), "error");
 		s.state.termination.error = ERR_AUDIT_WRITE_FAILED(s.skill);
 		return false;
 	}
-	// Manifest is set whenever present; fallback only carries the bare
-	// transcript path when the manifest doesn't already supply one (e.g.
-	// sideEffectExtractor with no upstream artifact_path). currentArtifactPath
-	// prefers the manifest field and falls through to fallback otherwise.
-	if (manifest) s.state.manifest = manifest;
+	// Fallback path carries the bare transcript artifact when the manifest
+	// doesn't supply its own — currentArtifactPath prefers the manifest
+	// field and falls through to fallback otherwise.
 	if (!manifest?.artifact_path && artifact) s.state.fallbackArtifactPath = artifact;
-	s.state.stagesCompleted++;
 	ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
 	return true;
 }
 
 /** Phase rows never notify — parent stage holds MSG_STAGE_COMPLETE until all phases finish. */
 function recordPhaseSuccess(s: PhaseSession, artifact: string | undefined): boolean {
-	const assigned = recordStage(
-		s.cwd,
-		s.runId,
-		{ skill: phaseRowLabel(s), artifact, status: "completed", ts: nowIso() },
-		s.state,
-	);
-	if (assigned === undefined) {
+	if (!tryRecordStage(s, phaseRowLabel(s), { artifact })) {
 		s.state.termination.error = ERR_AUDIT_WRITE_FAILED(phaseRowLabel(s));
 		return false;
 	}
 	// Phases never carry manifests — write goes through the fallback slot,
 	// which currentArtifactPath surfaces when no manifest is on hand.
 	if (artifact) s.state.fallbackArtifactPath = artifact;
-	s.state.stagesCompleted++;
 	return true;
 }
 
