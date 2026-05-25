@@ -40,7 +40,7 @@
  * load.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { configPath } from "@juicesharp/rpiv-config";
 import { createJiti } from "jiti";
@@ -113,6 +113,38 @@ const jiti = createJiti(import.meta.url, {
 	moduleCache: false,
 	fsCache: false,
 });
+
+/**
+ * mtime-keyed import cache. jiti's own caches are disabled so `/reload`
+ * picks up edits without restart; this wrapper layers a stat-driven
+ * cache on top so unchanged overlays don't re-evaluate top-level code
+ * on every `/wf` invocation.
+ *
+ * Cache miss: stat the file, call `jiti.import`, store the
+ * (mtimeMs, parsed) tuple keyed by absolute path. Cache hit: stat
+ * the file, compare mtimeMs, return the cached value if equal.
+ *
+ * The cache does not invalidate on file deletion — a stale entry for
+ * a deleted overlay sits dormant (the enumerator never passes it back
+ * to `cachedImport`). The cache resets on `__resetLoadCache()` (wired
+ * into test/setup.ts beforeEach) and on process exit.
+ */
+const overlayCache = new Map<string, { mtimeMs: number; parsed: unknown }>();
+
+async function cachedImport(path: string): Promise<unknown> {
+	const stat = statSync(path);
+	const cached = overlayCache.get(path);
+	if (cached && cached.mtimeMs === stat.mtimeMs) return cached.parsed;
+	const value = await jiti.import(path, { default: true });
+	overlayCache.set(path, { mtimeMs: stat.mtimeMs, parsed: value });
+	return value;
+}
+
+/** Test-only reset. Wired into `test/setup.ts` `beforeEach` so per-test
+ * cache isolation survives the mtime cache. */
+export function __resetLoadCache(): void {
+	overlayCache.clear();
+}
 
 interface ParsedConfig {
 	workflows: Workflow[];
@@ -266,7 +298,7 @@ async function loadOverlayFile(
 ): Promise<ParsedConfig | undefined> {
 	let raw: unknown;
 	try {
-		raw = await jiti.import(path, { default: true });
+		raw = await cachedImport(path);
 	} catch (e) {
 		loadError(acc, layer, path, `failed to import ${path}: ${formatError(e)}`);
 		return undefined;

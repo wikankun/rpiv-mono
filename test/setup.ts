@@ -60,6 +60,8 @@ beforeEach(async () => {
 
 	const workflowBuiltIns = await import("../packages/rpiv-workflow/built-ins.js");
 	workflowBuiltIns.__resetBuiltIns();
+	const workflowLoad = await import("../packages/rpiv-workflow/load.js");
+	workflowLoad.__resetLoadCache();
 
 	const guidance = await import("../packages/rpiv-pi/extensions/rpiv-core/guidance.js");
 	guidance.clearInjectionState();

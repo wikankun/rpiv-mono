@@ -44,6 +44,7 @@ vi.mock("./load.js", () => ({
 		layers: ["built-in"],
 		issues: [],
 	})),
+	__resetLoadCache: vi.fn(),
 }));
 
 import { parseArgs, registerWorkflowCommand } from "./command.js";
