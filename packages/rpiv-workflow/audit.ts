@@ -34,12 +34,13 @@ export const nowIso = (): string => new Date().toISOString();
 export type AuditCtx = Pick<SessionContext, "cwd" | "runId" | "state" | "skill">;
 
 /**
- * JSONL row label for phase rows — stage rows use `s.skill` verbatim; phase
- * rows include the per-phase index (`implement (phase 2/4)`) so post-hoc
- * readers can distinguish loop iterations. Owned by the audit layer because
- * the JSONL row shape is its concern.
+ * JSONL row label for fanout-unit rows — stage rows use `s.skill` verbatim;
+ * unit rows append the user-supplied `label` (e.g. `"implement (phase 2/4)"`,
+ * `"apply (task 3/8)"`) so post-hoc readers can distinguish loop iterations.
+ * Owned by the audit layer because the JSONL row shape is its concern; the
+ * runner stays neutral about the wording.
  */
-export const phaseRowLabel = (s: PhaseSession): string => `${s.skill} (phase ${s.phaseIndex}/${s.phaseCount})`;
+export const phaseRowLabel = (s: PhaseSession): string => `${s.skill} (${s.label})`;
 
 /**
  * Allocates the next `stageNumber`, attempts the append, and returns the

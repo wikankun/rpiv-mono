@@ -9,8 +9,13 @@ export const STATUS_KEY = "rpiv-workflow";
 
 export const STATUS_STAGE = (stage: number, total: number, skill: string) => `rpiv: stage ${stage}/${total} — ${skill}`;
 
-export const STATUS_PHASE = (stage: number, total: number, phase: number, phaseCount: number) =>
-	`rpiv: stage ${stage}/${total} — implement (phase ${phase}/${phaseCount})`;
+/**
+ * Status line for a fanout unit. `skill` is the node's resolved skill body,
+ * `label` is whatever the user's `FanoutFn` returned for this unit
+ * (`"phase 2/5"`, `"task 3/8"`, ...). The runner adds no implicit wording.
+ */
+export const STATUS_PHASE = (stage: number, total: number, skill: string, label: string) =>
+	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
 
 export const MSG_STAGE_COMPLETE = (skill: string) => `✓ ${skill} completed`;
 export const MSG_STAGE_FAILED = (skill: string) => `✗ ${skill} failed — stopping workflow`;

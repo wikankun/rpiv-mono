@@ -131,11 +131,17 @@ export interface StageSession extends SessionContext {
 	onSuccess: (ctx: RunnerCtx, artifact: string | undefined) => Promise<void>;
 }
 
-/** One `## Phase N:` iteration of an implement stage. */
+/**
+ * One unit of a fanout iteration. `label` is the user-supplied
+ * disambiguating tag from `FanoutUnit.label`; it's woven into both the
+ * status line (`STATUS_PHASE`) and the JSONL row (`phaseRowLabel`) so the
+ * runner adds no implicit wording.
+ */
 export interface PhaseSession extends SessionContext {
-	/** 1-based. */
-	phaseIndex: number;
-	phaseCount: number;
+	/** 1-based position within the run's fanout array — for halt diagnostics. */
+	unitIndex: number;
+	/** From `FanoutUnit.label` — already disambiguating, e.g. `"phase 2/5"`. */
+	label: string;
 	/** Parent stage's 0-based index. */
 	stageIndex: number;
 	onSuccess: (ctx: RunnerCtx) => Promise<void>;

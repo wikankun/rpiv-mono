@@ -13,10 +13,13 @@
  * users author their own over their own skills.
  */
 
+import { readFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import {
 	action,
 	artifact,
 	defineWorkflow,
+	type FanoutFn,
 	gitCommitExtractor,
 	threshold,
 	typeboxSchema,
@@ -28,6 +31,34 @@ const CODE_REVIEW_SCHEMA = typeboxSchema(
 	Type.Object({ blockers_count: Type.Integer({ minimum: 0 }) }, { additionalProperties: true }),
 );
 
+/**
+ * Markdown `## Phase N:` headings in the inherited plan artifact define
+ * fanout units for the bundled `implement` skill. The convention lives
+ * here — rpiv-workflow knows nothing about phases.
+ *
+ * Cap: a plan declaring more than 32 phases throws. The rpiv-pi `plan`
+ * skill caps around 8 phases in practice; 32 leaves headroom for stretch
+ * plans without letting a pathological (or hostile) plan drive an
+ * unbounded fanout loop.
+ */
+const MAX_PHASES = 32;
+
+const PHASE_FANOUT: FanoutFn = ({ artifactPath, cwd }) => {
+	if (!artifactPath) return [];
+	const abs = isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+	const content = readFileSync(abs, "utf-8");
+	const matches = [...content.matchAll(/^## Phase (\d+):/gm)];
+	if (matches.length > MAX_PHASES) {
+		throw new Error(
+			`PHASE_FANOUT: plan ${artifactPath} declares ${matches.length} phases — exceeds MAX_PHASES (${MAX_PHASES}); split into smaller plans`,
+		);
+	}
+	return matches.map((m, i) => ({
+		prompt: `${artifactPath} Phase ${m[1]}`,
+		label: `phase ${i + 1}/${matches.length}`,
+	}));
+};
+
 // ===========================================================================
 // small — blueprint → implement → validate
 // ===========================================================================
@@ -37,7 +68,7 @@ const smallWorkflow = defineWorkflow({
 	start: "blueprint",
 	nodes: {
 		blueprint: artifact(),
-		implement: action({ fanout: { kind: "plan-phases" } }),
+		implement: action({ fanout: PHASE_FANOUT }),
 		validate: artifact(),
 	},
 	edges: {
@@ -58,11 +89,11 @@ const midWorkflow = defineWorkflow({
 	nodes: {
 		research: artifact(),
 		blueprint: artifact(),
-		implement: action({ fanout: { kind: "plan-phases" } }),
+		implement: action({ fanout: PHASE_FANOUT }),
 		validate: artifact(),
 		"code-review": artifact({ outputSchema: CODE_REVIEW_SCHEMA }),
 		revise: artifact(),
-		"implement-after-revise": action({ skill: "implement", fanout: { kind: "plan-phases" } }),
+		"implement-after-revise": action({ skill: "implement", fanout: PHASE_FANOUT }),
 		commit: action({ extractor: gitCommitExtractor }),
 	},
 	edges: {
@@ -89,12 +120,12 @@ const largeWorkflow = defineWorkflow({
 		research: artifact(),
 		design: artifact(),
 		plan: artifact(),
-		implement: action({ fanout: { kind: "plan-phases" } }),
+		implement: action({ fanout: PHASE_FANOUT }),
 		validate: artifact(),
 		"code-review-large": artifact({ skill: "code-review", outputSchema: CODE_REVIEW_SCHEMA }),
 		"design-after-review": artifact({ skill: "design" }),
 		"plan-after-review": artifact({ skill: "plan" }),
-		"implement-after-review": action({ skill: "implement", fanout: { kind: "plan-phases" } }),
+		"implement-after-review": action({ skill: "implement", fanout: PHASE_FANOUT }),
 		commit: action({ extractor: gitCommitExtractor }),
 	},
 	edges: {

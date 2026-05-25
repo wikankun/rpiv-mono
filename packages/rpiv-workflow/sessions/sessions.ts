@@ -116,7 +116,7 @@ function haltStageWithValidationFailure(ctx: RunnerCtx, s: StageSession, failure
 }
 
 function haltPhase(ctx: RunnerCtx, s: PhaseSession, stop: Exclude<StopSignal, "stop">): void {
-	recordStopFailure(ctx, auditFor(s), stop, `${s.skill} phase ${s.phaseIndex} failed`);
+	recordStopFailure(ctx, auditFor(s), stop, `${s.skill} unit ${s.unitIndex} (${s.label}) failed`);
 }
 
 // ===========================================================================

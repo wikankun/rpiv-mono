@@ -11,7 +11,7 @@
 
 import type { NodeDef } from "../api.js";
 import { notifyPartialArtifacts } from "../audit.js";
-import { countPhases, runImplementPhases } from "../implement-phases.js";
+import { runImplementPhases } from "../implement-phases.js";
 import { currentArtifactPath } from "../internal-utils.js";
 import {
 	ERR_INPUT_VALIDATION_FAILED,
@@ -145,21 +145,22 @@ function resolveStageNode(currentName: string, idx: number, run: RunContext): Re
 }
 
 /**
- * A node that opts into `fanout: { kind: "plan-phases" }` expands into one
- * session per `## Phase N:` heading found in the inherited artifact. The
- * decision is keyed on the node's authoring surface — NOT on the skill
- * name — so the package stays skill-agnostic: any node a workflow author
- * declares with `fanout: { kind: "plan-phases" }` fans out, regardless of
- * whether the underlying skill is `implement`, `apply`, or anything else.
- * Returns true iff fanout fired — caller then returns without running the
- * single-stage path.
+ * A node that opts into fanout via `NodeDef.fanout` expands into one Pi
+ * session per unit returned by the user's `FanoutFn`. The runner is
+ * convention-agnostic: it never inspects the artifact, never counts
+ * headings, never names a skill — every per-unit decision lives in the
+ * FanoutFn. Returns true iff fanout fired (i.e. at least one unit was
+ * returned) — caller then returns without running the single-stage path.
  */
 async function tryPhaseFanout(curCtx: RunnerCtx, stage: ResolvedStage, idx: number, run: RunContext): Promise<boolean> {
-	const current = currentArtifactPath(run.state);
-	if (!(stage.node.fanout?.kind === "plan-phases" && current)) return false;
-	const phaseCount = countPhases(current, run.cwd);
-	if (phaseCount === 0) return false;
-	await runImplementPhases(curCtx, idx, stage.name, stage.skill, 1, phaseCount, run, {
+	if (!stage.node.fanout) return false;
+	const units = await stage.node.fanout({
+		cwd: run.cwd,
+		artifactPath: currentArtifactPath(run.state),
+		state: run.state,
+	});
+	if (units.length === 0) return false;
+	await runImplementPhases(curCtx, idx, stage.name, stage.skill, 1, units, run, {
 		runPhaseSession,
 		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
 	});

@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompletionStrategy, EdgeTarget, NodeDef, Workflow } from "./api.js";
+import type { CompletionStrategy, EdgeTarget, FanoutFn, NodeDef, Workflow } from "./api.js";
 import { definePredicate, defineStatePredicate, defineWorkflow, threshold } from "./api.js";
-import { countPhases } from "./implement-phases.js";
 import { runWorkflow } from "./runner/index.js";
 import { appendRoutingDecision, readRoutingDecisions } from "./state/index.js";
 import { extractArtifactPath, hasAssistantMessage, lastAssistantStopReason } from "./transcript.js";
@@ -88,52 +87,22 @@ describe("extractArtifactPath", () => {
 });
 
 // ---------------------------------------------------------------------------
-// countPhases — file-driven phase counter
+// Test fixture: a minimal phase-headings FanoutFn matching the rpiv-pi
+// convention (`## Phase N:`). Mirrors what rpiv-pi declares inline in
+// `built-in-workflows.ts` — kept local so rpiv-workflow tests don't reach
+// for an rpiv-pi import.
 // ---------------------------------------------------------------------------
 
-describe("countPhases", () => {
-	let tmpDir: string;
-
-	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-count-phases-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("counts ## Phase N: headings in an absolute-path plan file", () => {
-		const planPath = join(tmpDir, "plan.md");
-		writeFileSync(planPath, "## Phase 1: a\n## Phase 2: b\n## Phase 3: c\n");
-		// cwd is irrelevant for absolute paths but the signature requires it.
-		expect(countPhases(planPath, tmpDir)).toBe(3);
-	});
-
-	it("resolves a relative path against the provided cwd", () => {
-		mkdirSync(join(tmpDir, "plans"), { recursive: true });
-		writeFileSync(join(tmpDir, "plans", "p.md"), "## Phase 1: a\n## Phase 2: b\n");
-		expect(countPhases("plans/p.md", tmpDir)).toBe(2);
-	});
-
-	it("throws on a missing file (caller's advanceChain catch records a failure row)", () => {
-		// Pre-I11: bare catch returned 0, silently degrading a multi-phase plan
-		// into a single-stage path. Now: read errors bubble so advanceChain's
-		// catch can surface them as a failure row.
-		expect(() => countPhases(join(tmpDir, "nope.md"), tmpDir)).toThrow(/ENOENT|no such file/);
-	});
-
-	it("returns 0 for a file with no ## Phase N: headings", () => {
-		const p = join(tmpDir, "empty.md");
-		writeFileSync(p, "# Title\n## Summary\n## Not a Phase\n### Phase 1: sub-heading not matched\n");
-		expect(countPhases(p, tmpDir)).toBe(0);
-	});
-
-	it("ignores headings without a numeric phase index", () => {
-		const p = join(tmpDir, "weird.md");
-		writeFileSync(p, "## Phase A: not a number\n## Phase 1: real\n");
-		expect(countPhases(p, tmpDir)).toBe(1);
-	});
-});
+const phaseHeadingsFanout: FanoutFn = ({ artifactPath, cwd }) => {
+	if (!artifactPath) return [];
+	const abs = artifactPath.startsWith("/") ? artifactPath : join(cwd, artifactPath);
+	const content = readFileSync(abs, "utf-8");
+	const matches = [...content.matchAll(/^## Phase (\d+):/gm)];
+	return matches.map((m, i) => ({
+		prompt: `${artifactPath} Phase ${m[1]}`,
+		label: `phase ${i + 1}/${matches.length}`,
+	}));
+};
 
 // ---------------------------------------------------------------------------
 // runWorkflow — orchestration over a scripted session chain
@@ -389,7 +358,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: { kind: "plan-phases" } },
+				implement: { fanout: phaseHeadingsFanout },
 			}),
 			input: "x",
 		});
@@ -575,7 +544,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: { kind: "plan-phases" } },
+				implement: { fanout: phaseHeadingsFanout },
 			}),
 			input: "x",
 		});
@@ -836,7 +805,7 @@ describe("runWorkflow", () => {
 
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("ic", ["implement"], {
-					implement: { sessionPolicy: "continue", fanout: { kind: "plan-phases" } },
+					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
 				}),
 				input: "x",
 				pi: chain.pi,
@@ -899,7 +868,7 @@ describe("runWorkflow", () => {
 			// gates only on missing pi) lets the run reach the mid-chain throw.
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("midthrow", ["research", "implement"], {
-					implement: { sessionPolicy: "continue", fanout: { kind: "plan-phases" } },
+					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
 				}),
 				input: "x",
 				pi: mockPi.pi,

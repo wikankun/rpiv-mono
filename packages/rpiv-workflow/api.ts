@@ -67,20 +67,53 @@ export const ON_VALIDATION_FAILURE_VALUES = ["retry", "halt"] as const;
 export type OnValidationFailure = (typeof ON_VALIDATION_FAILURE_VALUES)[number];
 
 /**
- * Opt-in fanout descriptor attached to a node. When present, the runner
- * detects iterable units in the upstream artifact and runs one session per
- * unit. The skill-agnostic promise lives here: any node — not just one
- * named `implement` — can fan out by declaring its strategy.
+ * Opt-in fanout — a user-supplied function that decomposes a node's work
+ * into N units, one Pi session per unit. The runner owns iteration +
+ * audit; the FanoutFn owns the convention (how units are detected, what
+ * each session's prompt body says, how each is labelled).
  *
- * - `"plan-phases"` — count `## Phase N:` headings in the inherited
- *   artifact and run one session per heading. The bundled rpiv-pi
- *   `implement` skill emits per-phase outputs against this contract.
+ * rpiv-workflow ships ZERO fanout conventions: no markdown regex, no
+ * phase counter, no schema. A consumer wanting markdown-heading fanout
+ * writes the ~10 lines themselves and reuses one constant across nodes.
  *
- * Future kinds can encode `"plan-tasks"`, `"json-array"`, etc.; the union
- * stays closed so the runner dispatches with no fallback.
+ * Invariants enforced by the runner:
+ * - Empty return ⇒ no fanout (fall through to the single-stage path).
+ * - Throws ⇒ stage halts, attributed to this node.
+ * - `node.sessionPolicy === "continue"` is incompatible with fanout
+ *   (validated at load + at preflight).
+ *
+ * Cap policy: the runner does not bound `units.length`. Authors of bespoke
+ * FanoutFns own their own safety bounds — same posture as
+ * `maxBackwardJumps` (the only run-wide cap the runner enforces).
  */
-export interface PhaseFanoutSpec {
-	kind: "plan-phases";
+export type FanoutFn = (ctx: FanoutContext) => readonly FanoutUnit[] | Promise<readonly FanoutUnit[]>;
+
+export interface FanoutContext {
+	cwd: string;
+	/**
+	 * Artifact path inherited from the upstream stage (or undefined when the
+	 * fanout node is the entry point). FanoutFns that need to read an upstream
+	 * artifact short-circuit to `[]` when undefined — the runner treats that
+	 * as "no fanout" and runs the single-stage path.
+	 */
+	artifactPath: string | undefined;
+	state: Readonly<RunState>;
+}
+
+export interface FanoutUnit {
+	/**
+	 * Body sent to the skill: the runner dispatches `/skill:<node.skill>
+	 * <prompt>` once per unit. The unit owns artifact-path threading + any
+	 * per-unit cue — the runner adds nothing implicit.
+	 */
+	prompt: string;
+	/**
+	 * Short label woven into the status line + JSONL audit row.
+	 * The audit `skill` field becomes `<node.skill> (<label>)`; the status
+	 * line shows `rpiv: stage X/Y — <node.skill> (<label>)`. Keep it short
+	 * and disambiguating (`"phase 2/5"`, `"task 3/8"`).
+	 */
+	label: string;
 }
 
 // ===========================================================================
@@ -147,12 +180,13 @@ export interface NodeDef<TIn = unknown, TOut = unknown> {
 	maxValidationRetries?: number;
 	validationRetryTimeoutMs?: number;
 	/**
-	 * Opt-in fanout. When set, the runner expands this stage into one
-	 * session per iterable unit in the inherited artifact (see
-	 * `PhaseFanoutSpec`). Incompatible with `sessionPolicy: "continue"`
-	 * — fanout requires per-unit session isolation.
+	 * Opt-in fanout. When set, the runner invokes the function with a
+	 * `FanoutContext`, awaits the returned units, and runs one Pi session
+	 * per unit (single-stage path when the array is empty). Incompatible
+	 * with `sessionPolicy: "continue"` — fanout requires per-unit session
+	 * isolation.
 	 */
-	fanout?: PhaseFanoutSpec;
+	fanout?: FanoutFn;
 }
 
 /**

@@ -904,8 +904,8 @@ describe("sessions — success persistence", () => {
 			state,
 			prompt: "/skill:implement phase",
 			skill: "implement",
-			phaseIndex: 2,
-			phaseCount: 4,
+			unitIndex: 2,
+			label: "phase 2/4",
 			stageIndex: 1,
 			onSuccess,
 		};
@@ -933,8 +933,8 @@ describe("sessions — success persistence", () => {
 			state,
 			prompt: "/skill:implement phase",
 			skill: "implement",
-			phaseIndex: 1,
-			phaseCount: 2,
+			unitIndex: 1,
+			label: "phase 1/2",
 			stageIndex: 0,
 			onSuccess,
 		};

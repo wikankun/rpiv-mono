@@ -26,12 +26,13 @@
 
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import {
 	action,
 	artifact,
 	defineWorkflow,
+	type FanoutFn,
 	type RunState,
 	resolveStateFile,
 	resolveWorkflowsDir,
@@ -353,12 +354,26 @@ describe("[I9] phase fanout labels by skill name, not by aliased node name", () 
 		mkdirSync(join(tmpDir, ".rpiv", "artifacts", "plans"), { recursive: true });
 		writeFileSync(join(tmpDir, planRelPath), "# Plan\n\n## Phase 1: a\nbody\n## Phase 2: b\nbody\n");
 
+		// Local copy of the `## Phase N:` convention used by rpiv-pi's built-in
+		// workflows — mirrors `PHASE_FANOUT` in `built-in-workflows.ts`. Inlined
+		// rather than imported so the test exercises the public FanoutFn shape.
+		const phaseFanout: FanoutFn = ({ artifactPath, cwd }) => {
+			if (!artifactPath) return [];
+			const abs = isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+			const content = readFileSync(abs, "utf-8");
+			const matches = [...content.matchAll(/^## Phase (\d+):/gm)];
+			return matches.map((m, i) => ({
+				prompt: `${artifactPath} Phase ${m[1]}`,
+				label: `phase ${i + 1}/${matches.length}`,
+			}));
+		};
+
 		const workflow = defineWorkflow({
 			name: "tiny",
 			start: "research",
 			nodes: {
 				research: artifact(),
-				"implement-after-revise": action({ skill: "implement", fanout: { kind: "plan-phases" } }),
+				"implement-after-revise": action({ skill: "implement", fanout: phaseFanout }),
 			},
 			edges: { research: "implement-after-revise", "implement-after-revise": "stop" },
 		});
