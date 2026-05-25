@@ -41,7 +41,7 @@ const ctxOf = (manifestData?: Record<string, unknown>): EdgeContext => {
 const stage = (name: string) => ({
 	name,
 	skill: name,
-	completionStrategy: "agent-end" as const,
+	kind: "side-effect" as const,
 	sessionPolicy: "fresh" as const,
 });
 

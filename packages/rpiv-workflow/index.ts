@@ -16,9 +16,9 @@
  *
  *   1. Authoring DSL — `./api.js`, `./typebox-adapter.js`
  *      What a `workflows.config.ts` author imports to declare a workflow:
- *      `defineWorkflow`, `artifact`, `action`, `threshold`, `Workflow`,
+ *      `defineWorkflow`, `produces`, `acts`, `threshold`, `Workflow`,
  *      `StageDef`, `EdgeFn`, `EdgeTarget`, `EdgeContext`, `StageSchema`,
- *      `CompletionStrategy`, `SessionPolicy`, `definePredicate`,
+ *      `StageKind`, `SessionPolicy`, `definePredicate`,
  *      `defineStatePredicate`, `READS_FRONTMATTER`, the runtime-mirror
  *      `*_VALUES` arrays, and `typeboxSchema` (the TypeBox adapter).
  *
@@ -116,10 +116,7 @@ import { registerWorkflowCommand } from "./command.js";
 import type { WorkflowHost } from "./host.js";
 
 export {
-	action,
-	artifact,
-	COMPLETION_STRATEGIES,
-	type CompletionStrategy,
+	acts,
 	definePredicate,
 	defineStatePredicate,
 	defineWorkflow,
@@ -131,10 +128,13 @@ export {
 	type FanoutUnit,
 	ON_VALIDATION_FAILURE_VALUES,
 	type OnValidationFailure,
+	produces,
 	READS_FRONTMATTER,
 	SESSION_POLICIES,
 	type SessionPolicy,
+	STAGE_KINDS,
 	type StageDef,
+	type StageKind,
 	type StageSchema,
 	threshold,
 	type Workflow,

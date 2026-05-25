@@ -12,9 +12,9 @@
  * are the agent's actual recorded actions, not its narration of them.
  *
  * Returns `ok` with an empty list when no matching calls fire — the
- * runner's `enforceCompletionContract` then halts for artifact-emit
+ * runner's `enforceCompletionContract` then halts for produces
  * (the stage promised an output and didn't deliver) or passes through
- * for agent-end (chain inherits prior). The resolver itself doesn't
+ * for side-effect (chain inherits prior). The resolver itself doesn't
  * second-guess that policy.
  */
 

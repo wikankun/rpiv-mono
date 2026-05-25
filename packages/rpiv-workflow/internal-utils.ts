@@ -18,7 +18,7 @@ export function assertNever(value: never): never {
 /**
  * Canonical accessor for "the primary artifact the chain is currently
  * carrying." Reads the rolling slot maintained by the runner —
- * artifact-emit stages update it on success; agent-end stages leave it
+ * produces stages update it on success; side-effect stages leave it
  * alone. Replaces the load-bearing single-string artifact_path mirror
  * from the pre-resolver shape.
  */

@@ -80,7 +80,7 @@ export interface RunWorkflowResult {
 	/**
 	 * Primary artifact at run termination, serialised to its handle's
 	 * canonical string form (fs → path, url → href, opaque → id). Undefined
-	 * if no artifact-emit stage produced one. Callers that need the full
+	 * if no produces stage produced one. Callers that need the full
 	 * structured handle read `manifest.artifacts[0]` off the run's last
 	 * recorded stage (via `readLastStage`).
 	 */

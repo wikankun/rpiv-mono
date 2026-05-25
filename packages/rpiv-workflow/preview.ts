@@ -65,7 +65,7 @@ function formatWorkflowHeading(name: string, layer: ConfigLayer, isDefault: bool
 /** Numbered row showing the stage + its outgoing edge target(s). */
 function formatStageRow(idx: number, stageName: string, stage: StageDef, workflow: Workflow): string {
 	const num = `${idx}.`.padEnd(3);
-	const decorations = [stage.completionStrategy.padEnd(13), stage.sessionPolicy, outcomeTag(stage)];
+	const decorations = [stage.kind.padEnd(13), stage.sessionPolicy, outcomeTag(stage)];
 	if (stage.inputSchema) decorations.push("in-schema");
 	if (stage.outputSchema) decorations.push("out-schema");
 
@@ -80,9 +80,9 @@ function formatStageRow(idx: number, stageName: string, stage: StageDef, workflo
  * Single tag per stage encoding the outcome shape. Custom outcomes
  * report `custom` (+`baseline` when the resolver declares a baseline
  * hook, +`reader` when a reader is wired). Stages without an outcome
- * fall through to the framework default: `side-effect` for agent-end
- * (the only completion strategy that has a default); `???` for
- * artifact-emit (load-time validation rejects this — the tag is for
+ * fall through to the framework default: `side-effect` for
+ * side-effect stages (the only kind that has a default); `???` for
+ * `produces` (load-time validation rejects this — the tag is for
  * defensive rendering only).
  */
 function outcomeTag(stage: StageDef): string {
@@ -92,7 +92,7 @@ function outcomeTag(stage: StageDef): string {
 		if (stage.outcome.reader) tags.push("reader");
 		return tags.join("+");
 	}
-	return stage.completionStrategy === "artifact-emit" ? "???" : "side-effect";
+	return stage.kind === "produces" ? "???" : "side-effect";
 }
 
 /** Render the outgoing edge as a human-readable trailer (string or predicate target set). */

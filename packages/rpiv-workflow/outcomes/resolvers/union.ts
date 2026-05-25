@@ -18,7 +18,7 @@
  * just contributes nothing to the concatenation). The union itself
  * returns `ok` with the merged list; the runner's
  * `enforceCompletionContract` decides whether an empty merged list is
- * a halt (artifact-emit) or a pass-through (agent-end).
+ * a halt (produces) or a pass-through (side-effect).
  */
 
 import type { Artifact } from "../../handle.js";

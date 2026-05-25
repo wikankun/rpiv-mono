@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompletionStrategy, EdgeTarget, FanoutFn, StageDef, StageSchema, Workflow } from "./api.js";
+import type { EdgeTarget, FanoutFn, StageDef, StageKind, StageSchema, Workflow } from "./api.js";
 import { definePredicate, defineStatePredicate, defineWorkflow, threshold } from "./api.js";
 import { fs as fsHandle } from "./handle.js";
 import type { Outcome } from "./manifest.js";
@@ -46,7 +46,7 @@ const phaseHeadingsFanout: FanoutFn = ({ artifact, cwd }) => {
 // ---------------------------------------------------------------------------
 // Test outcome: scan assistant text for `.rpiv/artifacts/<bucket>/<file>.md`
 // paths (the rpiv-pi convention, inlined so this test file doesn't reach for
-// an rpiv-pi import). Used as the default outcome on artifact-emit nodes
+// an rpiv-pi import). Used as the default outcome on produces nodes
 // built by `wf()` below.
 // ---------------------------------------------------------------------------
 
@@ -137,8 +137,8 @@ describe("runWorkflow", () => {
 	 * edge is `"stop"`. Two skill names get special defaults that align
 	 * with built-in `WORKFLOW_DAG` settings so tests don't have to spell
 	 * them out:
-	 *   - `implement` → `completionStrategy: "agent-end"` (action skill)
-	 *   - `commit`    → `completionStrategy: "agent-end"` (action skill)
+	 *   - `implement` → `kind: "side-effect"` (action skill)
+	 *   - `commit`    → `kind: "side-effect"` (action skill)
 	 *
 	 * Override per-stage via `stageOverrides`, or replace specific edges
 	 * (predicates, back-edges) via `edgeOverrides`.
@@ -159,20 +159,19 @@ describe("runWorkflow", () => {
 		for (let i = 0; i < stages.length; i++) {
 			const id = stages[i]!;
 			const next = stages[i + 1];
-			const defaultStrategy: CompletionStrategy =
-				id === "implement" || id === "commit" ? "agent-end" : "artifact-emit";
+			const defaultStrategy: StageKind = id === "implement" || id === "commit" ? "side-effect" : "produces";
 			// `skill` omitted — runner defaults it from the record key, matching
-			// the same convention real authors use via `artifact()` / `action()`.
+			// the same convention real authors use via `produces()` / `acts()`.
 			const base: StageDef = {
-				completionStrategy: defaultStrategy,
+				kind: defaultStrategy,
 				sessionPolicy: "fresh",
 			};
 			const merged: StageDef = { ...base, ...(stageOverrides[id] ?? {}) };
-			// artifact-emit stages get a test-local transcript-scan outcome (the
+			// produces stages get a test-local transcript-scan outcome (the
 			// framework no longer ships a default). Decide based on the FINAL
-			// strategy after overrides — if a test overrides to agent-end, we
+			// strategy after overrides — if a test overrides to side-effect, we
 			// don't want to attach the artifact-md outcome and force a path scan.
-			if (merged.completionStrategy === "artifact-emit" && !merged.outcome) {
+			if (merged.kind === "produces" && !merged.outcome) {
 				merged.outcome = transcriptArtifactMdOutcome;
 			}
 			stageMap[id] = merged;
@@ -575,9 +574,9 @@ describe("runWorkflow", () => {
 		expect(result.stagesCompleted).toBe(3); // research + 2 phases
 	});
 
-	describe("per-node completionStrategy dispatch", () => {
-		it("agent-end nodes complete cleanly without producing an artifact (e.g. commit at end of preset)", async () => {
-			// `commit` defaults to completionStrategy "agent-end" via the dagWith factory.
+	describe("per-node kind dispatch", () => {
+		it("side-effect nodes complete cleanly without producing an artifact (e.g. commit at end of preset)", async () => {
+			// `commit` defaults to kind "side-effect" via the dagWith factory.
 			// The branch contains no .rpiv/artifacts/... path; the runner must
 			// still treat the stage as completed and finish the workflow.
 			const chain = createMockSessionChain({
@@ -595,10 +594,10 @@ describe("runWorkflow", () => {
 			expect(result.lastArtifact).toBeUndefined();
 		});
 
-		it("agent-end node mid-chain inherits the prior stage's artifact for downstream stages", async () => {
+		it("side-effect node mid-chain inherits the prior stage's artifact for downstream stages", async () => {
 			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
 			writeArtifact(tmpDir, ".rpiv/artifacts/designs/d.md");
-			// research (artifact-emit) → commit (agent-end, no artifact) → design (artifact-emit).
+			// research (produces) → commit (side-effect, no artifact) → design (produces).
 			// Design must see research's artifact path as its input — commit
 			// doesn't reset currentArtifactPath(state) when it produces nothing.
 			const chain = createMockSessionChain({
@@ -626,9 +625,9 @@ describe("runWorkflow", () => {
 			]);
 		});
 
-		it("override: forcing completionStrategy to agent-end via dagWith node overrides skips artifact check", async () => {
+		it("override: forcing kind to side-effect via dagWith node overrides skips artifact check", async () => {
 			// Same skill that would normally require an artifact (research),
-			// but the DAG declares completionStrategy "agent-end" — the runner must
+			// but the DAG declares kind "side-effect" — the runner must
 			// honor the DAG, not the skill identity.
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
@@ -636,7 +635,7 @@ describe("runWorkflow", () => {
 			});
 
 			const result = await runWorkflow(chain.ctx, {
-				workflow: wf("tiny", ["research"], { research: { completionStrategy: "agent-end" } }),
+				workflow: wf("tiny", ["research"], { research: { kind: "side-effect" } }),
 				input: "x",
 			});
 
@@ -788,7 +787,7 @@ describe("runWorkflow", () => {
 			expect(result.stagesCompleted).toBe(0);
 		});
 
-		it("continue stage with agent-end stop strategy completes without artifact", async () => {
+		it("continue stage with side-effect stop strategy completes without artifact", async () => {
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
 				steps: [],
@@ -1108,7 +1107,7 @@ describe("runWorkflow", () => {
 				steps: [
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
 					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/code-review/cr.md")] },
-					// commit (agent-end)
+					// commit (side-effect)
 					{ branch: [mockAssistantMessage("Committed.")] },
 				],
 			});
@@ -1850,9 +1849,9 @@ describe("totalStages denominator (countReachableNodes)", () => {
 				name: "linear",
 				start: "a",
 				stages: {
-					a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					c: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "side-effect", sessionPolicy: "fresh" },
+					b: { kind: "side-effect", sessionPolicy: "fresh" },
+					c: { kind: "side-effect", sessionPolicy: "fresh" },
 				},
 				edges: { a: "b", b: "c", c: "stop" },
 			},
@@ -1871,9 +1870,9 @@ describe("totalStages denominator (countReachableNodes)", () => {
 				name: "branching",
 				start: "a",
 				stages: {
-					a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					c: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "side-effect", sessionPolicy: "fresh" },
+					b: { kind: "side-effect", sessionPolicy: "fresh" },
+					c: { kind: "side-effect", sessionPolicy: "fresh" },
 				},
 				// Threshold attaches .targets = ["b", "c"]; BFS reaches both.
 				edges: { a: threshold("count", 0, "b", "c"), b: "stop", c: "stop" },
@@ -1894,9 +1893,9 @@ describe("totalStages denominator (countReachableNodes)", () => {
 				name: "with-orphan",
 				start: "a",
 				stages: {
-					a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					orphan: { skill: "orphan", completionStrategy: "agent-end", sessionPolicy: "fresh" },
+					a: { kind: "side-effect", sessionPolicy: "fresh" },
+					b: { kind: "side-effect", sessionPolicy: "fresh" },
+					orphan: { skill: "orphan", kind: "side-effect", sessionPolicy: "fresh" },
 				},
 				edges: { a: "b", b: "stop", orphan: "stop" },
 			},
@@ -1922,8 +1921,8 @@ describe("totalStages denominator (countReachableNodes)", () => {
 					name: "naked",
 					start: "a",
 					stages: {
-						a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-						b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+						a: { kind: "side-effect", sessionPolicy: "fresh" },
+						b: { kind: "side-effect", sessionPolicy: "fresh" },
 					},
 					edges: { a: bareEdge, b: "stop" },
 				},

@@ -8,12 +8,12 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
-	action,
-	artifact as artifactRaw,
+	acts,
 	definePredicate,
 	defineStatePredicate,
 	defineWorkflow,
 	type EdgeFn,
+	produces as producesRaw,
 	type StageDef,
 	threshold,
 	type Workflow,
@@ -22,13 +22,13 @@ import { noopResolver } from "./outcomes/index.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 import { validateWorkflow } from "./validate-workflow.js";
 
-// artifact-emit nodes require an outcome (validated at load time). These
+// `produces` stages require an outcome (validated at load time). These
 // tests focus on graph-shape validation, so we wire a noop resolver into
-// every `artifact()` so the outcome-presence check passes and the test
+// every `produces()` so the outcome-presence check passes and the test
 // fixture exercises the rule it actually cares about.
 const STUB_ARTIFACT_OUTCOME = { resolver: noopResolver };
-const artifact = (overrides: Partial<StageDef> = {}): StageDef =>
-	artifactRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides });
+const produces = (overrides: Partial<StageDef> = {}): StageDef =>
+	producesRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,7 +46,7 @@ describe("validateWorkflow — happy path", () => {
 		const w = defineWorkflow({
 			name: "tiny",
 			start: "a",
-			stages: { a: artifact(), b: action() },
+			stages: { a: produces(), b: acts() },
 			edges: { a: "b", b: "stop" },
 		});
 		expect(errors(w)).toEqual([]);
@@ -65,7 +65,7 @@ describe("validateWorkflow — start", () => {
 		const w: Workflow = {
 			name: "bad-start",
 			start: "ghost",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "stop" },
 		};
 		const e = errors(w);
@@ -83,7 +83,7 @@ describe("validateWorkflow — edge keys", () => {
 		const w: Workflow = {
 			name: "stray-edge",
 			start: "a",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "stop", phantom: "a" },
 		};
 		const e = errors(w);
@@ -100,7 +100,7 @@ describe("validateWorkflow — edge targets", () => {
 		const w: Workflow = {
 			name: "bad-target",
 			start: "a",
-			stages: { a: artifact(), b: artifact() },
+			stages: { a: produces(), b: produces() },
 			edges: { a: "missing", b: "stop" },
 		};
 		const e = errors(w);
@@ -113,7 +113,7 @@ describe("validateWorkflow — edge targets", () => {
 		const w: Workflow = {
 			name: "leaf",
 			start: "a",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "stop" },
 		};
 		expect(errors(w)).toEqual([]);
@@ -123,7 +123,7 @@ describe("validateWorkflow — edge targets", () => {
 		const w: Workflow = {
 			name: "predicate",
 			start: "a",
-			stages: { a: artifact(), good: artifact() },
+			stages: { a: produces(), good: produces() },
 			// threshold writes .targets = ["good", "bad"] — "bad" isn't a declared stage.
 			edges: { a: threshold("count", 0, "good", "bad"), good: "stop" },
 		};
@@ -139,7 +139,7 @@ describe("validateWorkflow — edge targets", () => {
 		const w: Workflow = {
 			name: "naked",
 			start: "a",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: handCrafted },
 		};
 		const e = errors(w);
@@ -156,7 +156,7 @@ describe("validateWorkflow — implicit terminals", () => {
 		const w: Workflow = {
 			name: "implicit",
 			start: "a",
-			stages: { a: artifact(), b: artifact() },
+			stages: { a: produces(), b: produces() },
 			edges: { a: "b" }, // b has no edge — implicit terminal
 		};
 		const w2 = warnings(w);
@@ -167,7 +167,7 @@ describe("validateWorkflow — implicit terminals", () => {
 		const w: Workflow = {
 			name: "explicit",
 			start: "a",
-			stages: { a: artifact(), b: artifact() },
+			stages: { a: produces(), b: produces() },
 			edges: { a: "b", b: "stop" },
 		};
 		expect(warnings(w)).toEqual([]);
@@ -183,7 +183,7 @@ describe("validateWorkflow — reachability", () => {
 		const w: Workflow = {
 			name: "orphan",
 			start: "a",
-			stages: { a: artifact(), b: artifact(), orphan: artifact() },
+			stages: { a: produces(), b: produces(), orphan: produces() },
 			edges: { a: "b", b: "stop", orphan: "stop" },
 		};
 		const w2 = warnings(w);
@@ -194,7 +194,7 @@ describe("validateWorkflow — reachability", () => {
 		const w: Workflow = {
 			name: "branching",
 			start: "a",
-			stages: { a: artifact(), x: artifact(), y: artifact() },
+			stages: { a: produces(), x: produces(), y: produces() },
 			// Both x and y are reachable through the threshold.
 			edges: { a: threshold("count", 0, "x", "y"), x: "stop", y: "stop" },
 		};
@@ -207,10 +207,10 @@ describe("validateWorkflow — reachability", () => {
 			name: "loop",
 			start: "implement",
 			stages: {
-				implement: action(),
-				validate: artifact(),
-				revise: artifact(),
-				commit: action(),
+				implement: acts(),
+				validate: produces(),
+				revise: produces(),
+				commit: acts(),
 			},
 			edges: {
 				implement: "validate",
@@ -233,7 +233,7 @@ describe("validateWorkflow — semantic stage constraints", () => {
 	const baseWithStage = (overrides: Partial<import("./api.js").StageDef>): Workflow => ({
 		name: "semantic",
 		start: "a",
-		stages: { a: { ...artifact(), ...overrides } },
+		stages: { a: { ...produces(), ...overrides } },
 		edges: { a: "stop" },
 	});
 
@@ -270,9 +270,9 @@ describe("validateWorkflow — semantic stage constraints", () => {
 		).toEqual([]);
 	});
 
-	it("errors on unknown completionStrategy", () => {
-		const issues = validateWorkflow(baseWithStage({ completionStrategy: "burn-it" as unknown as "artifact-emit" }));
-		expect(issues.some((i) => i.severity === "error" && /completionStrategy: "burn-it"/.test(i.message))).toBe(true);
+	it("errors on unknown kind", () => {
+		const issues = validateWorkflow(baseWithStage({ kind: "burn-it" as unknown as "produces" }));
+		expect(issues.some((i) => i.severity === "error" && /kind: "burn-it"/.test(i.message))).toBe(true);
 	});
 
 	it("errors on unknown sessionPolicy", () => {
@@ -286,7 +286,7 @@ describe("validateWorkflow — predicate-edge schema check", () => {
 		const w: Workflow = {
 			name: "naked",
 			start: "code-review",
-			stages: { "code-review": artifact(), revise: artifact(), commit: action() },
+			stages: { "code-review": produces(), revise: produces(), commit: acts() },
 			edges: {
 				"code-review": threshold("severeIssueCount", 0, "revise", "commit"),
 				revise: "commit",
@@ -306,7 +306,7 @@ describe("validateWorkflow — predicate-edge schema check", () => {
 		const w: Workflow = {
 			name: "state-derived",
 			start: "code-review",
-			stages: { "code-review": artifact(), a: artifact(), b: artifact() },
+			stages: { "code-review": produces(), a: produces(), b: produces() },
 			edges: {
 				"code-review": defineStatePredicate(["a", "b"], ({ state }) =>
 					state.telemetry.backwardJumps > 0 ? "a" : "b",
@@ -326,7 +326,7 @@ describe("validateWorkflow — predicate-edge schema check", () => {
 		const w: Workflow = {
 			name: "frontmatter-read",
 			start: "code-review",
-			stages: { "code-review": artifact(), a: artifact(), b: artifact() },
+			stages: { "code-review": produces(), a: produces(), b: produces() },
 			edges: {
 				"code-review": definePredicate(["a", "b"], ({ manifest }) =>
 					(manifest?.data as Record<string, unknown> | undefined)?.status === "ok" ? "a" : "b",
@@ -346,11 +346,11 @@ describe("validateWorkflow — predicate-edge schema check", () => {
 			name: "clothed",
 			start: "code-review",
 			stages: {
-				"code-review": artifact({
+				"code-review": produces({
 					outputSchema: typeboxSchema(Type.Object({ severeIssueCount: Type.Integer({ minimum: 0 }) })),
 				}),
-				revise: artifact(),
-				commit: action(),
+				revise: produces(),
+				commit: acts(),
 			},
 			edges: {
 				"code-review": threshold("severeIssueCount", 0, "revise", "commit"),
@@ -368,7 +368,7 @@ describe("validateWorkflow — workflow name", () => {
 		const w: Workflow = {
 			name: "",
 			start: "a",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "stop" },
 		};
 		const issues = validateWorkflow(w);
@@ -387,7 +387,7 @@ describe("validateWorkflow — issue shape", () => {
 		const w: Workflow = {
 			name: "bad",
 			start: "ghost",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "missing" },
 		};
 		const issues = validateWorkflow(w);

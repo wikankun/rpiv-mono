@@ -27,7 +27,7 @@ export type ArtifactHandle =
  * resolver-attached hints the matching reader needs.
  *
  * The framework reads `artifacts[0]` as the "primary" artifact for chain
- * inheritance (agent-end stages without their own artifacts inherit the
+ * inheritance (side-effect stages without their own artifacts inherit the
  * upstream list forward). `role` is metadata only — the framework does
  * not gate on it.
  */

@@ -42,12 +42,12 @@ export interface RunState {
 	// ── Progress (hot paths — runner reads on every stage) ─────────────
 	/**
 	 * Chain-input artifact — the rolling slot the next stage's prompt
-	 * inherits as input. Updated ONLY by artifact-emit stages whose
+	 * inherits as input. Updated ONLY by produces stages whose
 	 * resolver returned at least one artifact (the first becomes the new
 	 * primary). Agent-end stages (commit, side-effect) record their own
 	 * manifest but do not touch this slot — preserves the "commit
 	 * inherits the prior chain's artifact" semantic without forcing
-	 * agent-end resolvers to re-emit the prior list.
+	 * side-effect resolvers to re-emit the prior list.
 	 *
 	 * Reads must go through `currentPrimaryArtifact(state)`
 	 * (internal-utils.ts); a direct read here is a hint of a missed

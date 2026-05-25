@@ -45,11 +45,11 @@ Two file roles per layer:
 
   ```ts
   // 1. A single Workflow
-  import { defineWorkflow, artifact, action } from "@juicesharp/rpiv-workflow";
+  import { defineWorkflow, produces, acts } from "@juicesharp/rpiv-workflow";
   export default defineWorkflow({
     name: "ship",
     start: "implement",
-    stages: { implement: action(), commit: action() },
+    stages: { implement: acts(), commit: acts() },
     edges: { implement: "commit", commit: "stop" },
   });
 
@@ -69,12 +69,12 @@ Two file roles per layer:
 
 A workflow is a typed graph: named entry point, a `stages` record, and an `edges` table that maps each stage to another stage name, the sentinel `"stop"`, or a predicate function that chooses at runtime.
 
-Two factories for the two stage shapes:
+Two factories for the two stage kinds:
 
-- `artifact(overrides?)` — the skill writes a file the next stage reads. Halts the chain if the path doesn't appear in the transcript.
-- `action(overrides?)` — the skill's side effect IS the work (commit, implement). The next stage inherits the prior artifact list forward (see the inheritance note below).
+- `produces(overrides?)` — `kind: "produces"`. The skill writes a file the next stage reads. Halts the chain if the path doesn't appear in the transcript.
+- `acts(overrides?)` — `kind: "side-effect"`. The skill's side effect IS the work (commit, implement). The next stage inherits the prior artifact list forward (see the inheritance note below).
 
-> **Inheritance note (until Phase 10).** Action stages currently inherit the upstream artifact list with no opt-out. A future `terminal()` factory will close this gap — a stage that does NOT pass upstream artifacts forward. Track in the polish plan.
+> **Inheritance note (until Phase 10).** `acts()` stages currently inherit the upstream artifact list with no opt-out. A future `terminal()` factory will close this gap — a side-effect stage that does NOT pass upstream artifacts forward. Track in the polish plan.
 
 Conditional routing uses `threshold(field, n, ifAbove, ifBelow)`:
 
@@ -140,7 +140,7 @@ Returns `{ runId, stagesCompleted, success }`. Past-run inspection uses `listRun
 
 ## Outcomes — resolvers and readers
 
-Each `artifact-emit` stage wires an `Outcome` that tells the runtime two things:
+Each `produces` stage wires an `Outcome` that tells the runtime two things:
 
 ```ts
 interface Outcome<Baseline, Kind, Data> {
@@ -151,7 +151,7 @@ interface Outcome<Baseline, Kind, Data> {
 
 `resolver.resolve(ctx)` returns the artifacts the stage emitted. `reader.read(ctx)` (optional) turns them into the typed `manifest.data` downstream stages narrow on. With no reader, `manifest.data` is the artifact list itself (`kind = "artifacts"`).
 
-There is no framework default for `artifact-emit` — load-time validation rejects a stage without an outcome. The `.rpiv/artifacts/<bucket>/<file>.md` layout is an rpiv convention, not a framework truth; pair with [`@juicesharp/rpiv-pi`](../rpiv-pi) for `rpivArtifactMdOutcome`, or wire your own.
+There is no framework default for `produces` — load-time validation rejects a stage without an outcome. The `.rpiv/artifacts/<bucket>/<file>.md` layout is an rpiv convention, not a framework truth; pair with [`@juicesharp/rpiv-pi`](../rpiv-pi) for `rpivArtifactMdOutcome`, or wire your own.
 
 ### Authoring a resolver
 
@@ -234,7 +234,7 @@ Format-specific readers (markdown frontmatter, YAML, TOML, …) live in the conv
 
 ```ts
 import {
-  artifact, defineWorkflow,
+  produces, defineWorkflow,
   toolCallResolver, jsonBodyReader, fs,
 } from "@juicesharp/rpiv-workflow";
 
@@ -247,7 +247,7 @@ export default defineWorkflow({
   name: "scaffold",
   start: "generate",
   stages: {
-    generate: artifact({
+    generate: produces({
       outcome: { resolver: writeFileResolver, reader: jsonBodyReader },
     }),
   },

@@ -9,13 +9,13 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
-	action,
-	artifact,
+	acts,
 	definePredicate,
 	defineStatePredicate,
 	defineWorkflow,
 	type EdgeFn,
 	type Outcome,
+	produces,
 	threshold,
 	type Workflow,
 } from "./api.js";
@@ -31,8 +31,8 @@ describe("defineWorkflow", () => {
 			name: "tiny",
 			start: "research",
 			stages: {
-				research: artifact(),
-				commit: action(),
+				research: produces(),
+				commit: acts(),
 			},
 			edges: { research: "commit", commit: "stop" },
 		};
@@ -44,7 +44,7 @@ describe("defineWorkflow", () => {
 			name: "demo",
 			description: "for testing",
 			start: "a",
-			stages: { a: artifact() },
+			stages: { a: produces() },
 			edges: { a: "stop" },
 		});
 		expect(w.description).toBe("for testing");
@@ -52,14 +52,14 @@ describe("defineWorkflow", () => {
 });
 
 // ---------------------------------------------------------------------------
-// artifact — artifact-emitting stages (artifact-emit + fresh)
+// produces — artifact-emitting stages (kind: "produces" + fresh)
 // ---------------------------------------------------------------------------
 
-describe("artifact", () => {
-	it("applies artifact-emit + fresh defaults with no required args", () => {
-		const n = artifact();
+describe("produces", () => {
+	it('applies kind="produces" + fresh defaults with no required args', () => {
+		const n = produces();
 		expect(n).toMatchObject({
-			completionStrategy: "artifact-emit",
+			kind: "produces",
 			sessionPolicy: "fresh",
 		});
 		// `skill` defaults to the surrounding record key — the runner injects it.
@@ -67,36 +67,36 @@ describe("artifact", () => {
 	});
 
 	it("respects overrides without mutating defaults for other calls", () => {
-		const a = artifact({ sessionPolicy: "continue", maxValidationRetries: 3 });
+		const a = produces({ sessionPolicy: "continue", maxValidationRetries: 3 });
 		expect(a.sessionPolicy).toBe("continue");
 		expect(a.maxValidationRetries).toBe(3);
 
-		const b = artifact();
+		const b = produces();
 		expect(b.sessionPolicy).toBe("fresh");
 		expect(b.maxValidationRetries).toBeUndefined();
 	});
 
 	it("override.skill wins when the stage id and Pi skill differ", () => {
-		const n = artifact({ skill: "code-review" });
+		const n = produces({ skill: "code-review" });
 		expect(n.skill).toBe("code-review");
 	});
 
 	it("accepts outputSchema for predicate-edge gating", () => {
 		const schema = typeboxSchema(Type.Object({ severeIssueCount: Type.Integer({ minimum: 0 }) }));
-		const n = artifact({ outputSchema: schema });
+		const n = produces({ outputSchema: schema });
 		expect(n.outputSchema).toBe(schema);
 	});
 });
 
 // ---------------------------------------------------------------------------
-// action — side-effect stages (agent-end + fresh)
+// acts — side-effect stages (kind: "side-effect" + fresh)
 // ---------------------------------------------------------------------------
 
-describe("action", () => {
-	it("applies agent-end + fresh defaults with no required args", () => {
-		const n = action();
+describe("acts", () => {
+	it('applies kind="side-effect" + fresh defaults with no required args', () => {
+		const n = acts();
 		expect(n).toMatchObject({
-			completionStrategy: "agent-end",
+			kind: "side-effect",
 			sessionPolicy: "fresh",
 		});
 		expect(n.skill).toBeUndefined();
@@ -109,7 +109,7 @@ describe("action", () => {
 				resolve: () => ({ kind: "ok", artifacts: [] }),
 			},
 		};
-		const n = action({ outcome });
+		const n = acts({ outcome });
 		expect(n.outcome).toBe(outcome);
 	});
 });
@@ -234,12 +234,12 @@ describe("composition smoke", () => {
 			name: "review-or-ship",
 			start: "research",
 			stages: {
-				research: artifact(),
-				"code-review": artifact({
+				research: produces(),
+				"code-review": produces({
 					outputSchema: typeboxSchema(Type.Object({ severeIssueCount: Type.Integer({ minimum: 0 }) })),
 				}),
-				revise: artifact(),
-				commit: action(),
+				revise: produces(),
+				commit: acts(),
 			},
 			edges: {
 				research: "code-review",

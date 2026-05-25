@@ -29,10 +29,10 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import {
-	action,
-	artifact,
+	acts,
 	defineWorkflow,
 	type FanoutFn,
+	produces,
 	type RunState,
 	resolveStateFile,
 	resolveWorkflowsDir,
@@ -154,7 +154,7 @@ describe("[I6] code-review predicate must not silently route to commit on missin
 });
 
 // ---------------------------------------------------------------------------
-// I7 — A `stopReason: "length"` reply on an agent-end stage must NOT be
+// I7 — A `stopReason: "length"` reply on a side-effect stage must NOT be
 //      recorded as a successful "completed" stage.
 // ---------------------------------------------------------------------------
 
@@ -173,7 +173,7 @@ describe("[I7] truncated reply (stopReason=length) must not record as completed"
 		defineWorkflow({
 			name: "tiny",
 			start: "implement",
-			stages: { implement: action() },
+			stages: { implement: acts() },
 			edges: { implement: "stop" },
 		});
 
@@ -199,7 +199,7 @@ describe("[I7] truncated reply (stopReason=length) must not record as completed"
 		expect(recorded?.status).not.toBe("completed");
 	});
 
-	it("does not write status=completed for an agent-end stage that returned stopReason=toolUse", async () => {
+	it("does not write status=completed for a side-effect stage that returned stopReason=toolUse", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("invoked a tool but never settled", "toolUse")] }],
@@ -306,8 +306,8 @@ describe("[Q7] non-first stage with no artifactPath halts instead of reusing ori
 			name: "tiny",
 			start: "commit",
 			stages: {
-				commit: action(),
-				"annotate-guidance": action(),
+				commit: acts(),
+				"annotate-guidance": acts(),
 			},
 			edges: { commit: "annotate-guidance", "annotate-guidance": "stop" },
 		});
@@ -375,8 +375,8 @@ describe("[I9] phase fanout labels by skill name, not by aliased stage name", ()
 			name: "tiny",
 			start: "research",
 			stages: {
-				research: artifact({ outcome: rpivArtifactMdOutcome }),
-				"implement-after-revise": action({ skill: "implement", fanout: phaseFanout }),
+				research: produces({ outcome: rpivArtifactMdOutcome }),
+				"implement-after-revise": acts({ skill: "implement", fanout: phaseFanout }),
 			},
 			edges: { research: "implement-after-revise", "implement-after-revise": "stop" },
 		});

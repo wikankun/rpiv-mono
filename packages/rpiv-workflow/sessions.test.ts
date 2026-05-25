@@ -61,10 +61,10 @@ const freshRunState = (overrides: Partial<RunState> = {}): RunState => ({
 	...overrides,
 });
 
-/** Minimal skill stage — fresh policy, agent-end (no artifact extraction by default). */
+/** Minimal skill stage — fresh policy, side-effect (no artifact extraction by default). */
 const stage = (overrides: Partial<StageDef> = {}): StageDef => ({
 	skill: "test",
-	completionStrategy: "agent-end",
+	kind: "side-effect",
 	sessionPolicy: "fresh",
 	...overrides,
 });
@@ -375,9 +375,9 @@ describe("sessions — validation retry loop", () => {
 
 	// Removed: "outcome returning undefined payload on retry" — the new
 	// resolver/reader split has no `ok-no-payload` state. An empty
-	// resolver result on an artifact-emit node fatals at the contract
+	// resolver result on an produces node fatals at the contract
 	// check (enforceCompletionContract); the equivalent behaviour for
-	// agent-end nodes is "inherit prior" which is the success path, not
+	// side-effect nodes is "inherit prior" which is the success path, not
 	// a halt.
 
 	it("clamps validationRetryTimeoutMs above ceiling", async () => {
@@ -555,7 +555,7 @@ describe("sessions — outcome resolution", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("explicit stage.outcome wins (artifact-emit has no framework default)", async () => {
+	it("explicit stage.outcome wins (produces has no framework default)", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -567,7 +567,7 @@ describe("sessions — outcome resolution", () => {
 			stageSession({
 				cwd: tmpDir,
 				state: freshRunState(),
-				stage: stage({ completionStrategy: "artifact-emit", outcome: explicit }),
+				stage: stage({ kind: "produces", outcome: explicit }),
 			}),
 		);
 
@@ -575,7 +575,7 @@ describe("sessions — outcome resolution", () => {
 		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_COMPLETE("test"))).toBe(true);
 	});
 
-	it("artifact-emit without outcome throws (load-time validation should reject; runtime is defense-in-depth)", async () => {
+	it("produces without outcome throws (load-time validation should reject; runtime is defense-in-depth)", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -589,13 +589,13 @@ describe("sessions — outcome resolution", () => {
 				stageSession({
 					cwd: tmpDir,
 					state: freshRunState(),
-					stage: stage({ completionStrategy: "artifact-emit" }),
+					stage: stage({ kind: "produces" }),
 				}),
 			),
 		).rejects.toThrow(/no `outcome`/);
 	});
 
-	it("agent-end default (sideEffectOutcome) leaves the rolling primary artifact unchanged", async () => {
+	it("side-effect default (sideEffectOutcome) leaves the rolling primary artifact unchanged", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -609,7 +609,7 @@ describe("sessions — outcome resolution", () => {
 			stageSession({
 				cwd: tmpDir,
 				state,
-				stage: stage({ completionStrategy: "agent-end" }),
+				stage: stage({ kind: "side-effect" }),
 				onSuccess,
 			}),
 		);
@@ -885,7 +885,7 @@ describe("sessions — success persistence", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("agent-end with a resolver emitting one artifact records the manifest but does NOT advance the chain primary", async () => {
+	it("side-effect with a resolver emitting one artifact records the manifest but does NOT advance the chain primary", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -894,7 +894,7 @@ describe("sessions — success persistence", () => {
 
 		// Agent-end outcome that produces an artifact (e.g. a commit-style
 		// stage). manifest.artifacts records it; primaryArtifact stays
-		// undefined because only artifact-emit stages advance the chain
+		// undefined because only produces stages advance the chain
 		// input.
 		const recorded = ".rpiv/artifacts/research/from-resolver.md";
 		await runStageSession(
@@ -903,7 +903,7 @@ describe("sessions — success persistence", () => {
 				cwd: tmpDir,
 				state,
 				stage: stage({
-					completionStrategy: "agent-end",
+					kind: "side-effect",
 					outcome: {
 						resolver: {
 							resolve: () => ({
@@ -917,11 +917,11 @@ describe("sessions — success persistence", () => {
 		);
 
 		expect(state.manifest?.artifacts[0]?.handle).toEqual({ kind: "fs", path: recorded });
-		// Chain primary stays put — agent-end never advances the rolling slot.
+		// Chain primary stays put — side-effect never advances the rolling slot.
 		expect(state.primaryArtifact).toBeUndefined();
 	});
 
-	it("artifact-emit advances state.primaryArtifact to the resolver's first artifact", async () => {
+	it("produces advances state.primaryArtifact to the resolver's first artifact", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -935,7 +935,7 @@ describe("sessions — success persistence", () => {
 				cwd: tmpDir,
 				state,
 				stage: stage({
-					completionStrategy: "artifact-emit",
+					kind: "produces",
 					outcome: {
 						resolver: {
 							resolve: () => ({
@@ -964,7 +964,7 @@ describe("sessions — success persistence", () => {
 			stageSession({
 				cwd: tmpDir,
 				state,
-				stage: stage({ completionStrategy: "agent-end" }),
+				stage: stage({ kind: "side-effect" }),
 			}),
 		);
 
@@ -1102,7 +1102,7 @@ describe("sessions — halt routing", () => {
 				cwd: tmpDir,
 				state,
 				stage: stage({
-					completionStrategy: "agent-end",
+					kind: "side-effect",
 					outcome: { resolver: { resolve: () => ({ kind: "fatal", message: "outcome said no" }) } },
 				}),
 				onFailure,

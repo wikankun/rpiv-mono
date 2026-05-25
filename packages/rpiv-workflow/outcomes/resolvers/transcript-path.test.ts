@@ -33,7 +33,7 @@ describe("transcriptPathResolver", () => {
 		expect(result.artifacts).toEqual([{ handle: { kind: "fs", path: "docs/adr/0002-types.md" }, role: "primary" }]);
 	});
 
-	it("fatals when no match is found (artifact-emit contract)", async () => {
+	it("fatals when no match is found (produces contract)", async () => {
 		const resolver = transcriptPathResolver({ pattern: /docs\/adr\/[\w-]+\.md/g });
 		const ctx = ctxOf([asst("nothing here")]);
 		const result = await resolver.resolve(ctx);

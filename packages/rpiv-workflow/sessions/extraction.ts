@@ -66,8 +66,8 @@ export async function produceAndValidateManifest(
 
 /**
  * Explicit `stage.outcome` wins. Defaults:
- *  - `agent-end`     → `sideEffectOutcome` (universal — emits empty artifacts).
- *  - `artifact-emit` → throws. There is no framework-wide default; the
+ *  - `side-effect` → `sideEffectOutcome` (universal — emits empty artifacts).
+ *  - `produces`    → throws. There is no framework-wide default; the
  *    `.rpiv/artifacts/<bucket>/<file>.md` layout is an rpiv-pi convention
  *    and lives in that package. `validate-workflow.ts` rejects this at
  *    load time; the runtime throw is defense-in-depth for programmatic
@@ -75,18 +75,18 @@ export async function produceAndValidateManifest(
  */
 function resolveOutcome(stage: StageDef, skill: string): Outcome {
 	if (stage.outcome) return stage.outcome;
-	switch (stage.completionStrategy) {
-		case "agent-end":
+	switch (stage.kind) {
+		case "side-effect":
 			return sideEffectOutcome;
-		case "artifact-emit":
+		case "produces":
 			throw new Error(
-				`runStage: stage "${skill}" has completionStrategy "artifact-emit" but no \`outcome\` — ` +
-					"there is no framework default for artifact-emit stages (the `.rpiv/artifacts/` layout is " +
+				`runStage: stage "${skill}" has kind "produces" but no \`outcome\` — ` +
+					"there is no framework default for produces stages (the `.rpiv/artifacts/` layout is " +
 					"an rpiv-pi convention). Either wire `outcome: rpivArtifactMdOutcome` (from @juicesharp/rpiv-pi) " +
 					"or supply your own `{ resolver, reader? }`.",
 			);
 		default:
-			return assertNever(stage.completionStrategy);
+			return assertNever(stage.kind);
 	}
 }
 
@@ -157,18 +157,18 @@ async function runOutcome(
 }
 
 /**
- * Contract check: artifact-emit stages MUST produce at least one
+ * Contract check: `produces` stages MUST emit at least one
  * artifact. The resolver/reader pair can succeed structurally
  * (kind: "ok") with zero artifacts — that's a chain halt for
- * artifact-emit (the stage promised an output and didn't deliver)
- * but a normal pass-through for agent-end.
+ * `produces` (the stage promised an output and didn't deliver)
+ * but a normal pass-through for `side-effect`.
  */
 function enforceCompletionContract(
 	stage: StageDef,
 	skill: string,
 	manifest: Manifest,
 ): { kind: "ok"; manifest: Manifest } | { kind: "fatal"; message: string } {
-	if (stage.completionStrategy === "artifact-emit" && manifest.artifacts.length === 0) {
+	if (stage.kind === "produces" && manifest.artifacts.length === 0) {
 		return {
 			kind: "fatal",
 			message: `${skill} finished without producing any artifact (resolver returned an empty list)`,

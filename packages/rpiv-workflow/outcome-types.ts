@@ -60,8 +60,8 @@ export interface ResolveCtx<Baseline = unknown> extends BaselineCtx {
  * Three-way return from `resolve`:
  *
  *   `kind: "ok"` + `artifacts: []`               — stage produced nothing.
- *                                                   For artifact-emit nodes the runner halts;
- *                                                   for agent-end nodes the chain inherits
+ *                                                   For produces nodes the runner halts;
+ *                                                   for side-effect nodes the chain inherits
  *                                                   the upstream artifact list forward.
  *   `kind: "ok"` + `artifacts: [...]`            — N>=1 artifacts; reader (or default) shapes the data.
  *   `kind: "fatal"`                              — resolver cannot satisfy its contract;

@@ -1,11 +1,11 @@
 /**
- * Default outcome for agent-end nodes — and the framework's
+ * Default outcome for side-effect nodes — and the framework's
  * "no artifacts produced" primitive.
  *
  * Resolver always returns `{ kind: "ok", artifacts: [] }`. The chain
  * semantics (see `runner/stage-lifecycle.ts:inputForStage`) then
  * inherit the upstream artifact list forward — an action skill
- * between two artifact-emit skills doesn't need its own resolver.
+ * between two produces skills doesn't need its own resolver.
  *
  * No reader: with `artifacts: []` the manifest's `data` is the empty
  * list and `kind` is the literal `"artifacts"`. Stages that need a

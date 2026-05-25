@@ -13,7 +13,7 @@
  * `g`, only the first per block. Authors who want N matches → N
  * artifacts compose with `unionResolvers` or write a bespoke resolver.
  *
- * Fatal when no match is found — artifact-emit nodes that wire this
+ * Fatal when no match is found — produces nodes that wire this
  * promise an output, and silently returning zero artifacts hides the
  * agent's failure mode behind a stale primary-artifact.
  */

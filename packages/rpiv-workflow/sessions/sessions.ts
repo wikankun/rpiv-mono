@@ -147,15 +147,15 @@ function tryRecordStage(s: SessionContext, label: string, manifest: Manifest | u
 }
 
 /**
- * Update the rolling chain-input slot. Only artifact-emit stages whose
+ * Update the rolling chain-input slot. Only `produces` stages whose
  * resolver returned at least one artifact advance the primary —
- * agent-end stages (commit, side-effect) leave it in place so a stage
+ * `side-effect` stages (commit, implement) leave it in place so a stage
  * after them inherits the upstream chain input. The first artifact in
  * the manifest is the primary; `role` is user-facing metadata, not a
  * framework gate.
  */
 function maybeAdvancePrimary(s: StageSession, manifest: Manifest): void {
-	if (s.stage.completionStrategy !== "artifact-emit") return;
+	if (s.stage.kind !== "produces") return;
 	const next = manifest.artifacts[0];
 	if (next) s.state.primaryArtifact = next;
 }

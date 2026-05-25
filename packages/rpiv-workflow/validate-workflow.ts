@@ -15,11 +15,11 @@
  */
 
 import {
-	COMPLETION_STRATEGIES,
 	type EdgeTarget,
 	marksFrontmatter,
 	ON_VALIDATION_FAILURE_VALUES,
 	SESSION_POLICIES,
+	STAGE_KINDS,
 	STOP,
 	type StageDef,
 	type Workflow,
@@ -226,27 +226,21 @@ function checkStageEnums(w: Workflow, name: string, stage: StageDef, issues: Wor
 			),
 		);
 	}
-	if (!(COMPLETION_STRATEGIES as readonly string[]).includes(stage.completionStrategy)) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`completionStrategy: "${stage.completionStrategy}" — must be one of ${COMPLETION_STRATEGIES.join(", ")}`,
-			),
-		);
+	if (!(STAGE_KINDS as readonly string[]).includes(stage.kind)) {
+		issues.push(error(w.name, name, `kind: "${stage.kind}" — must be one of ${STAGE_KINDS.join(", ")}`));
 	}
 	if (!(SESSION_POLICIES as readonly string[]).includes(stage.sessionPolicy)) {
 		issues.push(
 			error(w.name, name, `sessionPolicy: "${stage.sessionPolicy}" — must be one of ${SESSION_POLICIES.join(", ")}`),
 		);
 	}
-	if (stage.completionStrategy === "artifact-emit" && !stage.outcome) {
+	if (stage.kind === "produces" && !stage.outcome) {
 		issues.push(
 			error(
 				w.name,
 				name,
-				`stage "${name}" has completionStrategy "artifact-emit" but no \`outcome\` — ` +
-					"there is no framework default for artifact-emit stages. Wire `outcome: rpivArtifactMdOutcome` " +
+				`stage "${name}" has kind "produces" but no \`outcome\` — ` +
+					"there is no framework default for produces stages. Wire `outcome: rpivArtifactMdOutcome` " +
 					"(from @juicesharp/rpiv-pi) or supply your own `{ resolver, reader? }`.",
 			),
 		);

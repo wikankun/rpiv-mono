@@ -1,6 +1,6 @@
 /**
  * Public authoring surface for rpiv workflows. Canonical entry point — users
- * import everything they need (`defineWorkflow`, `artifact`, `action`,
+ * import everything they need (`defineWorkflow`, `produces`, `acts`,
  * `definePredicate`, `defineStatePredicate`, `threshold`, `STOP`,
  * `marksFrontmatter`, schema adapters, plus the type vocabulary `Workflow`
  * / `StageDef` / `EdgeFn` / `EdgeTarget` / `EdgeContext`) from
@@ -45,9 +45,9 @@ export type StageSchema<Input = unknown, Output = Input> = StandardSchemaV1<Inpu
 // ===========================================================================
 
 /**
- * - `"artifact-emit"` — protocol skills that write `.rpiv/artifacts/<bucket>/<file>.md`.
+ * - `"produces"` — protocol skills that write `.rpiv/artifacts/<bucket>/<file>.md`.
  *   The runner halts the chain if the path doesn't appear in the transcript.
- * - `"agent-end"` — action skills (commit, implement) where the side effect IS
+ * - `"side-effect"` — action skills (commit, implement) where the side effect IS
  *   the work; the chain inherits the prior `currentPrimaryArtifact(state)`.
  *
  * The `as const` array is the single source of truth: the literal-union type
@@ -55,8 +55,8 @@ export type StageSchema<Input = unknown, Output = Input> = StandardSchemaV1<Inpu
  * the same array for the runtime enum check. Adding a variant updates both
  * type-level and runtime arms in one edit.
  */
-export const COMPLETION_STRATEGIES = ["artifact-emit", "agent-end"] as const;
-export type CompletionStrategy = (typeof COMPLETION_STRATEGIES)[number];
+export const STAGE_KINDS = ["produces", "side-effect"] as const;
+export type StageKind = (typeof STAGE_KINDS)[number];
 
 /**
  * - `"fresh"` — wraps the stage in `ctx.newSession({ withSession })`.
@@ -182,7 +182,7 @@ export type EdgeTarget = string | typeof STOP | EdgeFn;
  */
 export interface StageDef<TIn = unknown, TOut = unknown> {
 	skill?: string;
-	completionStrategy: CompletionStrategy;
+	kind: StageKind;
 	sessionPolicy: SessionPolicy;
 	outcome?: Outcome;
 	outputSchema?: StageSchema<unknown, TOut>;
@@ -224,28 +224,28 @@ export function defineWorkflow(spec: Workflow): Workflow {
 }
 
 /**
- * Artifact-emitting stage: invokes a Pi skill that writes
+ * Artifact-producing stage: invokes a Pi skill that writes
  * `.rpiv/artifacts/<bucket>/<file>.md`. Defaults to fresh-session. The
  * skill body defaults to the surrounding `stages` record key — override
  * via `{ skill: "<other>" }` only when the stage id and the Pi skill
  * differ (e.g. `code-review-large` aliasing the `code-review` skill).
  */
-export function artifact(overrides: Partial<StageDef> = {}): StageDef {
+export function produces(overrides: Partial<StageDef> = {}): StageDef {
 	return {
-		completionStrategy: "artifact-emit",
+		kind: "produces",
 		sessionPolicy: "fresh",
 		...overrides,
 	};
 }
 
 /**
- * Action stage: invokes a Pi skill whose side effect IS the work
+ * Side-effect stage: invokes a Pi skill whose side effect IS the work
  * (commit, implement). No artifact-emission check. Defaults to fresh-session.
- * Like `artifact`, the skill body defaults to the record key.
+ * Like `produces`, the skill body defaults to the record key.
  */
-export function action(overrides: Partial<StageDef> = {}): StageDef {
+export function acts(overrides: Partial<StageDef> = {}): StageDef {
 	return {
-		completionStrategy: "agent-end",
+		kind: "side-effect",
 		sessionPolicy: "fresh",
 		...overrides,
 	};

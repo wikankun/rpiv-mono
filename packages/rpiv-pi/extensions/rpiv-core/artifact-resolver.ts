@@ -21,7 +21,7 @@
  * Pre-bundled outcome: `rpivArtifactMdOutcome` =
  * `{ resolver: rpivArtifactResolver, reader: frontmatterReader }` —
  * the drop-in default rpiv-pi's built-in workflows wire into every
- * `artifact()` node.
+ * `produces()` stage.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -93,7 +93,7 @@ export const frontmatterReader: ArtifactReader<undefined, "artifact-md", Record<
 // Outcome — pre-bundled wiring rpiv-pi workflows plug in
 // ---------------------------------------------------------------------------
 
-/** Default rpiv-pi artifact-emit outcome — bucket-agnostic text scan + frontmatter parse. */
+/** Default rpiv-pi produces outcome — bucket-agnostic text scan + frontmatter parse. */
 export const rpivArtifactMdOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 	resolver: rpivArtifactResolver,
 	reader: frontmatterReader,

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { action, artifact, defineWorkflow, type StageDef, threshold, type Workflow } from "./api.js";
+import { acts, defineWorkflow, produces, type StageDef, threshold, type Workflow } from "./api.js";
 import type { LoadedWorkflows } from "./load/index.js";
 import { gitCommitOutcome } from "./outcomes/index.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
@@ -14,7 +14,7 @@ import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
 // ---------------------------------------------------------------------------
 
 const stage = (overrides: Partial<StageDef> & { skill: string }): StageDef => ({
-	completionStrategy: "agent-end",
+	kind: "side-effect",
 	sessionPolicy: "fresh",
 	...overrides,
 });
@@ -23,7 +23,7 @@ const midWorkflow = defineWorkflow({
 	name: "mid",
 	start: "research",
 	stages: {
-		research: stage({ skill: "research", completionStrategy: "artifact-emit" }),
+		research: stage({ skill: "research", kind: "produces" }),
 		implement: stage({ skill: "implement" }),
 		commit: stage({ skill: "commit", outcome: gitCommitOutcome }),
 	},
@@ -34,8 +34,8 @@ const tinyWorkflow = defineWorkflow({
 	name: "tiny",
 	start: "research",
 	stages: {
-		research: artifact(),
-		commit: action(),
+		research: produces(),
+		commit: acts(),
 	},
 	edges: { research: "commit", commit: "stop" },
 });
@@ -117,14 +117,14 @@ describe("formatWorkflowDetails", () => {
 		expect(out).not.toContain("workflow: tiny  (project, default)");
 	});
 
-	it("numbers stages 1-based and shows completionStrategy + sessionPolicy", () => {
+	it("numbers stages 1-based and shows kind + sessionPolicy", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "mid");
 		const lines = out.split("\n");
 		expect(lines.some((l) => /^\s+1\.\s+research\b/.test(l))).toBe(true);
 		expect(lines.some((l) => /^\s+2\.\s+implement\b/.test(l))).toBe(true);
 		expect(lines.some((l) => /^\s+3\.\s+commit\b/.test(l))).toBe(true);
-		// research has completionStrategy: "artifact-emit"
-		expect(lines.find((l) => /research/.test(l))).toContain("artifact-emit");
+		// research has kind: "produces"
+		expect(lines.find((l) => /research/.test(l))).toContain("produces");
 		expect(lines.find((l) => /research/.test(l))).toContain("fresh");
 	});
 
@@ -136,13 +136,13 @@ describe("formatWorkflowDetails", () => {
 		expect(commitLine).not.toContain("· custom ·"); // not double-tagged
 	});
 
-	it("tags artifact-emit stages without an outcome with '???' (load-time validation should reject; tag is defensive)", () => {
+	it("tags produces stages without an outcome with '???' (load-time validation should reject; tag is defensive)", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "mid");
 		const researchLine = out.split("\n").find((l) => /^\s+\d+\.\s+research\b/.test(l)) ?? "";
 		expect(researchLine).toContain("???");
 	});
 
-	it("tags agent-end stages (no override) with the default 'side-effect' outcome", () => {
+	it("tags side-effect stages (no override) with the default 'side-effect' outcome", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "mid");
 		const implementLine = out.split("\n").find((l) => /^\s+\d+\.\s+implement\b/.test(l)) ?? "";
 		expect(implementLine).toContain("side-effect");
@@ -159,9 +159,9 @@ describe("formatWorkflowDetails", () => {
 			name: "branching",
 			start: "code-review",
 			stages: {
-				"code-review": artifact(),
-				revise: artifact(),
-				commit: action(),
+				"code-review": produces(),
+				revise: produces(),
+				commit: acts(),
 			},
 			edges: {
 				"code-review": threshold("severeIssueCount", 0, "revise", "commit"),
@@ -191,7 +191,7 @@ describe("formatWorkflowDetails", () => {
 			name: "described",
 			description: "Short prose summary for the preview header.",
 			start: "research",
-			stages: { research: artifact(), commit: action() },
+			stages: { research: produces(), commit: acts() },
 			edges: { research: "commit", commit: "stop" },
 		};
 		const loaded: LoadedWorkflows = {
@@ -214,9 +214,9 @@ describe("formatWorkflowDetails", () => {
 			name: "schemas",
 			start: "a",
 			stages: {
-				a: artifact({ outputSchema: fakeSchema }),
-				b: artifact({ inputSchema: fakeSchema, outputSchema: fakeSchema }),
-				c: action(),
+				a: produces({ outputSchema: fakeSchema }),
+				b: produces({ inputSchema: fakeSchema, outputSchema: fakeSchema }),
+				c: acts(),
 			},
 			edges: { a: "b", b: "c", c: "stop" },
 		};
@@ -246,7 +246,7 @@ describe("formatWorkflowDetails", () => {
 			start: "implement-after-revise",
 			stages: {
 				"implement-after-revise": stage({ skill: "implement" }),
-				commit: action(),
+				commit: acts(),
 			},
 			edges: { "implement-after-revise": "commit", commit: "stop" },
 		};
