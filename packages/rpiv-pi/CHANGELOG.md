@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-pi` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.13.0] - 2026-05-25
 
 ### Changed
 - `getPiAgentSettingsPath()` now delegates the agent-dir lookup to Pi's `getAgentDir()` (`@earendil-works/pi-coding-agent`). Closes a tilde-expansion gap when `PI_CODING_AGENT_DIR=~/...` and keeps the resolution logic in one place across rpiv-pi and Pi.

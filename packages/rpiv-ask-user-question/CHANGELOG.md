@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-ask-user-question` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.13.0] - 2026-05-25
 
 ### Added
 - `rpiv:ask-user:prompt` event emitted before showing the questionnaire, with a typed payload and importable event contract from `@juicesharp/rpiv-ask-user-question/events`.
