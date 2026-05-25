@@ -64,7 +64,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 	it("writes header and reads it back as not-a-stage", () => {
 		const header: WorkflowHeader = {
 			runId: "2026-05-20_15-30-45",
-			preset: "mid",
+			workflow: "mid",
 			input: "Add dark mode",
 			ts: "2026-05-20T15:30:45-0400",
 		};
@@ -77,7 +77,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 		const runId = "2026-05-20_15-30-45";
 		writeHeader(tmpDir, {
 			runId,
-			preset: "mid",
+			workflow: "mid",
 			input: "test",
 			ts: "2026-05-20T15:30:45-0400",
 		});
@@ -112,7 +112,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 		const runId = "2026-05-20_15-30-45";
 		writeHeader(tmpDir, {
 			runId,
-			preset: "mid",
+			workflow: "mid",
 			input: "test",
 			ts: "2026-05-20T15:30:45-0400",
 		});
@@ -144,7 +144,7 @@ describe("fail-soft I/O", () => {
 		expect(() =>
 			writeHeader("/dev/null/impossible", {
 				runId: "test",
-				preset: "mid",
+				workflow: "mid",
 				input: "x",
 				ts: "2026",
 			}),
@@ -188,7 +188,7 @@ describe("fail-soft I/O", () => {
 
 	it("readLastStage logs warning on corrupted file", () => {
 		const runId = "corrupt-test";
-		writeHeader(tmpDir, { runId, preset: "mid", input: "test", ts: "2026" });
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "test", ts: "2026" });
 		appendFileSync(resolveStateFile(tmpDir, runId), "NOT-JSON\n", "utf-8");
 
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -207,7 +207,7 @@ describe("fail-soft I/O", () => {
 		// []. Every successfully-written prior row vanished from the reader's
 		// view. Now each line parses in its own try/catch.
 		const runId = "partial-write";
-		writeHeader(tmpDir, { runId, preset: "mid", input: "test", ts: "2026" });
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "test", ts: "2026" });
 		appendStage(tmpDir, runId, { stageNumber: 1, skill: "research", status: "completed", ts: "2026" });
 		appendStage(tmpDir, runId, { stageNumber: 2, skill: "design", status: "completed", ts: "2026" });
 		// Simulate a truncated trailing line (e.g. process killed mid-append).

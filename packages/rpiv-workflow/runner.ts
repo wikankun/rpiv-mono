@@ -102,7 +102,7 @@ export async function runWorkflow(
 
 	writeHeader(cwd, {
 		runId,
-		preset: workflow.name,
+		workflow: workflow.name,
 		input: options.input,
 		ts: nowIso(),
 	});

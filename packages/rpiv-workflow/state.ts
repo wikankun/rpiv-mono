@@ -32,12 +32,12 @@ export interface WorkflowStage {
 /** First line of the JSONL file. */
 export interface WorkflowHeader {
 	runId: string;
-	preset: string;
+	workflow: string;
 	input: string;
 	ts: string;
 }
 
-export interface RoutingAuditRow {
+export interface RoutingDecision {
 	type: "routing";
 	fromStage: number;
 	fromNode: string;
@@ -180,7 +180,7 @@ export function readAllStages(cwd: string, runId: string): WorkflowStage[] {
  * write-only telemetry. Halting on telemetry failure would punish the user
  * for transient disk weather without preserving any invariant.
  */
-export function appendRoutingDecision(cwd: string, runId: string, row: RoutingAuditRow): boolean {
+export function appendRoutingDecision(cwd: string, runId: string, row: RoutingDecision): boolean {
 	try {
 		const dir = resolveWorkflowsDir(cwd);
 		mkdirSync(dir, { recursive: true });
@@ -193,8 +193,9 @@ export function appendRoutingDecision(cwd: string, runId: string, row: RoutingAu
 	}
 }
 
-const isRoutingRow = (row: unknown): row is RoutingAuditRow => !!row && (row as { type?: unknown }).type === "routing";
+const isRoutingDecision = (row: unknown): row is RoutingDecision =>
+	!!row && (row as { type?: unknown }).type === "routing";
 
-export function readRoutingDecisions(cwd: string, runId: string): RoutingAuditRow[] {
-	return readJsonlRows(cwd, runId, isRoutingRow);
+export function readRoutingDecisions(cwd: string, runId: string): RoutingDecision[] {
+	return readJsonlRows(cwd, runId, isRoutingDecision);
 }

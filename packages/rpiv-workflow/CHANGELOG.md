@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Breaking — on-disk JSONL header
+- `WorkflowHeader.preset` renamed to `workflow`. Audit files written by
+  prior versions have a header row that no longer matches the current
+  shape. Audit files are debug artifacts (per `state.ts`); no migration
+  is provided. (L2-08 / T5-vocabulary-drift)
+
 ### Added
 - Initial release. Extracted from `@juicesharp/rpiv-pi` as a standalone Pi
   extension. The package is **skill-agnostic** — install it on its own

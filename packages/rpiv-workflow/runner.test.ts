@@ -255,7 +255,7 @@ describe("runWorkflow", () => {
 		expect(chain.sentMessages).toEqual(["/skill:research add dark mode"]);
 
 		const { header, stages } = readState(tmpDir);
-		expect(header.preset).toBe("tiny");
+		expect(header.workflow).toBe("tiny");
 		expect(header.input).toBe("add dark mode");
 		expect(stages).toHaveLength(1);
 		expect(stages[0]).toMatchObject({
