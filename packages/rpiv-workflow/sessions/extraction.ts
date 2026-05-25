@@ -196,14 +196,11 @@ async function retryUntilValid(
 	const schema = s.stage.outputSchema!;
 	const maxRetries = Math.max(
 		MIN_VALIDATION_RETRIES,
-		Math.min(s.stage.maxValidationRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES),
+		Math.min(s.stage.maxRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES),
 	);
 	const timeoutMs = Math.max(
 		MIN_VALIDATION_RETRY_TIMEOUT_MS,
-		Math.min(
-			s.stage.validationRetryTimeoutMs ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
-			MAX_VALIDATION_RETRY_TIMEOUT_MS,
-		),
+		Math.min(s.stage.validateTimeoutMs ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS, MAX_VALIDATION_RETRY_TIMEOUT_MS),
 	);
 
 	let manifest = initial;
@@ -212,7 +209,7 @@ async function retryUntilValid(
 	let result = initialValidation.result;
 	let attempts = 0;
 
-	while (!result.valid && attempts < maxRetries && s.stage.onValidationFailure !== "halt") {
+	while (!result.valid && attempts < maxRetries && s.stage.onInvalid !== "halt") {
 		attempts++;
 		try {
 			await askAgentToFix(ctx, s, attempts, result.failures, timeoutMs);
@@ -242,7 +239,7 @@ async function retryUntilValid(
  * Translate a thrown `validateManifestData` (user-authored schemas may throw
  * synchronously or reject their Promise) into the canonical fatal-extraction
  * outcome. Async schemas are guarded by `timeoutMs` — the same
- * `validationRetryTimeoutMs` budget that bounds the agent-settle step on a
+ * `validateTimeoutMs` budget that bounds the agent-settle step on a
  * retry.
  */
 async function validateOrFatal(

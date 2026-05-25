@@ -1069,7 +1069,7 @@ describe("runWorkflow", () => {
 		// inputSchema mirrors outputSchema's async-safety posture: an async
 		// schema whose Promise never settles must halt the stage within the
 		// configured budget rather than hang the preflight pipeline.
-		it("halts when an async inputSchema's Promise never settles within validationRetryTimeoutMs", async () => {
+		it("halts when an async inputSchema's Promise never settles within validateTimeoutMs", async () => {
 			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
 			const chain = createMockSessionChain({
 				cwd: tmpDir,
@@ -1086,7 +1086,7 @@ describe("runWorkflow", () => {
 
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("two", ["research", "design"], {
-					design: { inputSchema: hangingSchema, validationRetryTimeoutMs: 1_000 },
+					design: { inputSchema: hangingSchema, validateTimeoutMs: 1_000 },
 				}),
 				input: "x",
 			});

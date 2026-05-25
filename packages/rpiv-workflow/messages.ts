@@ -60,7 +60,7 @@ export const ERR_INPUT_VALIDATION_FAILED = (currentSkill: string, prevSkill: str
  * Bound on a single schema-validate call. Sync schemas resolve in one
  * microtask and never trip this; async schemas (filesystem probes, registry
  * lookups, async-by-default libs) that fail to settle within
- * `validationRetryTimeoutMs` halt the stage rather than hang it. Skill
+ * `validateTimeoutMs` halt the stage rather than hang it. Skill
  * attribution is added by the caller's fatal-extraction wrapper, so the
  * factory itself doesn't repeat the skill prefix.
  */

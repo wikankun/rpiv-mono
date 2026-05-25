@@ -17,7 +17,7 @@
 import {
 	type EdgeTarget,
 	marksFrontmatter,
-	ON_VALIDATION_FAILURE_VALUES,
+	ON_INVALID_VALUES,
 	SESSION_POLICIES,
 	STAGE_KINDS,
 	STOP,
@@ -170,7 +170,7 @@ function checkReachability(w: Workflow, issues: WorkflowValidationIssue[]): void
 /**
  * Per-stage semantic checks — bounds and enums that the TS type system narrows
  * at edit time but jiti erases at runtime. A user-authored config can ship any
- * numeric `maxValidationRetries` or any string for `onValidationFailure`; this
+ * numeric `maxRetries` or any string for `onInvalid`; this
  * pass catches them at load time. Each check is a focused helper so the
  * orchestrator reads top-down and individual rules can be exercised in
  * isolation.
@@ -185,45 +185,38 @@ function checkStageSemantics(w: Workflow, issues: WorkflowValidationIssue[]): vo
 }
 
 function checkRetryBounds(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
-	if (stage.maxValidationRetries === undefined) return;
-	if (stage.maxValidationRetries < MIN_VALIDATION_RETRIES || stage.maxValidationRetries > MAX_VALIDATION_RETRIES) {
+	if (stage.maxRetries === undefined) return;
+	if (stage.maxRetries < MIN_VALIDATION_RETRIES || stage.maxRetries > MAX_VALIDATION_RETRIES) {
 		issues.push(
 			error(
 				w.name,
 				name,
-				`maxValidationRetries: ${stage.maxValidationRetries} — must be in [${MIN_VALIDATION_RETRIES}, ${MAX_VALIDATION_RETRIES}]`,
+				`maxRetries: ${stage.maxRetries} — must be in [${MIN_VALIDATION_RETRIES}, ${MAX_VALIDATION_RETRIES}]`,
 			),
 		);
 	}
 }
 
 function checkTimeoutBounds(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
-	if (stage.validationRetryTimeoutMs === undefined) return;
+	if (stage.validateTimeoutMs === undefined) return;
 	if (
-		stage.validationRetryTimeoutMs < MIN_VALIDATION_RETRY_TIMEOUT_MS ||
-		stage.validationRetryTimeoutMs > MAX_VALIDATION_RETRY_TIMEOUT_MS
+		stage.validateTimeoutMs < MIN_VALIDATION_RETRY_TIMEOUT_MS ||
+		stage.validateTimeoutMs > MAX_VALIDATION_RETRY_TIMEOUT_MS
 	) {
 		issues.push(
 			error(
 				w.name,
 				name,
-				`validationRetryTimeoutMs: ${stage.validationRetryTimeoutMs} — must be in [${MIN_VALIDATION_RETRY_TIMEOUT_MS}, ${MAX_VALIDATION_RETRY_TIMEOUT_MS}]`,
+				`validateTimeoutMs: ${stage.validateTimeoutMs} — must be in [${MIN_VALIDATION_RETRY_TIMEOUT_MS}, ${MAX_VALIDATION_RETRY_TIMEOUT_MS}]`,
 			),
 		);
 	}
 }
 
 function checkStageEnums(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
-	if (
-		stage.onValidationFailure !== undefined &&
-		!(ON_VALIDATION_FAILURE_VALUES as readonly string[]).includes(stage.onValidationFailure)
-	) {
+	if (stage.onInvalid !== undefined && !(ON_INVALID_VALUES as readonly string[]).includes(stage.onInvalid)) {
 		issues.push(
-			error(
-				w.name,
-				name,
-				`onValidationFailure: "${stage.onValidationFailure}" — must be one of ${ON_VALIDATION_FAILURE_VALUES.join(", ")}`,
-			),
+			error(w.name, name, `onInvalid: "${stage.onInvalid}" — must be one of ${ON_INVALID_VALUES.join(", ")}`),
 		);
 	}
 	if (!(STAGE_KINDS as readonly string[]).includes(stage.kind)) {

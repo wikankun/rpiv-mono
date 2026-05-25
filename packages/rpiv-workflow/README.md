@@ -266,7 +266,7 @@ export default defineWorkflow({
 - "the spec the agent emitted must validate against a live endpoint" — `fetch` is async.
 - you're already on an async-by-default schema lib (ArkType's deeply-async paths).
 
-The contract is identical — author an async `~standard.validate` and the runner awaits it. A schema whose Promise never settles is bounded by the stage's `validationRetryTimeoutMs` (default 5 min); a rejected Promise surfaces as a clean stage halt, attributed to the stage, with the same error class as a shape-failure halt. No opt-in flag, no parallel code path.
+The contract is identical — author an async `~standard.validate` and the runner awaits it. A schema whose Promise never settles is bounded by the stage's `validateTimeoutMs` (default 5 min); a rejected Promise surfaces as a clean stage halt, attributed to the stage, with the same error class as a shape-failure halt. No opt-in flag, no parallel code path.
 
 > Keep validation separate from the resolver + reader. The resolver's job is "what did the agent produce?" (enumerate); the reader's job is "parse it into typed data" (shape). The validator's job is "is the result correct?" (check + verify). With async validators available you don't have to push I/O verification into a custom resolver/reader — keep them pure and put correctness checks on `outputSchema`.
 

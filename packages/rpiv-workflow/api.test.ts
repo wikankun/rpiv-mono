@@ -67,13 +67,13 @@ describe("produces", () => {
 	});
 
 	it("respects overrides without mutating defaults for other calls", () => {
-		const a = produces({ sessionPolicy: "continue", maxValidationRetries: 3 });
+		const a = produces({ sessionPolicy: "continue", maxRetries: 3 });
 		expect(a.sessionPolicy).toBe("continue");
-		expect(a.maxValidationRetries).toBe(3);
+		expect(a.maxRetries).toBe(3);
 
 		const b = produces();
 		expect(b.sessionPolicy).toBe("fresh");
-		expect(b.maxValidationRetries).toBeUndefined();
+		expect(b.maxRetries).toBeUndefined();
 	});
 
 	it("override.skill wins when the stage id and Pi skill differ", () => {

@@ -183,7 +183,7 @@ describe("sessions — validation retry loop", () => {
 				state,
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					maxValidationRetries: 2,
+					maxRetries: 2,
 					outcome: scriptedOutcome([okPayload({ foo: 1 }), okPayload({ foo: 2 })]),
 				}),
 				onSuccess,
@@ -215,7 +215,7 @@ describe("sessions — validation retry loop", () => {
 				state,
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					maxValidationRetries: 1,
+					maxRetries: 1,
 					// Always invalid → 1 retry attempt then exhaustion.
 					outcome: scriptedOutcome([okPayload({ foo: 1 })]),
 				}),
@@ -231,7 +231,7 @@ describe("sessions — validation retry loop", () => {
 		expect(state.termination.error).toContain("/foo");
 	});
 
-	it("clamps maxValidationRetries above the ceiling (MAX_VALIDATION_RETRIES)", async () => {
+	it("clamps maxRetries above the ceiling (MAX_VALIDATION_RETRIES)", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -246,7 +246,7 @@ describe("sessions — validation retry loop", () => {
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
 					// Far above ceiling — must clamp to MAX_VALIDATION_RETRIES.
-					maxValidationRetries: MAX_VALIDATION_RETRIES + 50,
+					maxRetries: MAX_VALIDATION_RETRIES + 50,
 					outcome,
 				}),
 			}),
@@ -259,7 +259,7 @@ describe("sessions — validation retry loop", () => {
 		expect(retries).toHaveLength(MAX_VALIDATION_RETRIES);
 	});
 
-	it("onValidationFailure='halt' skips retries — outcome called once, exhausted immediately", async () => {
+	it("onInvalid='halt' skips retries — outcome called once, exhausted immediately", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -274,8 +274,8 @@ describe("sessions — validation retry loop", () => {
 				state: freshRunState(),
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					onValidationFailure: "halt",
-					maxValidationRetries: 3,
+					onInvalid: "halt",
+					maxRetries: 3,
 					outcome,
 				}),
 				onFailure,
@@ -333,8 +333,8 @@ describe("sessions — validation retry loop", () => {
 				state,
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					maxValidationRetries: 1,
-					validationRetryTimeoutMs: 1_000,
+					maxRetries: 1,
+					validateTimeoutMs: 1_000,
 					outcome: scriptedOutcome([okPayload({ foo: 1 })]),
 				}),
 				onFailure,
@@ -362,7 +362,7 @@ describe("sessions — validation retry loop", () => {
 				state,
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					maxValidationRetries: 2,
+					maxRetries: 2,
 					outcome: scriptedOutcome([okPayload({ foo: 1 }), fatalPayload("outcome blew up mid-retry")]),
 				}),
 				onFailure,
@@ -380,7 +380,7 @@ describe("sessions — validation retry loop", () => {
 	// side-effect nodes is "inherit prior" which is the success path, not
 	// a halt.
 
-	it("clamps validationRetryTimeoutMs above ceiling", async () => {
+	it("clamps validateTimeoutMs above ceiling", async () => {
 		// Smoke: timeoutMs above ceiling must clamp. We assert the clamp
 		// indirectly via MSG_VALIDATION_RETRY firing without timeout.
 		const chain = createMockSessionChain({
@@ -395,8 +395,8 @@ describe("sessions — validation retry loop", () => {
 				state: freshRunState(),
 				stage: stage({
 					outputSchema: FOO_EQ_2_SCHEMA,
-					maxValidationRetries: 1,
-					validationRetryTimeoutMs: MAX_VALIDATION_RETRY_TIMEOUT_MS * 100,
+					maxRetries: 1,
+					validateTimeoutMs: MAX_VALIDATION_RETRY_TIMEOUT_MS * 100,
 					outcome: scriptedOutcome([okPayload({ foo: 1 }), okPayload({ foo: 2 })]),
 				}),
 			}),
@@ -499,10 +499,10 @@ describe("sessions — validation retry loop", () => {
 	// An async schema whose Promise never settles would otherwise hang the
 	// stage indefinitely — sync schemas can't hang, but I/O-backed schemas
 	// (fs probes, registry lookups, missing AbortSignal on fetch) can.
-	// `validationRetryTimeoutMs` is the same budget that bounds
+	// `validateTimeoutMs` is the same budget that bounds
 	// `askAgentToFix`; reusing it for the schema call keeps the public
 	// surface narrow and surfaces a clear schema-timeout message.
-	it("async schema that never settles halts via fatal-extraction within validationRetryTimeoutMs", async () => {
+	it("async schema that never settles halts via fatal-extraction within validateTimeoutMs", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
@@ -526,7 +526,7 @@ describe("sessions — validation retry loop", () => {
 				state,
 				stage: stage({
 					outputSchema: hangingSchema,
-					validationRetryTimeoutMs: 1_000,
+					validateTimeoutMs: 1_000,
 					outcome: scriptedOutcome([okPayload({ foo: 2 })]),
 				}),
 				onSuccess,

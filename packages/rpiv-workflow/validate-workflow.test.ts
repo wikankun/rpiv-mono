@@ -237,37 +237,29 @@ describe("validateWorkflow — semantic stage constraints", () => {
 		edges: { a: "stop" },
 	});
 
-	it("errors on maxValidationRetries below the floor", () => {
-		const issues = validateWorkflow(baseWithStage({ maxValidationRetries: 0 }));
-		expect(issues.some((i) => i.severity === "error" && /maxValidationRetries: 0/.test(i.message))).toBe(true);
+	it("errors on maxRetries below the floor", () => {
+		const issues = validateWorkflow(baseWithStage({ maxRetries: 0 }));
+		expect(issues.some((i) => i.severity === "error" && /maxRetries: 0/.test(i.message))).toBe(true);
 	});
 
-	it("errors on maxValidationRetries above the ceiling", () => {
-		const issues = validateWorkflow(baseWithStage({ maxValidationRetries: 100 }));
-		expect(issues.some((i) => i.severity === "error" && /maxValidationRetries: 100/.test(i.message))).toBe(true);
+	it("errors on maxRetries above the ceiling", () => {
+		const issues = validateWorkflow(baseWithStage({ maxRetries: 100 }));
+		expect(issues.some((i) => i.severity === "error" && /maxRetries: 100/.test(i.message))).toBe(true);
 	});
 
-	it("errors on validationRetryTimeoutMs out of range", () => {
-		const issues = validateWorkflow(baseWithStage({ validationRetryTimeoutMs: 0 }));
-		expect(issues.some((i) => i.severity === "error" && /validationRetryTimeoutMs: 0/.test(i.message))).toBe(true);
+	it("errors on validateTimeoutMs out of range", () => {
+		const issues = validateWorkflow(baseWithStage({ validateTimeoutMs: 0 }));
+		expect(issues.some((i) => i.severity === "error" && /validateTimeoutMs: 0/.test(i.message))).toBe(true);
 	});
 
-	it("errors on unknown onValidationFailure value", () => {
-		const issues = validateWorkflow(
-			baseWithStage({ onValidationFailure: "burn-it-down" as unknown as "retry" | "halt" }),
-		);
-		expect(issues.some((i) => i.severity === "error" && /onValidationFailure: "burn-it-down"/.test(i.message))).toBe(
-			true,
-		);
+	it("errors on unknown onInvalid value", () => {
+		const issues = validateWorkflow(baseWithStage({ onInvalid: "burn-it-down" as unknown as "retry" | "halt" }));
+		expect(issues.some((i) => i.severity === "error" && /onInvalid: "burn-it-down"/.test(i.message))).toBe(true);
 	});
 
-	it("accepts the documented onValidationFailure values", () => {
-		expect(
-			validateWorkflow(baseWithStage({ onValidationFailure: "retry" })).filter((i) => i.severity === "error"),
-		).toEqual([]);
-		expect(
-			validateWorkflow(baseWithStage({ onValidationFailure: "halt" })).filter((i) => i.severity === "error"),
-		).toEqual([]);
+	it("accepts the documented onInvalid values", () => {
+		expect(validateWorkflow(baseWithStage({ onInvalid: "retry" })).filter((i) => i.severity === "error")).toEqual([]);
+		expect(validateWorkflow(baseWithStage({ onInvalid: "halt" })).filter((i) => i.severity === "error")).toEqual([]);
 	});
 
 	it("errors on unknown kind", () => {

@@ -34,7 +34,7 @@ export type { Outcome } from "./manifest.js";
  * schemas are supported at both seams — the runner awaits `~standard.validate`
  * — and are the right answer when correctness needs I/O (filesystem probes,
  * registry lookups, async-by-default libs like ArkType). A hanging async
- * schema is bounded by the stage's `validationRetryTimeoutMs`. See the
+ * schema is bounded by the stage's `validateTimeoutMs`. See the
  * "Validators: sync vs async" section of the package README for the full
  * rationale.
  */
@@ -67,13 +67,13 @@ export const SESSION_POLICIES = ["fresh", "continue"] as const;
 export type SessionPolicy = (typeof SESSION_POLICIES)[number];
 
 /**
- * What happens when a node's `outputSchema` rejects the extracted manifest:
- * - `"retry"` — re-invoke the stage up to `maxValidationRetries`, threading
- *   the schema's issues back to the agent via a retry prompt.
+ * What happens when a stage's `outputSchema` rejects the extracted manifest:
+ * - `"retry"` — re-invoke the stage up to `maxRetries`, threading the
+ *   schema's issues back to the agent via a retry prompt.
  * - `"halt"` — record a terminal failure on the first rejection.
  */
-export const ON_VALIDATION_FAILURE_VALUES = ["retry", "halt"] as const;
-export type OnValidationFailure = (typeof ON_VALIDATION_FAILURE_VALUES)[number];
+export const ON_INVALID_VALUES = ["retry", "halt"] as const;
+export type OnInvalid = (typeof ON_INVALID_VALUES)[number];
 
 /**
  * Opt-in fanout — a user-supplied function that decomposes a stage's work
@@ -185,11 +185,24 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	kind: StageKind;
 	sessionPolicy: SessionPolicy;
 	outcome?: Outcome;
+	/**
+	 * Standard Schema v1 validator run against `manifest.data` after the
+	 * stage's `Outcome` produces it (the typed record parsed out of the
+	 * agent's emitted artifact). On rejection the runner honours
+	 * `onInvalid` ("retry" by default, up to `maxRetries`; "halt" to fail
+	 * fast).
+	 */
 	outputSchema?: StageSchema<unknown, TOut>;
+	/**
+	 * Standard Schema v1 validator run against the inherited upstream
+	 * `manifest.data` before the stage runs. A rejection halts the
+	 * chain immediately (no retry path — the upstream stage is already
+	 * frozen).
+	 */
 	inputSchema?: StageSchema<unknown, TIn>;
-	onValidationFailure?: OnValidationFailure;
-	maxValidationRetries?: number;
-	validationRetryTimeoutMs?: number;
+	onInvalid?: OnInvalid;
+	maxRetries?: number;
+	validateTimeoutMs?: number;
 	/**
 	 * Opt-in fanout. When set, the runner invokes the function with a
 	 * `FanoutContext`, awaits the returned units, and runs one Pi session

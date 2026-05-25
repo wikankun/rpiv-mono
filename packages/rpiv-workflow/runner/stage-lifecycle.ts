@@ -260,7 +260,7 @@ function computeBranchOffset(curCtx: RunnerCtx, def: StageDef): number | undefin
 
 async function ensureInputValid(stage: ResolvedStage, run: RunContext): Promise<void> {
 	if (!stage.def.inputSchema || run.state.manifest?.data === undefined) return;
-	const timeoutMs = clampValidationTimeoutMs(stage.def.validationRetryTimeoutMs);
+	const timeoutMs = clampValidateTimeoutMs(stage.def.validateTimeoutMs);
 	const prevSkill = run.state.manifest.meta.skill || "unknown";
 
 	let result: ValidationResult;
@@ -304,7 +304,7 @@ async function ensureInputValid(stage: ResolvedStage, run: RunContext): Promise<
  * means a misconfigured stage degrades to the spec-default behavior instead
  * of firing a 100 ms timeout before a real I/O probe gets a chance to settle.
  */
-function clampValidationTimeoutMs(raw: number | undefined): number {
+function clampValidateTimeoutMs(raw: number | undefined): number {
 	return Math.max(
 		MIN_VALIDATION_RETRY_TIMEOUT_MS,
 		Math.min(raw ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS, MAX_VALIDATION_RETRY_TIMEOUT_MS),
