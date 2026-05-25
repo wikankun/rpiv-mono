@@ -24,7 +24,7 @@ import {
 	STATUS_KEY,
 	STATUS_STAGE,
 } from "../messages.js";
-import { runPhaseSession, runStageSession } from "../sessions.js";
+import { runPhaseSession, runStageSession } from "../sessions/index.js";
 import { readBranch } from "../transcript.js";
 import type { RunContext, RunnerCtx } from "../types.js";
 import { validateManifestData } from "../validate-manifest.js";
