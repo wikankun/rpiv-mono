@@ -180,12 +180,11 @@ export async function runWorkflow(
 /**
  * Upper bound for the status-line denominator — BFS reach from `workflow.start`.
  *
- * Relies on every `EdgeFn` carrying `.targets`. `validate-workflow.ts` enforces this at
- * load time, so by the time the runner sees a workflow the contract holds; if
- * a workflow with a `.targets`-less EdgeFn somehow reaches the runner anyway
- * (e.g. a test bypassed validation), we fall back to counting all declared
- * nodes — a strict upper bound that keeps the status line monotonic instead
- * of producing "5/3" garbage.
+ * Relies on every `EdgeFn` carrying `.targets`. `validate-workflow.ts` enforces
+ * this at load time, so by the time the runner sees a workflow the contract
+ * holds. A `.targets`-less EdgeFn here means validation was bypassed (test
+ * fixture or programmatic embedder) — surface loudly instead of silently
+ * counting all declared nodes.
  */
 function countReachableNodes(workflow: Workflow): number {
 	const seen = new Set<string>();
@@ -203,10 +202,9 @@ function countReachableNodes(workflow: Workflow): number {
 				if (t !== "stop" && workflow.nodes[t] && !seen.has(t)) frontier.push(t);
 			}
 		} else {
-			// `.targets`-less EdgeFn slipped past validation — fall back to the
-			// declared-nodes total so the status-line denominator stays a valid
-			// upper bound (never undercounts).
-			return Object.keys(workflow.nodes).length;
+			throw new Error(
+				`countReachableNodes: edge from "${cur}" is an EdgeFn without .targets — validateWorkflow should have rejected this workflow`,
+			);
 		}
 	}
 	return seen.size;

@@ -32,7 +32,6 @@ import {
 	action,
 	artifact,
 	defineWorkflow,
-	nextNode,
 	type RunState,
 	resolveStateFile,
 	resolveWorkflowsDir,
@@ -49,29 +48,6 @@ const findWorkflow = (name: string): Workflow => {
 	return w;
 };
 
-const makeState = (manifestData?: Record<string, unknown>): RunState => ({
-	originalInput: "",
-	fallbackArtifactPath: undefined,
-	manifest: manifestData
-		? { kind: "artifact-md", data: manifestData, meta: { skill: "code-review", stageNumber: 1, ts: "", runId: "" } }
-		: undefined,
-	stagesCompleted: 0,
-	lastAllocatedStageNumber: 0,
-	telemetry: {
-		backwardJumps: 0,
-		droppedRoutingRows: [],
-	},
-	termination: {
-		success: false,
-		error: undefined,
-	},
-});
-
-const ctxOf = (manifestData?: Record<string, unknown>) => {
-	const state = makeState(manifestData);
-	return { manifest: state.manifest, state };
-};
-
 // ---------------------------------------------------------------------------
 // I1 — validate must route to code-review (not commit) in mid/large workflows.
 // ---------------------------------------------------------------------------
@@ -79,15 +55,12 @@ const ctxOf = (manifestData?: Record<string, unknown>) => {
 describe("[I1] validate → code-review routing in built-in workflows", () => {
 	it("routes validate → code-review in mid", () => {
 		const mid = findWorkflow("mid");
-		expect(nextNode(mid, "validate", ctxOf({ severeIssueCount: 0 }))).toEqual({ kind: "next", node: "code-review" });
+		expect(mid.edges.validate).toBe("code-review");
 	});
 
 	it("routes validate → code-review-large in large", () => {
 		const large = findWorkflow("large");
-		expect(nextNode(large, "validate", ctxOf({ severeIssueCount: 0 }))).toEqual({
-			kind: "next",
-			node: "code-review-large",
-		});
+		expect(large.edges.validate).toBe("code-review-large");
 	});
 
 	it("every node in every built-in workflow is reachable from start", () => {
@@ -102,7 +75,7 @@ describe("[I1] validate → code-review routing in built-in workflows", () => {
 
 	it("revise routes forward to implement-after-revise (not the original implement)", () => {
 		const mid = findWorkflow("mid");
-		expect(nextNode(mid, "revise", ctxOf())).toEqual({ kind: "next", node: "implement-after-revise" });
+		expect(mid.edges.revise).toBe("implement-after-revise");
 	});
 });
 

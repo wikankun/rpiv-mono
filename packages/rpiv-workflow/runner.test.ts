@@ -1887,29 +1887,29 @@ describe("totalStages denominator (countReachableNodes)", () => {
 		expect(stageDenominator(chain.statusUpdates)).toBe(2);
 	});
 
-	it("falls back to the declared-node total when an EdgeFn has no .targets", async () => {
+	it("throws when an EdgeFn has no .targets — validation should have rejected the workflow", async () => {
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
 			steps: [{ branch: [mockAssistantMessage("done")] }],
 		});
 		// A bare EdgeFn skips definePredicate/threshold and carries no .targets
-		// metadata. Validate would reject this at load time, but runWorkflow can
-		// still receive it from a test or programmatic embedder. The defensive
-		// fallback in countReachableNodes returns Object.keys(nodes).length so
-		// the status-line denominator stays a valid upper bound (never undercounts).
+		// metadata. validateWorkflow rejects this at load time; if a test bypasses
+		// validation and feeds it to runWorkflow, the runner surfaces the broken
+		// invariant loudly instead of silently miscounting the denominator.
 		const bareEdge = () => "b";
-		await runWorkflow(chain.ctx, {
-			workflow: {
-				name: "naked",
-				start: "a",
-				nodes: {
-					a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
-					b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+		await expect(
+			runWorkflow(chain.ctx, {
+				workflow: {
+					name: "naked",
+					start: "a",
+					nodes: {
+						a: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+						b: { completionStrategy: "agent-end", sessionPolicy: "fresh" },
+					},
+					edges: { a: bareEdge, b: "stop" },
 				},
-				edges: { a: bareEdge, b: "stop" },
-			},
-			input: "x",
-		});
-		expect(stageDenominator(chain.statusUpdates)).toBe(2);
+				input: "x",
+			}),
+		).rejects.toThrow(/countReachableNodes: edge from "a" is an EdgeFn without \.targets/);
 	});
 });
