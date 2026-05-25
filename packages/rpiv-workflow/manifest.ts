@@ -59,13 +59,13 @@ export interface SnapshotCtx {
 }
 
 /** Fail-soft: implementations catch and return undefined rather than throwing. */
-export type SnapshotFn = (ctx: SnapshotCtx) => Promise<unknown> | unknown;
+export type SnapshotFn<Snap = unknown> = (ctx: SnapshotCtx) => Promise<Snap> | Snap;
 
-export interface ExtractorCtx extends SnapshotCtx {
+export interface ExtractorCtx<Snap = unknown> extends SnapshotCtx {
 	branch: BranchEntry[];
 	/** Entries before this index belong to prior stages (continue policies). */
 	branchOffset?: number;
-	snapshot: unknown | undefined;
+	snapshot: Snap;
 	/** Filled by the runner; extractors must NOT set `manifest.meta.skill` themselves. */
 	skill: string;
 }
@@ -85,8 +85,8 @@ export interface ExtractorPayload<K extends string = string, D = unknown> {
  *   `kind: "ok"` + `payload: undefined`         — agent-end stage; chain inherits prior manifest.
  *   `kind: "fatal"`                              — extractor cannot satisfy its contract; runner halts.
  */
-export type ExtractorResult =
-	| { kind: "ok"; payload: ExtractorPayload | undefined }
+export type ExtractorResult<K extends string = string, D = unknown> =
+	| { kind: "ok"; payload: ExtractorPayload<K, D> | undefined }
 	| { kind: "fatal"; message: string };
 
 /**
@@ -99,7 +99,9 @@ export type ExtractorResult =
  * Every concrete extractor declares which side of the contract it sits on
  * by the `kind` values it can return.
  */
-export type ExtractorFn = (ctx: ExtractorCtx) => Promise<ExtractorResult> | ExtractorResult;
+export type ExtractorFn<Snap = unknown, K extends string = string, D = unknown> = (
+	ctx: ExtractorCtx<Snap>,
+) => Promise<ExtractorResult<K, D>> | ExtractorResult<K, D>;
 
 /**
  * An extractor bundles the (optional) pre-stage capture with the post-stage
@@ -107,10 +109,22 @@ export type ExtractorFn = (ctx: ExtractorCtx) => Promise<ExtractorResult> | Extr
  * lands in `ctx.snapshot` for `extract`. Co-locating the pair makes the
  * relationship structural: a `before` without an `extract` to consume it
  * can't be declared.
+ *
+ * Generic over `Snap` (snapshot type), `Kind` (the manifest's `kind`
+ * discriminator), and `Data` (the manifest payload). All three default
+ * to wide types so existing callers keep type-checking; custom extractors
+ * specialise to flow types end-to-end from `before` through `extract`
+ * into the downstream `manifest.data`.
+ *
+ * `before` / `extract` use TypeScript method shorthand syntax (vs.
+ * `extract: ExtractorFn<...>`) so the function parameters are bivariant.
+ * That makes specialised `Extractor<GitHeadSnapshot, "git-commit", ...>`
+ * assignable to the runner's `Extractor` (default `Snap = unknown`) —
+ * the alternative would force every call site to widen explicitly.
  */
-export interface Extractor {
-	before?: SnapshotFn;
-	extract: ExtractorFn;
+export interface Extractor<Snap = unknown, Kind extends string = string, Data = unknown> {
+	before?(ctx: SnapshotCtx): Promise<Snap> | Snap;
+	extract(ctx: ExtractorCtx<Snap>): Promise<ExtractorResult<Kind, Data>> | ExtractorResult<Kind, Data>;
 }
 
 /** Single source of manifest metadata authorship. */

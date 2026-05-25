@@ -31,8 +31,11 @@ const ERR_FILE_MISSING = (path: string) => `agent announced ${path} but file doe
  * 4. If file exists → parse frontmatter, return artifact-md manifest.
  *
  * No `before` — artifact-emit nodes have no pre-stage state to capture.
+ * Frontmatter is `Record<string, unknown>` because parseFrontmatter
+ * narrows from arbitrary YAML; downstream nodes that read it should
+ * declare an `inputSchema` for typed narrowing.
  */
-export const artifactMdExtractor: Extractor = {
+export const artifactMdExtractor: Extractor<undefined, "artifact-md", Record<string, unknown>> = {
 	extract(ctx) {
 		const artifactPath = extractArtifactPath(ctx.branch, ctx.branchOffset);
 

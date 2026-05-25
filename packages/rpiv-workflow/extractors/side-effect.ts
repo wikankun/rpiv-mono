@@ -17,7 +17,7 @@ import type { Extractor } from "../manifest.js";
  *
  * No `before` — side-effect nodes have no pre-stage state to capture.
  */
-export const sideEffectExtractor: Extractor = {
+export const sideEffectExtractor: Extractor<undefined, "side-effect", Record<string, never>> = {
 	extract(ctx) {
 		return {
 			kind: "ok",

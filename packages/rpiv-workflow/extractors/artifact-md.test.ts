@@ -24,7 +24,7 @@ const branchWithText = (text: string) => [
 	},
 ];
 
-const ctxOf = (cwd: string, branch: unknown): ExtractorCtx => ({
+const ctxOf = (cwd: string, branch: unknown): ExtractorCtx<undefined> => ({
 	cwd,
 	runId: "test-run",
 	stageIndex: 0,

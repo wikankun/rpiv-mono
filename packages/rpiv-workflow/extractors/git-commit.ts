@@ -74,8 +74,10 @@ export async function gitHeadSnapshot(ctx: SnapshotCtx): Promise<GitHeadSnapshot
  * Post-stage read: compare HEAD to baseline and extract commit metadata.
  * Always succeeds — git errors surface as a `noOp: true` payload (defensive).
  */
-async function extractGitCommit(ctx: ExtractorCtx): Promise<ExtractorResult> {
-	const snapshot = ctx.snapshot as GitHeadSnapshot | undefined;
+async function extractGitCommit(
+	ctx: ExtractorCtx<GitHeadSnapshot | undefined>,
+): Promise<ExtractorResult<"git-commit", GitCommitData>> {
+	const snapshot = ctx.snapshot;
 	if (!snapshot?.baselineSha) return { kind: "ok", payload: wrap(ctx, noOpData("")) };
 
 	const data = (await collectCommitData(ctx.cwd, snapshot.baselineSha)) ?? noOpData(snapshot.baselineSha);
@@ -90,8 +92,12 @@ async function extractGitCommit(ctx: ExtractorCtx): Promise<ExtractorResult> {
  * a composition building block: wrap it in any custom extractor whose
  * `extract` reads a git baseline (not just commit detection — also "did
  * this stage touch files?", "what changed since the last save?", etc.).
+ *
+ * Concrete generics: snapshot is `GitHeadSnapshot | undefined`
+ * (undefined when not in a git repo), manifest kind is `"git-commit"`,
+ * data is `GitCommitData`.
  */
-export const gitCommitExtractor: Extractor = {
+export const gitCommitExtractor: Extractor<GitHeadSnapshot | undefined, "git-commit", GitCommitData> = {
 	before: gitHeadSnapshot,
 	extract: extractGitCommit,
 };
@@ -132,7 +138,10 @@ async function countFilesChanged(cwd: string, baselineSha: string, headSha: stri
 // ---------------------------------------------------------------------------
 
 /** Wrap GitCommitData in a payload, inheriting the chain's current artifact_path. */
-function wrap(ctx: ExtractorCtx, data: GitCommitData): ExtractorPayload<"git-commit", GitCommitData> {
+function wrap(
+	ctx: ExtractorCtx<GitHeadSnapshot | undefined>,
+	data: GitCommitData,
+): ExtractorPayload<"git-commit", GitCommitData> {
 	return {
 		kind: "git-commit",
 		artifact_path: currentArtifactPath(ctx.state),

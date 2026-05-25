@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtractorCtx, SnapshotCtx } from "../manifest.js";
-import { gitCommitExtractor, gitHeadSnapshot } from "./git-commit.js";
+import { type GitHeadSnapshot, gitCommitExtractor, gitHeadSnapshot } from "./git-commit.js";
 
 const hasGit = (() => {
 	try {
@@ -54,7 +54,10 @@ const snapshotCtx = (cwd: string): SnapshotCtx => ({
 	},
 });
 
-const extractorCtx = (cwd: string, snapshot: unknown): ExtractorCtx => ({
+const extractorCtx = (
+	cwd: string,
+	snapshot: GitHeadSnapshot | undefined,
+): ExtractorCtx<GitHeadSnapshot | undefined> => ({
 	...snapshotCtx(cwd),
 	branch: [],
 	branchOffset: undefined,
@@ -169,7 +172,7 @@ describe("artifact_path inheritance", () => {
 	});
 
 	it("inherits currentArtifactPath(state) into the payload (chain continuity)", async () => {
-		const ctx: ExtractorCtx = {
+		const ctx: ExtractorCtx<GitHeadSnapshot | undefined> = {
 			...extractorCtx(tmpDir, { baselineSha: "abc" }),
 			state: {
 				...snapshotCtx(tmpDir).state,
