@@ -110,14 +110,11 @@ export interface Extractor {
 }
 
 /** Single source of manifest metadata authorship. */
-export function finalizeManifest(
-	payload: ExtractorPayload,
-	ctx: { skill: string; stageNumber: number; ts: string; runId: string },
-): Manifest {
+export function finalizeManifest(payload: ExtractorPayload, meta: ManifestMeta): Manifest {
 	return {
 		kind: payload.kind,
 		artifact_path: payload.artifact_path,
 		data: payload.data,
-		meta: { skill: ctx.skill, stageNumber: ctx.stageNumber, ts: ctx.ts, runId: ctx.runId },
+		meta,
 	};
 }
