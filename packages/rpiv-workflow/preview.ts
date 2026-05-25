@@ -37,15 +37,18 @@ export function formatWorkflowList(loaded: LoadedWorkflows): string {
 /** Workflow-name-only path: full stage list + edges for one workflow. */
 export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): string {
 	const workflow = loaded.workflows.find((w) => w.name === name);
-	if (!workflow) return formatWorkflowList(loaded);
+	if (!workflow) {
+		throw new Error(`formatWorkflowDetails: workflow "${name}" not found in loaded set`);
+	}
 
 	const layer = loaded.workflowSources.get(name) ?? "built-in";
 	const heading = formatWorkflowHeading(name, layer, name === loaded.default);
+	const descriptionLine = workflow.description ? [workflow.description] : [];
 	const stageRows = Object.entries(workflow.nodes).map(([nodeName, node], i) =>
 		formatStageRow(i + 1, nodeName, node, workflow),
 	);
 
-	return [heading, "", ...stageRows, "", CMD_USAGE_RUN(name)].join("\n");
+	return [heading, ...descriptionLine, "", ...stageRows, "", CMD_USAGE_RUN(name)].join("\n");
 }
 
 // ===========================================================================
@@ -62,14 +65,28 @@ function formatWorkflowHeading(name: string, layer: ConfigLayer, isDefault: bool
 /** Numbered row showing the node + its outgoing edge target(s). */
 function formatStageRow(idx: number, nodeName: string, node: NodeDef, workflow: Workflow): string {
 	const num = `${idx}.`.padEnd(3);
-	const decorations = [node.completionStrategy.padEnd(13), node.sessionPolicy];
-	if (node.extractor?.before) decorations.push("snapshot");
-	if (node.extractor) decorations.push("extractor");
+	const decorations = [node.completionStrategy.padEnd(13), node.sessionPolicy, extractorTag(node)];
+	if (node.inputSchema) decorations.push("in-schema");
+	if (node.outputSchema) decorations.push("out-schema");
 
+	const displayName = node.skill && node.skill !== nodeName ? `${nodeName} (skill: ${node.skill})` : nodeName;
 	const arrow = formatEdge(workflow, nodeName);
 	const trailer = arrow ? `  → ${arrow}` : "";
 
-	return `  ${num} ${nodeName.padEnd(28)} ${decorations.join(" · ")}${trailer}`;
+	return `  ${num} ${displayName.padEnd(36)} ${decorations.join(" · ")}${trailer}`;
+}
+
+/**
+ * Single tag per node encoding both the extractor kind and the snapshot flag.
+ * Default extractors (resolved by `sessions.ts:resolveExtractor` from
+ * `completionStrategy`) get their bundled name; overrides get `custom` plus
+ * `+snapshot` when a `before` callback is declared.
+ */
+function extractorTag(node: NodeDef): string {
+	if (node.extractor) {
+		return node.extractor.before ? "custom+snapshot" : "custom";
+	}
+	return node.completionStrategy === "artifact-emit" ? "artifact-md" : "side-effect";
 }
 
 /** Render the outgoing edge as a human-readable trailer (string or predicate target set). */

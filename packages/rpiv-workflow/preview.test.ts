@@ -128,23 +128,29 @@ describe("formatWorkflowDetails", () => {
 		expect(lines.find((l) => /research/.test(l))).toContain("fresh");
 	});
 
-	it("decorates stages whose node carries snapshot / extractor", () => {
+	it("tags custom-extractor + snapshot nodes with a single 'custom+snapshot' decoration", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "mid");
 		const commitLine = out.split("\n").find((l) => /^\s+\d+\.\s+commit\b/.test(l)) ?? "";
-		expect(commitLine).toContain("snapshot");
-		expect(commitLine).toContain("extractor");
+		expect(commitLine).toContain("custom+snapshot");
+		expect(commitLine).not.toContain("· custom ·"); // not double-tagged
 	});
 
-	it("does NOT show snapshot / extractor decoration for plain nodes", () => {
+	it("tags artifact-emit nodes with the default 'artifact-md' extractor", () => {
+		const out = formatWorkflowDetails(baseLoaded(), "mid");
+		const researchLine = out.split("\n").find((l) => /^\s+\d+\.\s+research\b/.test(l)) ?? "";
+		expect(researchLine).toContain("artifact-md");
+	});
+
+	it("tags agent-end nodes (no override) with the default 'side-effect' extractor", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "mid");
 		const implementLine = out.split("\n").find((l) => /^\s+\d+\.\s+implement\b/.test(l)) ?? "";
-		expect(implementLine).not.toContain("snapshot");
-		expect(implementLine).not.toContain("extractor");
+		expect(implementLine).toContain("side-effect");
 	});
 
-	it("falls through to formatWorkflowList for unknown workflow names", () => {
-		const out = formatWorkflowDetails(baseLoaded(), "does-not-exist");
-		expect(out).toContain("Available workflows:");
+	it("throws when asked to render a workflow not in the loaded set", () => {
+		expect(() => formatWorkflowDetails(baseLoaded(), "does-not-exist")).toThrow(
+			/workflow "does-not-exist" not found/,
+		);
 	});
 
 	it("renders the predicate target set inline for EdgeFn edges", () => {
@@ -177,5 +183,81 @@ describe("formatWorkflowDetails", () => {
 	it("emits a per-workflow usage hint", () => {
 		const out = formatWorkflowDetails(baseLoaded(), "tiny");
 		expect(out).toContain("Usage: /wf tiny <description>");
+	});
+
+	it("renders workflow.description between the heading and the stage list", () => {
+		const described: Workflow = {
+			name: "described",
+			description: "Short prose summary for the preview header.",
+			start: "research",
+			nodes: { research: artifact(), commit: action() },
+			edges: { research: "commit", commit: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [described],
+			default: "described",
+			workflowSources: new Map([["described", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+		};
+		const out = formatWorkflowDetails(loaded, "described");
+		const lines = out.split("\n");
+		const headingIdx = lines.findIndex((l) => l.startsWith("workflow: described"));
+		expect(headingIdx).toBeGreaterThanOrEqual(0);
+		expect(lines[headingIdx + 1]).toBe("Short prose summary for the preview header.");
+	});
+
+	it("tags stages with in-schema / out-schema when NodeDef carries inputSchema / outputSchema", () => {
+		const fakeSchema = { "~standard": { vendor: "test", version: 1, validate: () => ({ value: {} }) } } as never;
+		const schemaWorkflow: Workflow = {
+			name: "schemas",
+			start: "a",
+			nodes: {
+				a: artifact({ outputSchema: fakeSchema }),
+				b: artifact({ inputSchema: fakeSchema, outputSchema: fakeSchema }),
+				c: action(),
+			},
+			edges: { a: "b", b: "c", c: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [schemaWorkflow],
+			default: "schemas",
+			workflowSources: new Map([["schemas", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+		};
+		const out = formatWorkflowDetails(loaded, "schemas");
+		const lines = out.split("\n");
+		const aLine = lines.find((l) => /^\s+\d+\.\s+a\b/.test(l)) ?? "";
+		const bLine = lines.find((l) => /^\s+\d+\.\s+b\b/.test(l)) ?? "";
+		const cLine = lines.find((l) => /^\s+\d+\.\s+c\b/.test(l)) ?? "";
+		expect(aLine).toContain("out-schema");
+		expect(aLine).not.toContain("in-schema");
+		expect(bLine).toContain("in-schema");
+		expect(bLine).toContain("out-schema");
+		expect(cLine).not.toContain("in-schema");
+		expect(cLine).not.toContain("out-schema");
+	});
+
+	it("annotates aliased nodes with (skill: <body>) when node.skill differs from the node id", () => {
+		const aliased: Workflow = {
+			name: "aliased",
+			start: "implement-after-revise",
+			nodes: {
+				"implement-after-revise": node({ skill: "implement" }),
+				commit: action(),
+			},
+			edges: { "implement-after-revise": "commit", commit: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [aliased],
+			default: "aliased",
+			workflowSources: new Map([["aliased", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+		};
+		const out = formatWorkflowDetails(loaded, "aliased");
+		const aliasLine = out.split("\n").find((l) => /implement-after-revise/.test(l)) ?? "";
+		expect(aliasLine).toContain("implement-after-revise (skill: implement)");
 	});
 });
