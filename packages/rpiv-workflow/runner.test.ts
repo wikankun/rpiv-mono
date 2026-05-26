@@ -409,6 +409,42 @@ describe("runWorkflow", () => {
 		expect(stages.slice(1).every((s) => s.status === "completed")).toBe(true);
 	});
 
+	it("uses FanoutUnit.id in the audit row when set, falling back to label otherwise", async () => {
+		// Mixed-id FanoutFn: phase 1 has an id, phase 2 does not. The audit
+		// row should prefer `id` per-unit so post-hoc tooling joins on a
+		// stable key when one was supplied.
+		const planRelPath = ".rpiv/artifacts/plans/p.md";
+		mkdirSync(join(tmpDir, ".rpiv", "artifacts", "plans"), { recursive: true });
+		writeFileSync(join(tmpDir, planRelPath), "# Plan\n\n## Phase 1: alpha\n## Phase 2: beta\n");
+
+		const mixedIdFanout: FanoutFn = () => [
+			{ prompt: `${planRelPath} Phase 1`, label: "phase 1/2", id: "phase-1" },
+			{ prompt: `${planRelPath} Phase 2`, label: "phase 2/2" },
+		];
+
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [
+				{ branch: [mockAssistantMessage(`Plan ready: ${planRelPath}`)] },
+				{ branch: [mockAssistantMessage("phase 1 done")] },
+				{ branch: [mockAssistantMessage("phase 2 done")] },
+			],
+		});
+
+		const result = await runWorkflow(chain.ctx, {
+			workflow: wf("rip", ["research", "implement"], {
+				implement: { fanout: mixedIdFanout },
+			}),
+			input: "x",
+		});
+
+		expect(result.success).toBe(true);
+
+		const { stages } = readState(tmpDir);
+		expect(stages[1]?.skill).toBe("implement (phase-1)");
+		expect(stages[2]?.skill).toBe("implement (phase 2/2)");
+	});
+
 	it("halts the chain when the agent ends with stopReason: aborted (user pressed ESC)", async () => {
 		// The bug this guards against: a partial assistant response from an
 		// ESC-interrupted agent satisfies hasAssistantMessage, so without the

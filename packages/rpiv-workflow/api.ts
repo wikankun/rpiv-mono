@@ -120,11 +120,19 @@ export interface FanoutUnit {
 	prompt: string;
 	/**
 	 * Short label woven into the status line + JSONL audit row.
-	 * The audit `skill` field becomes `<stage.skill> (<label>)`; the status
-	 * line shows `rpiv: stage X/Y — <stage.skill> (<label>)`. Keep it short
-	 * and disambiguating (`"phase 2/5"`, `"task 3/8"`).
+	 * The audit `skill` field becomes `<stage.skill> (<id ?? label>)`;
+	 * the status line shows `rpiv: stage X/Y — <stage.skill> (<label>)`.
+	 * Keep it short and disambiguating (`"phase 2/5"`, `"task 3/8"`).
 	 */
 	label: string;
+	/**
+	 * Optional stable identifier used in the JSONL audit row in place of
+	 * `label`. Set this when `label` is a human-facing display string that
+	 * may be reworded — `id` keeps the audit projection stable across
+	 * label edits and matches the pattern post-hoc tooling joins on
+	 * (`"phase-2"`, `"task-3"`). Omit to fall back to `label`.
+	 */
+	id?: string;
 }
 
 // ===========================================================================

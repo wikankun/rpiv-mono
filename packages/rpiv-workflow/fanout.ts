@@ -68,6 +68,7 @@ export async function runFanout(
 		skill,
 		unitIndex: p,
 		label: unit.label,
+		id: unit.id,
 		stageIndex: stageIdx,
 		onSuccess: (freshCtx) => runFanout(freshCtx, stageIdx, currentName, skill, p + 1, units, run, deps),
 	});

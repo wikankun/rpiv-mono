@@ -138,15 +138,21 @@ export interface StageSession extends SessionContext {
 
 /**
  * One unit of a fanout iteration. `label` is the user-supplied
- * disambiguating tag from `FanoutUnit.label`; it's woven into both the
- * status line (`STATUS_FANOUT_UNIT`) and the JSONL row (`fanoutRowLabel`)
- * so the runner adds no implicit wording.
+ * disambiguating tag from `FanoutUnit.label`; it's woven into the status
+ * line (`STATUS_FANOUT_UNIT`). The JSONL row (`fanoutRowLabel`) prefers
+ * `id` when present and falls back to `label` so the runner adds no
+ * implicit wording.
  */
 export interface FanoutSession extends SessionContext {
 	/** 1-based position within the run's fanout array — for halt diagnostics. */
 	unitIndex: number;
 	/** From `FanoutUnit.label` — already disambiguating, e.g. `"phase 2/5"`. */
 	label: string;
+	/**
+	 * From `FanoutUnit.id` when set — stable audit identifier preferred
+	 * over `label` in JSONL rows. Undefined when the user supplied none.
+	 */
+	id?: string;
 	/** Parent stage's 0-based index. */
 	stageIndex: number;
 	onSuccess: (ctx: RunnerCtx) => Promise<void>;

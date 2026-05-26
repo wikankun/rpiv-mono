@@ -36,12 +36,13 @@ export type AuditCtx = Pick<SessionContext, "cwd" | "runId" | "state" | "skill">
 
 /**
  * JSONL row label for fanout-unit rows — stage rows use `s.skill` verbatim;
- * unit rows append the user-supplied `label` (e.g. `"implement (phase 2/4)"`,
- * `"apply (task 3/8)"`) so post-hoc readers can distinguish loop iterations.
- * Owned by the audit layer because the JSONL row shape is its concern; the
- * runner stays neutral about the wording.
+ * unit rows append the user-supplied `id` when present, falling back to
+ * `label` (e.g. `"implement (phase-2)"` or `"implement (phase 2/4)"`) so
+ * post-hoc readers can distinguish loop iterations. Owned by the audit
+ * layer because the JSONL row shape is its concern; the runner stays
+ * neutral about the wording.
  */
-export const fanoutRowLabel = (s: FanoutSession): string => `${s.skill} (${s.label})`;
+export const fanoutRowLabel = (s: FanoutSession): string => `${s.skill} (${s.id ?? s.label})`;
 
 /**
  * Allocates the next `stageNumber`, attempts the append, and returns the
