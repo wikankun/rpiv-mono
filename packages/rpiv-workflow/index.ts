@@ -209,6 +209,7 @@ export {
 	type WorkflowStage,
 	workflowsDir,
 } from "./state/index.js";
+export { DEFAULT_TRIGGER, type RunTrigger } from "./triggers.js";
 export { typeboxSchema } from "./typebox-adapter.js";
 export type { RunState } from "./types.js";
 export { type SchemaValidationFailure, validateOutputData } from "./validate-output.js";

@@ -178,7 +178,13 @@ export function listRuns(cwd: string): RunSummary[] {
 		const runId = name.slice(0, -".jsonl".length);
 		const header = readHeader(cwd, runId);
 		if (header)
-			summaries.push({ runId: header.runId, workflow: header.workflow, input: header.input, ts: header.ts });
+			summaries.push({
+				runId: header.runId,
+				workflow: header.workflow,
+				input: header.input,
+				ts: header.ts,
+				trigger: header.trigger,
+			});
 	}
 	return summaries;
 }

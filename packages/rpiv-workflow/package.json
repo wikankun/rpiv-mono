@@ -53,6 +53,7 @@
     "sessions",
     "state",
     "transcript.ts",
+    "triggers.ts",
     "typebox-adapter.ts",
     "types.ts",
     "validate-output.ts",

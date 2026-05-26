@@ -16,6 +16,7 @@
  */
 
 import type { Output } from "../output.js";
+import type { RunTrigger } from "../triggers.js";
 
 // ---------------------------------------------------------------------------
 // Row shapes
@@ -56,6 +57,12 @@ export interface WorkflowHeader {
 	workflow: string;
 	input: string;
 	ts: string;
+	/**
+	 * What triggered the run. Optional so JSONL files written before
+	 * Phase A.1 still parse — readers treat `undefined` as "trigger
+	 * unknown."
+	 */
+	trigger?: RunTrigger;
 }
 
 /**
@@ -72,6 +79,8 @@ export interface RunSummary {
 	input: string;
 	/** ISO-8601 timestamp the run started at — slug-sortable. */
 	ts: string;
+	/** Mirrors `WorkflowHeader.trigger`; undefined for legacy rows. */
+	trigger?: RunTrigger;
 }
 
 export interface RoutingDecision {

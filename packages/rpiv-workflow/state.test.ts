@@ -249,6 +249,55 @@ describe("readHeader", () => {
 		expect(readHeader(tmpDir, runId)).toEqual(header);
 	});
 
+	it("round-trips trigger metadata for all three RunTrigger kinds", () => {
+		const cases: WorkflowHeader[] = [
+			{
+				runId: "trig-command",
+				workflow: "mid",
+				input: "x",
+				ts: "2026-05-26T10:00:00Z",
+				trigger: { kind: "command", name: "wf" },
+			},
+			{
+				runId: "trig-programmatic",
+				workflow: "mid",
+				input: "x",
+				ts: "2026-05-26T10:01:00Z",
+				trigger: { kind: "programmatic", source: "test-driver" },
+			},
+			{
+				runId: "trig-external",
+				workflow: "mid",
+				input: "x",
+				ts: "2026-05-26T10:02:00Z",
+				trigger: {
+					kind: "external",
+					source: "github-webhook",
+					ref: "deadbeef",
+					meta: { eventType: "push" },
+				},
+			},
+		];
+		for (const header of cases) {
+			writeHeader(tmpDir, header);
+			expect(readHeader(tmpDir, header.runId)).toEqual(header);
+		}
+	});
+
+	it("treats trigger as optional — legacy headers without trigger still parse", () => {
+		// Simulate a header written before Phase A.1 (no trigger field).
+		const runId = "legacy-no-trigger";
+		mkdirSync(workflowsDir(tmpDir), { recursive: true });
+		appendFileSync(
+			stateFilePath(tmpDir, runId),
+			`${JSON.stringify({ runId, workflow: "mid", input: "x", ts: "2026" })}\n`,
+			"utf-8",
+		);
+		const header = readHeader(tmpDir, runId);
+		expect(header?.trigger).toBeUndefined();
+		expect(header?.runId).toBe(runId);
+	});
+
 	it("returns undefined when the file does not exist", () => {
 		expect(readHeader(tmpDir, "nonexistent")).toBeUndefined();
 	});
@@ -310,6 +359,20 @@ describe("listRuns", () => {
 		appendFileSync(join(workflowsDir(tmpDir), "stray.txt"), "ignore me\n", "utf-8");
 		const runs = listRuns(tmpDir);
 		expect(runs.map((r) => r.runId)).toEqual(["good"]);
+	});
+
+	it("projects trigger from header to RunSummary", () => {
+		writeHeader(tmpDir, {
+			runId: "with-trigger",
+			workflow: "mid",
+			input: "x",
+			ts: "2026",
+			trigger: { kind: "external", source: "cron", ref: "0 9 * * *" },
+		});
+		writeHeader(tmpDir, { runId: "without-trigger", workflow: "mid", input: "x", ts: "2026" });
+		const byId = Object.fromEntries(listRuns(tmpDir).map((r) => [r.runId, r]));
+		expect(byId["with-trigger"]?.trigger).toEqual({ kind: "external", source: "cron", ref: "0 9 * * *" });
+		expect(byId["without-trigger"]?.trigger).toBeUndefined();
 	});
 });
 
