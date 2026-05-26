@@ -42,6 +42,7 @@
     "host.ts",
     "internal-utils.ts",
     "layers.ts",
+    "lifecycle.ts",
     "load",
     "output.ts",
     "messages.ts",
