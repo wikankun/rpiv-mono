@@ -19,6 +19,7 @@ Complete reference for the `@juicesharp/rpiv-workflow` authoring DSL. A workflow
   - [Collector catalog](#collector-catalog)
   - [Parser catalog](#parser-catalog)
   - [Custom outcomes](#custom-outcomes)
+- [Carrying knowledge across stages](#carrying-knowledge-across-stages)
 - [Validators](#validators)
 - [Complete example](#complete-example)
 - [Validation rules](#validation-rules)
@@ -328,6 +329,44 @@ export const myCollector = defineCollector((ctx) => {
 Handle constructors: `fs(path)`, `url(href)`, `opaque(id)`, `inline(bytes, mime?)`.
 
 Composite outcomes: `sideEffectOutcome` (built from `noopCollector`), `gitCommitOutcome` (built from `gitCommitCollector` + `gitCommitParser`).
+
+## Carrying knowledge across stages
+
+A fresh-session stage starts a clean Pi conversation. It only sees (1) the rolling primary artifact, (2) the inherited artifact list, and (3) `output.data` when an `outputSchema` is declared. Anything the upstream stage only *spoke* in its transcript is lost. Author the handoff deliberately — four paths:
+
+| # | Mechanism | What downstream sees | Trade-off |
+|---|-----------|----------------------|-----------|
+| 1 | `sessionPolicy: "continue"` on the downstream stage | Full prior Pi conversation (messages + tool calls) | Incompatible with `fanout` and script stages. Context grows monotonically. |
+| 2 | `workspaceDiffCollector` outcome on the upstream stage | Every file the stage touched, as `fs` artifacts | Free when the work IS files on disk. Captures *what*, not *why*. |
+| 3 | `transcriptPathCollector` outcome on the upstream stage | The last regex-matched chunk of assistant text, written to disk | Captures narrative knowledge. Needs the skill to emit a recognizable marker. |
+| 4 | Custom collector / parser (+ optional `outputSchema`) | Author-defined typed shape | Most precise; most authoring effort. Enables gate routing. |
+
+**Picking between them — where does the knowledge live after the stage finishes?**
+
+- **On disk (the stage's deliverable IS files)** → path 2. Frame the stage as `produces({ outcome: workspaceDiffCollector(...) })` or `acts({ outcome: workspaceDiffCollector(...) })`. "Side-effect with no outcome" is a smell here — the side effect IS the artifact.
+- **Only in the assistant's words (rationale, decisions)** → path 3 to materialize it, or path 1 to keep the conversation alive.
+- **Both, and the downstream stage needs the full conversation, not just files** → path 1 is the only honest answer. Fresh + a diff collector gives the next stage filenames but no reasoning.
+
+**Combining mechanisms.** `unionCollectors` lets path 2 and path 3 coexist:
+
+```typescript
+import {
+  acts, unionCollectors,
+  workspaceDiffCollector, transcriptPathCollector,
+} from "@juicesharp/rpiv-workflow";
+
+acts({
+  skill: "frontend-design",
+  outcome: unionCollectors(
+    workspaceDiffCollector({ filter: (p) => /\.(tsx?|css|md)$/.test(p) }),
+    transcriptPathCollector({ pattern: /## Design Notes\n([\s\S]+?)(?=\n##|$)/ }),
+  ),
+})
+```
+
+The fresh downstream session now receives the touched files *and* a notes file capturing the rationale.
+
+**What `acts` without an outcome actually does.** The rolling primary slot from the last upstream `produces` is passed through unchanged — downstream still receives that prior artifact, it just learns nothing about what this stage did. If no `produces` stage has run yet upstream, `ensureUpstreamArtifact` halts the next non-terminal stage with `MSG_MISSING_ARTIFACT`. Use `terminal()` for stages that should explicitly carry nothing forward.
 
 ## Validators
 
