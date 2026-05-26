@@ -91,21 +91,25 @@ const PHASE_FANOUT: FanoutFn = ({ artifact: primary, cwd }) => {
 };
 
 // ===========================================================================
-// small — blueprint → implement → validate
+// feat — blueprint → implement → validate → commit
 // ===========================================================================
 
-const smallWorkflow = defineWorkflow({
-	name: "small",
+const featWorkflow = defineWorkflow({
+	name: "feat",
+	description:
+		"Quick implementation: plan → implement → validate → commit. Best for small to medium features (up to ~7 files).",
 	start: "blueprint",
 	stages: {
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
 		implement: acts({ fanout: PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
+		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
 		blueprint: "implement",
 		implement: "validate",
-		validate: "stop",
+		validate: "commit",
+		commit: "stop",
 	},
 });
 
@@ -219,4 +223,4 @@ const reviewLoopWorkflow = defineWorkflow({
 // Exports
 // ===========================================================================
 
-export const builtInWorkflows: readonly Workflow[] = [smallWorkflow, midWorkflow, largeWorkflow, reviewLoopWorkflow];
+export const builtInWorkflows: readonly Workflow[] = [featWorkflow, midWorkflow, largeWorkflow, reviewLoopWorkflow];
