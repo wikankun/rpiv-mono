@@ -1,7 +1,7 @@
 ---
 name: revise
 description: Surgically update an existing implementation plan in .rpiv/artifacts/plans/ based on review feedback, mid-implementation discoveries, or new constraints, preserving structure and quality rather than rewriting. Use when the user wants a plan adjusted after code-review feedback, has hit a blocker mid-implement, scope changed, or asks to "revise the plan".
-argument-hint: "[plan-path] [feedback]"
+argument-hint: "[plan-path | --plans <path> --reviews <path>] [feedback]"
 shell-timeout: 10
 ---
 
@@ -11,7 +11,12 @@ You are tasked with updating existing implementation plans based on user feedbac
 
 ## Input
 
-`$ARGUMENTS` — plan path plus feedback, e.g. `.rpiv/artifacts/plans/2025-10-16_09-00-00_feature.md "Split Phase 2 into two phases"`.
+`$ARGUMENTS` accepts two shapes:
+
+1. **Workflow form** — `--plans <plan-path> --reviews <review-path>`. The orchestrator wires both upstream artifacts in. The plan path is the file to update; the review path carries the findings that drive the edits. Treat the review's content as the feedback.
+2. **Manual form** — `<plan-path> "<feedback>"`, e.g. `.rpiv/artifacts/plans/2025-10-16_09-00-00_feature.md "Split Phase 2 into two phases"`.
+
+Recognize the workflow form by the `--plans` / `--reviews` flag tokens; recognize the manual form by the absence of those flags. When both `--plans` and `--reviews` are present, read the review FULLY and synthesize its findings as the feedback set.
 
 ## Metadata
 
@@ -36,11 +41,16 @@ The revised artifact stays in `.rpiv/artifacts/plans/` for `/skill:implement` to
 When this command is invoked:
 
 1. **Parse the input to identify**:
-   - Plan file path (e.g., `.rpiv/artifacts/plans/2025-10-16_09-00-00_feature.md`)
-   - Whether the user accidentally provided a review artifact path instead (e.g., `.rpiv/artifacts/reviews/2025-10-16_10-00-00_feature.md`)
-   - Requested changes/feedback
+   - Workflow flags: `--plans <path>` (the plan to update) and `--reviews <path>` (review carrying the findings to apply). Both flags may repeat for multi-artifact upstreams.
+   - Manual form: positional plan path + free-text feedback.
+   - Whether the user accidentally provided a review artifact path as the positional plan in the manual form.
 
 2. **Handle different input scenarios**:
+
+   **If `--plans` AND `--reviews` flags are present (workflow form)**:
+   - Take the `--plans` value as the plan file path.
+   - Read the `--reviews` artifact FULLY (the review findings are the feedback set).
+   - Skip directly to substep 3 — no preliminary questions needed.
 
    **If a REVIEW artifact path is provided**:
    ```

@@ -129,7 +129,7 @@ const midWorkflow = defineWorkflow({
 		implement: acts({ fanout: PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		"code-review": produces({ outcome: rpivBucketOutcome("reviews"), outputSchema: CODE_REVIEW_SCHEMA }),
-		revise: produces({ outcome: rpivBucketOutcome("plans") }),
+		revise: produces({ outcome: rpivBucketOutcome("plans"), reads: ["plans", "reviews"] }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {

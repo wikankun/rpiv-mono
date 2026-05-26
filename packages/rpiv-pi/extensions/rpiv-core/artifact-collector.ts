@@ -99,7 +99,13 @@ export const rpivArtifactMdOutcome: OutputSpec<unknown, "artifact-md", Record<st
 	parser: frontmatterParser,
 };
 
-/** Per-bucket variant — narrows accepted paths to the supplied subfolder. */
+/**
+ * Per-bucket variant — narrows accepted paths to the supplied subfolder
+ * AND publishes the resulting `Output` under `state.named[bucket]` so
+ * downstream stages can reference it via `reads: [bucket, ...]` without
+ * restating the bucket on each producing stage. Multiple stages wiring
+ * the same bucket converge to one named slot (latest entry wins on read).
+ */
 export function rpivBucketOutcome(bucket: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> {
-	return { collector: rpivBucketCollector(bucket), parser: frontmatterParser };
+	return { name: bucket, collector: rpivBucketCollector(bucket), parser: frontmatterParser };
 }

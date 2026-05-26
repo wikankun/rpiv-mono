@@ -240,6 +240,7 @@ describe("[I3] recordStage signals success and advances stageNumber monotonicall
 		originalInput: "",
 		primaryArtifact: undefined,
 		output: undefined,
+		named: {},
 		stagesCompleted: 0,
 		lastAllocatedStageNumber: 0,
 		telemetry: {
