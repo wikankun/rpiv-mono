@@ -188,9 +188,7 @@ export class OllamaProvider implements SearchProvider {
 
 	private requireBaseUrl(): void {
 		if (!this.baseUrl) {
-			throw new Error(
-				`${OLLAMA_HOST_ENV_VAR} is not set. Run /web-search-config to configure, or export the env var.`,
-			);
+			throw new Error(`${OLLAMA_HOST_ENV_VAR} is not set. Run /web-tools to configure, or export the env var.`);
 		}
 	}
 
@@ -222,7 +220,7 @@ function hintForStatus(status: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// /web-search-config helper
+// /web-tools helper
 // ---------------------------------------------------------------------------
 
 function maskKey(key: string): string {

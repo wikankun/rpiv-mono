@@ -39,9 +39,9 @@ describe("registerWebTools — registration", () => {
 		expect(captured.tools.has("web_fetch")).toBe(true);
 	});
 
-	it("registers /web-search-config command", () => {
+	it("registers /web-tools command", () => {
 		const { captured } = registerAndCapture();
-		expect(captured.commands.has("web-search-config")).toBe(true);
+		expect(captured.commands.has("web-tools")).toBe(true);
 	});
 
 	it("web_search schema declares min:1, max:10, default:5", () => {
@@ -985,7 +985,7 @@ describe("config round-trip with all providers", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Firecrawl");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-firecrawl-key");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("firecrawl");
 		expect(saved.apiKeys.brave).toBe("brave-key");
@@ -995,11 +995,11 @@ describe("config round-trip with all providers", () => {
 	});
 });
 
-describe("/web-search-config command", () => {
+describe("/web-tools command", () => {
 	it("!hasUI notifies error", async () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: false });
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("interactive"), "error");
 	});
 
@@ -1008,7 +1008,7 @@ describe("/web-search-config command", () => {
 		writeConfig({ provider: "brave", apiKeys: { brave: "sk-cfg-abcdefghijklmnop" } });
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
-		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		await captured.commands.get("web-tools")?.handler("--show", ctx as never);
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain("sk-l...mnop");
 		expect(msg).toContain("sk-c...mnop");
@@ -1018,7 +1018,7 @@ describe("/web-search-config command", () => {
 	it("--show shows '(not set)' when nothing configured", async () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
-		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		await captured.commands.get("web-tools")?.handler("--show", ctx as never);
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain("(not set)");
 	});
@@ -1029,7 +1029,7 @@ describe("/web-search-config command", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Tavily");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("  tavily-key  ");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved).toEqual({
 			provider: "tavily",
@@ -1044,7 +1044,7 @@ describe("/web-search-config command", () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.apiKey).toBe("existing");
 	});
@@ -1055,7 +1055,7 @@ describe("/web-search-config command", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Serper");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.apiKey).toBe("existing");
 	});
@@ -1068,7 +1068,7 @@ describe("/web-search-config command", () => {
 		// existingKey for Exa = undefined, so empty input falls through to cancel.
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("   ");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.apiKey).toBe("existing");
 		expect(saved.provider).toBeUndefined();
@@ -1080,7 +1080,7 @@ describe("/web-search-config command", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("exa");
 		expect(saved.apiKeys.exa).toBe("exa-key");
@@ -1093,7 +1093,7 @@ describe("/web-search-config command", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Brave");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-key");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("brave");
 		expect(saved.apiKeys).toEqual({ brave: "new-key" });
@@ -1107,7 +1107,7 @@ describe("/web-search-config command", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Exa ✓ (configured)");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-exa-key");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 
 		const selectCall = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0];
 		const labels = selectCall[1] as string[];
@@ -1128,7 +1128,7 @@ describe("/web-search-config command", () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 		expect(labels[0]).toBe("Exa ✓ (configured)");
 		expect(labels).toContain("Brave (configured)");
@@ -1143,7 +1143,7 @@ describe("/web-search-config command", () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 		expect(labels).toContain("Jina (configured)");
 	});
@@ -1152,7 +1152,7 @@ describe("/web-search-config command", () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 		expect(labels[0]).toBe("Brave ✓");
 	});
@@ -1168,7 +1168,7 @@ describe("/web-search-config command", () => {
 			const ctx = createMockCtx({ hasUI: true });
 			(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Brave");
 			(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-key");
-			await captured.commands.get("web-search-config")?.handler("", ctx as never);
+			await captured.commands.get("web-tools")?.handler("", ctx as never);
 
 			const notifyMock = ctx.ui.notify as ReturnType<typeof vi.fn>;
 			const calls = notifyMock.mock.calls;
@@ -1391,14 +1391,14 @@ describe("web_search.execute — searxng", () => {
 	});
 });
 
-describe("/web-search-config command — searxng", () => {
+describe("/web-tools command — searxng", () => {
 	it("prompts URL first, then optional key, and persists both", async () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("SearXNG");
 		const inputMock = ctx.ui.input as ReturnType<typeof vi.fn>;
 		inputMock.mockResolvedValueOnce("http://my-searx:8080").mockResolvedValueOnce("my-bearer");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved).toMatchObject({
 			provider: "searxng",
@@ -1416,7 +1416,7 @@ describe("/web-search-config command — searxng", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("SearXNG");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("").mockResolvedValueOnce("");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("searxng");
 		expect(saved.baseUrls.searxng).toBe("http://localhost:8080");
@@ -1429,7 +1429,7 @@ describe("/web-search-config command — searxng", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("SearXNG");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("brave");
 		expect(saved.apiKey).toBe("existing");
@@ -1445,7 +1445,7 @@ describe("/web-search-config command — searxng", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("SearXNG ✓ (configured)");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("").mockResolvedValueOnce("");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.baseUrls.searxng).toBe("http://existing:8080");
 		expect(saved.apiKeys.searxng).toBe("existing-key");
@@ -1458,7 +1458,7 @@ describe("/web-search-config command — searxng", () => {
 			const { captured } = registerAndCapture();
 			const ctx = createMockCtx({ hasUI: true });
 			(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-			await captured.commands.get("web-search-config")?.handler("", ctx as never);
+			await captured.commands.get("web-tools")?.handler("", ctx as never);
 			const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 			expect(labels).toContain("SearXNG");
 			expect(labels).not.toContain("SearXNG (configured)");
@@ -1468,7 +1468,7 @@ describe("/web-search-config command — searxng", () => {
 			const { captured } = registerAndCapture();
 			const ctx = createMockCtx({ hasUI: true });
 			(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-			await captured.commands.get("web-search-config")?.handler("", ctx as never);
+			await captured.commands.get("web-tools")?.handler("", ctx as never);
 			const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 			expect(labels).toContain("SearXNG (configured)");
 		}
@@ -1478,7 +1478,7 @@ describe("/web-search-config command — searxng", () => {
 		process.env.SEARXNG_URL = "http://my-searx:8080";
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
-		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		await captured.commands.get("web-tools")?.handler("--show", ctx as never);
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain("searxng url: http://my-searx:8080");
 		expect(msg).toContain("source: env");
@@ -1488,7 +1488,7 @@ describe("/web-search-config command — searxng", () => {
 		writeConfig({ baseUrls: { searxng: "http://config-host:7000" } });
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
-		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		await captured.commands.get("web-tools")?.handler("--show", ctx as never);
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain("searxng url: http://config-host:7000");
 		expect(msg).toContain("source: config");
@@ -1497,7 +1497,7 @@ describe("/web-search-config command — searxng", () => {
 	it("--show surfaces the resolved searxng URL and its source (default)", async () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
-		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		await captured.commands.get("web-tools")?.handler("--show", ctx as never);
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain(`searxng url: ${SEARXNG_DEFAULT_URL}`);
 		expect(msg).toContain("source: default");
@@ -1548,7 +1548,7 @@ describe("SearxngProvider constructor", () => {
 	});
 });
 
-// The integrated paths (web_search.execute, /web-search-config) always supply
+// The integrated paths (web_search.execute, /web-tools) always supply
 // a baseUrl via resolveSearxngBaseUrl, which falls back to SEARXNG_DEFAULT_URL.
 // The "is not set" error path inside SearxngProvider.search() is therefore
 // only reachable for direct programmatic consumers — the class is exported,
@@ -1561,7 +1561,7 @@ describe("SearxngProvider.search() — direct unit tests", () => {
 });
 
 // Direct unit tests for the extracted helper — covers the prompt/keep/default
-// logic that the /web-search-config integration tests above also exercise via
+// logic that the /web-tools integration tests above also exercise via
 // the caller, but at finer resolution and without needing the full registration.
 describe("configureSearxng", () => {
 	function makeUi(inputs: Array<string | null | undefined>) {
@@ -1859,14 +1859,14 @@ describe("web_search.execute — ollama network errors", () => {
 	});
 });
 
-describe("/web-search-config command — ollama", () => {
+describe("/web-tools command — ollama", () => {
 	it("prompts URL first, then optional key, and persists both", async () => {
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Ollama");
 		const inputMock = ctx.ui.input as ReturnType<typeof vi.fn>;
 		inputMock.mockResolvedValueOnce("http://my-ollama:11434").mockResolvedValueOnce("my-api-key");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved).toMatchObject({
 			provider: "ollama",
@@ -1883,7 +1883,7 @@ describe("/web-search-config command — ollama", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Ollama");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("").mockResolvedValueOnce("");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("ollama");
 		expect(saved.baseUrls.ollama).toBe("http://localhost:11434");
@@ -1896,7 +1896,7 @@ describe("/web-search-config command — ollama", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Ollama");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.provider).toBe("brave");
 		expect(saved.apiKey).toBe("existing");
@@ -1912,7 +1912,7 @@ describe("/web-search-config command — ollama", () => {
 		const ctx = createMockCtx({ hasUI: true });
 		(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Ollama ✓ (configured)");
 		(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("").mockResolvedValueOnce("");
-		await captured.commands.get("web-search-config")?.handler("", ctx as never);
+		await captured.commands.get("web-tools")?.handler("", ctx as never);
 		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 		expect(saved.baseUrls.ollama).toBe("http://existing:11434");
 		expect(saved.apiKeys.ollama).toBe("existing-key");
