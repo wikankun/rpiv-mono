@@ -61,6 +61,7 @@ beforeEach(async () => {
 	const workflowInternal = await import("@juicesharp/rpiv-workflow/internal");
 	workflowInternal.__resetBuiltIns();
 	workflowInternal.__resetLoadCache();
+	workflowInternal.__resetLifecycleRegistry();
 
 	const guidance = await import("../packages/rpiv-pi/extensions/rpiv-core/guidance.js");
 	guidance.clearInjectionState();

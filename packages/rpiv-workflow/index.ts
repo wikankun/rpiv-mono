@@ -156,7 +156,7 @@ export {
 	url,
 } from "./handle.js";
 export type { WorkflowContext, WorkflowHost } from "./host.js";
-export type { LifecycleContext, LifecycleListeners, StageRef } from "./lifecycle.js";
+export { type LifecycleContext, type LifecycleListeners, registerLifecycle, type StageRef } from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
 export {

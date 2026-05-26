@@ -155,9 +155,68 @@ export class LifecycleDispatcher {
 	}
 }
 
-/** Phase A.4 extends this to prepend the global registry. */
+// ---------------------------------------------------------------------------
+// Global registry — cross-package fan-out (Phase A.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Anchored on a `Symbol.for` slot so a duplicate module load (extension +
+ * sibling cross-package resolution) shares one registry. Same pattern
+ * `registerBuiltIns` uses for the workflow registry.
+ */
+const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:lifecycle");
+
+type Global = Record<symbol, unknown>;
+
+function getRegistry(): LifecycleListeners[] {
+	const g = globalThis as unknown as Global;
+	let registry = g[REGISTRY_KEY] as LifecycleListeners[] | undefined;
+	if (!registry) {
+		registry = [];
+		g[REGISTRY_KEY] = registry;
+	}
+	return registry;
+}
+
+/**
+ * Register a cross-package lifecycle-listener bundle. Returns a disposer
+ * that removes it. Multiple registrations coexist — every fired event walks
+ * the full registry in registration order, then the per-call bundle.
+ *
+ * Snapshot semantics: each `fire(...)` call observes the registry as it
+ * stands at that instant. A registration made mid-event applies to
+ * subsequent events but not the in-flight one.
+ *
+ * Throws from listeners are caught + logged via `ctx.ui.notify(..., "warning")`
+ * and never halt the run. One listener bug never affects other listeners
+ * or the run itself.
+ */
+export function registerLifecycle(listeners: LifecycleListeners): () => void {
+	const registry = getRegistry();
+	registry.push(listeners);
+	return () => {
+		const idx = registry.indexOf(listeners);
+		if (idx >= 0) registry.splice(idx, 1);
+	};
+}
+
+/**
+ * Test reset — wired into the repo-wide test setup so cross-test
+ * registration leaks don't bias the next case.
+ */
+export function __resetLifecycleRegistry(): void {
+	getRegistry().length = 0;
+}
+
+/**
+ * Globally-registered bundles fire first (in registration order), then
+ * the per-call bundle. Snapshot at fire time — a registration made
+ * inside a listener body applies to subsequent events, not the
+ * in-flight one.
+ */
 function collectBundles(perCall: LifecycleListeners | undefined): readonly LifecycleListeners[] {
-	return perCall ? [perCall] : [];
+	const global = getRegistry();
+	return perCall ? [...global, perCall] : [...global];
 }
 
 /** Build a `LifecycleContext` from the runner's per-run identity. */

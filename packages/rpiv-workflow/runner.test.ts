@@ -2137,6 +2137,126 @@ describe("runWorkflow", () => {
 			const { header } = readState(tmpDir);
 			expect(header.trigger).toEqual(trigger);
 		});
+
+		// =======================================================================
+		// Phase A.4 — global registry (registerLifecycle)
+		// =======================================================================
+
+		describe("registerLifecycle (global registry)", () => {
+			const setupSingleStageRun = () => {
+				writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "");
+				return createMockSessionChain({
+					cwd: tmpDir,
+					steps: [{ branch: [mockAssistantMessage("Plan: .rpiv/artifacts/research/r.md")] }],
+				});
+			};
+
+			it("two registered bundles both receive every event in registration order", async () => {
+				const { registerLifecycle } = await import("./lifecycle.js");
+				const order: string[] = [];
+				const bundleA = { onStageEnd: () => void order.push("A") };
+				const bundleB = { onStageEnd: () => void order.push("B") };
+				const dispA = registerLifecycle(bundleA);
+				const dispB = registerLifecycle(bundleB);
+				try {
+					const chain = setupSingleStageRun();
+					await runWorkflow(chain.ctx, { workflow: wf("tiny", ["research"]), input: "x" });
+					expect(order).toEqual(["A", "B"]);
+				} finally {
+					dispA();
+					dispB();
+				}
+			});
+
+			it("registerLifecycle returns a disposer that removes the bundle", async () => {
+				const { registerLifecycle } = await import("./lifecycle.js");
+				const seen: string[] = [];
+				const dispose = registerLifecycle({ onStageEnd: () => void seen.push("registered") });
+				dispose();
+				const chain = setupSingleStageRun();
+				await runWorkflow(chain.ctx, { workflow: wf("tiny", ["research"]), input: "x" });
+				expect(seen).toEqual([]);
+			});
+
+			it("per-call options.lifecycle fires AFTER globally-registered bundles", async () => {
+				const { registerLifecycle } = await import("./lifecycle.js");
+				const order: string[] = [];
+				const disposeGlobal = registerLifecycle({ onStageEnd: () => void order.push("global") });
+				try {
+					const chain = setupSingleStageRun();
+					await runWorkflow(chain.ctx, {
+						workflow: wf("tiny", ["research"]),
+						input: "x",
+						lifecycle: { onStageEnd: () => void order.push("per-call") },
+					});
+					expect(order).toEqual(["global", "per-call"]);
+				} finally {
+					disposeGlobal();
+				}
+			});
+
+			it("a throw in one bundle doesn't stop other bundles or the run", async () => {
+				const { registerLifecycle } = await import("./lifecycle.js");
+				const seen: string[] = [];
+				const dispose = registerLifecycle({
+					onStageEnd: () => {
+						throw new Error("global boom");
+					},
+				});
+				try {
+					const chain = setupSingleStageRun();
+					const result = await runWorkflow(chain.ctx, {
+						workflow: wf("tiny", ["research"]),
+						input: "x",
+						lifecycle: { onStageEnd: () => void seen.push("per-call-still-fires") },
+					});
+					expect(result.success).toBe(true);
+					expect(seen).toEqual(["per-call-still-fires"]);
+					expect(chain.notifications.some((n) => /lifecycle listener \(onStageEnd\) threw/.test(n.msg))).toBe(
+						true,
+					);
+				} finally {
+					dispose();
+				}
+			});
+
+			it("registration made mid-run does NOT receive the in-flight event but DOES receive the next", async () => {
+				const { registerLifecycle } = await import("./lifecycle.js");
+				const seen: string[] = [];
+				let lateDispose: (() => void) | undefined;
+				const dispose = registerLifecycle({
+					onStageStart: () => {
+						// Register a second bundle from inside the FIRST stage's onStageStart.
+						// The new bundle should NOT see this onStageStart (snapshot semantics)
+						// but SHOULD see the NEXT onStageStart (stage 2).
+						lateDispose ??= registerLifecycle({
+							onStageStart: (stage: unknown) => {
+								void seen.push(`late-saw-${(stage as { name: string }).name}`);
+							},
+						});
+					},
+				});
+				try {
+					writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "");
+					const chain = createMockSessionChain({
+						cwd: tmpDir,
+						steps: [
+							{ branch: [mockAssistantMessage("Plan: .rpiv/artifacts/research/r.md")] },
+							{ branch: [mockAssistantMessage("done")] },
+						],
+					});
+					await runWorkflow(chain.ctx, {
+						workflow: wf("two", ["research", "design"]),
+						input: "x",
+					});
+					// Only stage 2 ("design") should appear — stage 1's onStageStart was the in-flight event.
+					expect(seen).toEqual(["late-saw-design"]);
+				} finally {
+					dispose();
+					lateDispose?.();
+				}
+			});
+		});
 	});
 });
 
