@@ -101,11 +101,14 @@ export async function recordTerminalFailure(
 		audit.runId,
 		// Script-stage failure rows omit `skill` (the row split landed in A.0);
 		// skill rows continue to carry it. `undefined` is dropped by JSON.stringify.
+		// `errMsg` mirrors `state.termination.error` so the failure reason
+		// survives in JSONL even when the `ctx.ui.notify` toast is missed.
 		{
 			stage: audit.stageName,
 			skill: audit.isScript ? undefined : audit.skill,
 			status: args.status,
 			ts: nowIso(),
+			errMsg: args.errMsg,
 		},
 		audit.state,
 	);

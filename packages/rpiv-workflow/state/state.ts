@@ -49,6 +49,14 @@ export interface WorkflowStage {
 	status: StageStatus;
 	ts: string;
 	output?: Output;
+	/**
+	 * Reason a terminal-failure row was written — mirrors the
+	 * `state.termination.error` set by `recordTerminalFailure`. Present
+	 * only on `status: "failed" | "aborted"` rows; absent on completed /
+	 * skipped rows. Persisting it here means post-mortems work from
+	 * JSONL alone, without depending on a transient `ctx.ui.notify` toast.
+	 */
+	errMsg?: string;
 }
 
 /** First line of the JSONL file. */
