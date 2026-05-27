@@ -70,9 +70,8 @@ This is NOT a discovery sweep. Focus on DEPTH (how things work, what patterns to
 
    For integration wiring (inbound refs, outbound deps, config/DI/event registration), use the `## Integration Points` section already extracted from research in Step 1 when present; otherwise add **integration-scanner** to the parallel dispatch. For precedent context (similar past changes, blast radius, follow-up fixes, lessons), use the `## Precedents & Lessons` section already extracted from research in Step 1 when present; otherwise add **precedent-locator** when the topic touches risky surfaces (auth, migrations, schema changes, hot paths, perf-sensitive code). Do NOT dispatch either agent when its corresponding section is already in context.
 
-   **Novel work** (new libraries, first-time patterns, no existing codebase precedent):
-   - Add **web-search-researcher** for external documentation, API references, and community patterns
-   - Instruct it to return LINKS with findings — include those links in the final design artifact
+   **External surfaces** — third-party APIs, SDKs, libraries, services, protocols, or wire formats not already in the codebase:
+   - Add **web-search-researcher**
 
    Agent prompts should focus on (labeled by target agent):
    - **codebase-pattern-finder**: "Find the implementation pattern I should model after for {feature type}"
