@@ -1,5 +1,13 @@
 # @juicesharp/rpiv-workflow
 
+<div align="center">
+  <a href="https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-workflow">
+    <picture>
+      <img src="https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-workflow/docs/cover.png" alt="rpiv-workflow cover" width="50%">
+    </picture>
+  </a>
+</div>
+
 Pi extension. Chain Pi skills into typed multi-stage workflows with audited JSONL state, predicate routing, and per-stage output validation.
 
 **Skill-agnostic.** The runner sends `/skill:<name>` via Pi's native dispatch — it doesn't know or care who shipped the skill. Install on its own and write workflows over your own `~/.pi/agent/skills/`, or pair with [`@juicesharp/rpiv-pi`](../rpiv-pi) to use rpiv-pi's bundled `mid`, `large`, `small` workflows over rpiv-pi's bundled skills.
