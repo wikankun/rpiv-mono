@@ -7,6 +7,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `Ctrl+]` collapses the questionnaire overlay to a single-line footer (`Ctrl+] to expand · Esc to cancel`), exposing the agent transcript that sat behind the bottom-anchored dialog. Pressing `Ctrl+]` again expands. Works from any inner mode (notes, inputMode, chat, submit tab); the overlay stays focused so expand never falls through to a lower overlay (e.g. `/btw`), preserving the focus-restore semantics from v1.14.0.
+- Footer hint advertises the new affordance (`… · Esc to cancel · Ctrl+] to collapse`). On terminals too narrow to fit the full hint, the trailing collapse part clips with `…` so the core controls stay readable.
+
+### Fixed
+- Issue #47: agent transcript was unreadable while the questionnaire overlay was up. The overlay still composites on top of the transcript (pi-tui doesn't reflow main content around overlays), but the new collapse toggle lets the user shrink the dialog to a single row on demand and read the LLM's pre-question preamble before answering.
+
 ## [1.14.6] - 2026-05-28
 
 ## [1.14.5] - 2026-05-28
