@@ -54,6 +54,37 @@ const requestSeqBySession = new Map<string, number>();
 let llmPayloadMode: LlmPayloadMode = "off";
 
 /**
+ * If this Pi process is running as a pi-subagents sub-agent, the agent type
+ * detected from its system prompt's `<active_agent name="...">` tag. Each
+ * sub-agent runs in its own Pi process with its own rpiv-telemetry instance,
+ * so this is naturally scoped to "this sub-agent" — process-wide, set once.
+ * Undefined in user-facing parent sessions.
+ */
+let currentSubAgentType: string | undefined;
+
+const SUBAGENT_TYPE_PATTERN = /<active_agent\s+name="([^"]+)"\s*\/?>/;
+
+function detectSubAgentType(systemPrompt: string | undefined): string | undefined {
+	if (!systemPrompt) return undefined;
+	const m = SUBAGENT_TYPE_PATTERN.exec(systemPrompt);
+	return m?.[1];
+}
+
+/**
+ * Read the parent session ID from Pi's native lineage. `SessionHeader.parentSession`
+ * is the parent session's file path (set by pi-subagents when it spawns the sub-agent's
+ * session); Pi names session files by `<sessionId>.jsonl`, so the basename minus the
+ * extension is the parent session ID. Returns undefined for user-facing parent sessions
+ * that have no parent of their own.
+ */
+function parentSessionIdFromCtx(ctx: ExtensionContext): string | undefined {
+	const parentPath = ctx.sessionManager.getHeader()?.parentSession;
+	if (!parentPath) return undefined;
+	const base = parentPath.split(/[\\/]/).pop() ?? parentPath;
+	return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
+}
+
+/**
  * In-flight sub-agents — populated on `subagents:created`/`started`, drained
  * on `subagents:completed`/`failed`. Anything left here at `session_shutdown`
  * never received a terminal EventBus event (the pi-subagents manager aborts
@@ -77,6 +108,7 @@ export function teardownTelemetry(): void {
 	requestSeqBySession.clear();
 	inflightSubAgents.clear();
 	llmPayloadMode = "off";
+	currentSubAgentType = undefined;
 	for (const unsub of eventBusUnsubscribers) {
 		try {
 			unsub();
@@ -250,13 +282,18 @@ export function initInstrumentation(pi: ExtensionAPI): void {
 		},
 		{
 			piEvent: "before_agent_start",
-			build: (event, ctx) =>
-				({
+			build: (event, ctx) => {
+				// Sub-agent type is stable for a Pi process — detect once from the
+				// `<active_agent name="...">` tag pi-subagents stamps onto sub-agent
+				// system prompts, and reuse for every subsequent agent_start.
+				currentSubAgentType ??= detectSubAgentType(event.systemPrompt);
+				return {
 					kind: "before_agent_start",
 					sessionId: sid(ctx),
 					prompt: event.prompt,
 					timestamp: Date.now(),
-				}) satisfies BeforeAgentStartEvent,
+				} satisfies BeforeAgentStartEvent;
+			},
 		},
 		{
 			piEvent: "agent_start",
@@ -264,6 +301,11 @@ export function initInstrumentation(pi: ExtensionAPI): void {
 				({
 					kind: "agent_start",
 					sessionId: sid(ctx),
+					subAgentType: currentSubAgentType,
+					// Pi-native lineage from SessionHeader.parentSession — set by
+					// pi-subagents on the spawned session. Deterministic, no
+					// heuristic pairing needed.
+					parentSessionId: parentSessionIdFromCtx(ctx),
 					timestamp: Date.now(),
 				}) satisfies AgentStartEvent,
 		},
@@ -549,7 +591,34 @@ export function initInstrumentation(pi: ExtensionAPI): void {
 				console.warn(`[rpiv-telemetry] dropping ${h.channel} event with invalid payload: ${detail}`);
 				return;
 			}
-			dispatchTelemetryEvent(h.map(data, currentSessionId));
+			const mapped = h.map(data, currentSessionId);
+			// Foreground vs background detection: pi-subagents only emits
+			// `subagents:created` for background runs (the spawn_subagent tool
+			// path), while `subagents:started` fires unconditionally for both.
+			// Foreground completion is surfaced via the parent's
+			// `tool_execution_end` for the `Agent` tool (result in the tool
+			// span's outputs), so a standalone `subagent.started` trace is pure
+			// noise for foreground runs (0s execution time, no completion
+			// counterpart). We suppress those starts by gating on whether a
+			// `subagents:created` was seen first for the same agentId.
+			if (mapped.kind === "subagent_created") {
+				inflightSubAgents.set(mapped.agentId, {
+					agentType: mapped.agentType,
+					startedAtMs: Date.now(),
+					sessionId: mapped.sessionId,
+				});
+			} else if (mapped.kind === "subagent_started") {
+				if (!inflightSubAgents.has(mapped.agentId)) return; // foreground — skip noise
+				// Background — refresh startedAt to the actual run start time
+				inflightSubAgents.set(mapped.agentId, {
+					agentType: mapped.agentType,
+					startedAtMs: Date.now(),
+					sessionId: mapped.sessionId,
+				});
+			} else if (mapped.kind === "subagent_completed" || mapped.kind === "subagent_failed") {
+				inflightSubAgents.delete(mapped.agentId);
+			}
+			dispatchTelemetryEvent(mapped);
 		});
 		eventBusUnsubscribers.push(unsub);
 	}
