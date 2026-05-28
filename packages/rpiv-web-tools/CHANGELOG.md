@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-web-tools` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.15.0] - 2026-05-28
 
 ### Added
 - **GitHub URL interceptor** — `web_fetch` can route github.com URLs through `gh` / `git` for full repository content (file tree, README, file contents) instead of the rendered HTML page. **Off by default** to preserve existing behavior. Opt in via `"interceptors": { "github": true }` in `~/.config/rpiv-web-tools/config.json` (end-user) or `registerWebTools(pi, { interceptors: { github: true } })` (consumer extensions). Power-user object form available for tuning `maxRepoSizeMB` (default 350), `cloneTimeoutSeconds` (default 30), and `clonePath` (default `$TMPDIR/pi-github-repos`). See README §GitHub URL interceptor.
