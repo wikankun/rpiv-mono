@@ -1,7 +1,7 @@
 {
 	"name": "@juicesharp/rpiv-telemetry",
 	"version": "1.13.0",
-	"private": false,
+	"private": true,
 	"description": "Pi extension. MLflow observability for Pi Agent — auto-instruments lifecycle events and sub-agent activity.",
 	"keywords": [
 		"pi-package",
