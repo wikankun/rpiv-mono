@@ -242,9 +242,12 @@ describe("session_start hook — notifications", () => {
 		await captured.events.get("session_start")?.[0]({ reason: "startup" } as never, ctx as never);
 		const warnCall = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.find((c) => c[1] === "warning");
 		expect(warnCall).toBeDefined();
-		expect(warnCall?.[0]).toContain("rpiv-pi requires 2 sibling");
+		expect(warnCall?.[0]).toContain("rpiv-pi: 2 sibling extensions missing");
 		expect(warnCall?.[0]).toContain("@juicesharp/rpiv-advisor");
 		expect(warnCall?.[0]).toContain("@juicesharp/rpiv-args");
+		expect(warnCall?.[0]).toContain("Run /rpiv-setup to install them.");
+		expect(warnCall?.[0]).toContain("╭");
+		expect(warnCall?.[0]).toContain("╯");
 		expect(warnCall?.[0]).not.toContain("npm:");
 	});
 

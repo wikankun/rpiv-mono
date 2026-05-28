@@ -62,8 +62,16 @@ const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/age
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
 const msgAgentsDrift = (parts: string[]) => `${parts.join(", ")} agent(s). Run /rpiv-update-agents to sync.`;
 const msgAgentsErrors = (n: number) => `Agent sync reported ${n} error(s). Run /rpiv-update-agents for details.`;
-const msgMissingSiblings = (n: number, list: string) =>
-	`rpiv-pi requires ${n} sibling extension(s): ${list}. Run /rpiv-setup to install them.`;
+function msgMissingSiblings(pkgs: string[]): string {
+	const n = pkgs.length;
+	const title = `rpiv-pi: ${n} sibling extension${n === 1 ? "" : "s"} missing`;
+	const body = [...pkgs.map((p) => `• ${p}`), "", "Run /rpiv-setup to install them."];
+	const total = Math.max(title.length + 6, ...body.map((l) => l.length + 4));
+	const top = `╭─ ${title} ${"─".repeat(total - title.length - 5)}╮`;
+	const middle = body.map((l) => `│  ${l.padEnd(total - 4)}│`).join("\n");
+	const bottom = `╰${"─".repeat(total - 2)}╯`;
+	return `${top}\n${middle}\n${bottom}`;
+}
 
 type UI = { notify: (msg: string, sev: "info" | "warning" | "error") => void };
 
@@ -264,5 +272,5 @@ function notifyCleanup(ui: UI, result: CleanupResult): void {
 function warnMissingSiblings(ui: UI): void {
 	const missing = findMissingSiblings();
 	if (missing.length === 0) return;
-	ui.notify(msgMissingSiblings(missing.length, missing.map((m) => m.pkg.replace(/^npm:/, "")).join(", ")), "warning");
+	ui.notify(msgMissingSiblings(missing.map((m) => m.pkg.replace(/^npm:/, ""))), "warning");
 }
