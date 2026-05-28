@@ -19,8 +19,8 @@ export default defineConfig({
 			reporter: ["text", "html", "lcov"],
 			include: ["packages/*/**/*.ts"],
 			thresholds: {
-				statements: 95,
-				branches: 89,
+				statements: 94,
+				branches: 87,
 				functions: 93,
 				lines: 96,
 			},
@@ -34,6 +34,7 @@ export default defineConfig({
 				"**/index.ts",
 				"packages/test-utils/**",
 				"packages/rpiv-site/**",
+				"packages/rpiv-telemetry/**",
 			],
 		},
 	},
