@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Voice-activity detection now tries Silero VAD first and falls back to an energy-based gate when the device can't capture at 16 kHz.
+
+### Fixed
+- Built-in microphone capture no longer stalls on macOS devices that don't support a 16 kHz sample rate.
+
 ## [1.14.5] - 2026-05-28
 
 ## [1.14.4] - 2026-05-28
