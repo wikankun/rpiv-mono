@@ -38,6 +38,7 @@
 		"audio/mic-source.ts",
 		"audio/model-download.ts",
 		"audio/pcm.ts",
+		"audio/resampler.ts",
 		"audio/sherpa-onnx-node.d.ts",
 		"audio/stt-engine.ts",
 		"command/pipeline-runner.ts",
