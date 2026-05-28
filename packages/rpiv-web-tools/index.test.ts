@@ -3,7 +3,13 @@ import { dirname, join } from "node:path";
 import { createMockCtx, createMockPi, stubFetch } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, type vi } from "vitest";
 import registerWebTools from "./index.js";
-import { configureSearxng, SEARXNG_DEFAULT_URL, SEARXNG_PROVIDER_META, SearxngProvider } from "./providers/index.js";
+import {
+	clearCloneCache,
+	configureSearxng,
+	SEARXNG_DEFAULT_URL,
+	SEARXNG_PROVIDER_META,
+	SearxngProvider,
+} from "./providers/index.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-web-tools", "config.json");
 
@@ -19,6 +25,7 @@ function writeConfig(contents: unknown) {
 }
 
 beforeEach(() => {
+	clearCloneCache();
 	delete process.env.BRAVE_SEARCH_API_KEY;
 	delete process.env.TAVILY_API_KEY;
 	delete process.env.SERPER_API_KEY;
