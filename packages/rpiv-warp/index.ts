@@ -20,11 +20,20 @@ import { writeOSC777 } from "./warp-notify.js";
 // Module-level timer state — __resetState() clears for test isolation
 // ---------------------------------------------------------------------------
 
+interface PendingBlockingCall {
+	readonly toolName: string;
+	readonly input?: Record<string, unknown>;
+}
+
 let pendingQuery = "";
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
 let heartbeatMs = DEFAULT_HEARTBEAT_MS;
-const toolInputCapture = new Map<string, Record<string, unknown>>();
+// Outstanding blocking-tool calls keyed by toolCallId. Populated on `tool_call`,
+// drained on `tool_execution_end`. An ESC/abort during a blocking tool never
+// fires `tool_execution_end`, so entries linger here until `agent_end` drains
+// them — that drain is what clears Warp's stale "Blocked" badge.
+const pendingBlockingCalls = new Map<string, PendingBlockingCall>();
 
 export function __resetState(): void {
 	pendingQuery = "";
@@ -37,7 +46,7 @@ export function __resetState(): void {
 		heartbeatInterval = undefined;
 	}
 	heartbeatMs = DEFAULT_HEARTBEAT_MS;
-	toolInputCapture.clear();
+	pendingBlockingCalls.clear();
 }
 
 const TITLE = "warp://cli-agent";
@@ -83,16 +92,18 @@ function stopHeartbeat(): void {
 	}
 }
 
-function captureToolInput(toolCallId: string, input: unknown): void {
-	if (typeof input === "object" && input !== null) {
-		toolInputCapture.set(toolCallId, input as Record<string, unknown>);
-	}
+function asRecord(input: unknown): Record<string, unknown> | undefined {
+	return typeof input === "object" && input !== null ? (input as Record<string, unknown>) : undefined;
 }
 
-function consumeToolInput(toolCallId: string): Record<string, unknown> | undefined {
-	const input = toolInputCapture.get(toolCallId);
-	toolInputCapture.delete(toolCallId);
-	return input;
+function captureBlockingCall(toolCallId: string, toolName: string, input: unknown): void {
+	pendingBlockingCalls.set(toolCallId, { toolName, input: asRecord(input) });
+}
+
+function consumeBlockingCall(toolCallId: string): PendingBlockingCall | undefined {
+	const call = pendingBlockingCalls.get(toolCallId);
+	pendingBlockingCalls.delete(toolCallId);
+	return call;
 }
 
 function readBranch(ctx: ExtensionContext): SessionEntry[] {
@@ -131,6 +142,13 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
+		// ESC/abort during a blocking tool never fires `tool_execution_end`, so the
+		// "Blocked" badge would stay stale. Drain any outstanding blocking calls
+		// (emit `tool_complete` for each) to unblock before announcing the stop.
+		for (const [, call] of pendingBlockingCalls) {
+			emit(buildToolCompletePayload(ctx, call.toolName, call.input));
+		}
+		pendingBlockingCalls.clear();
 		emit(buildStopPayload(ctx, readBranch(ctx)));
 		stopSpinner();
 		stopHeartbeat(); // Item 4: stop heartbeat
@@ -139,7 +157,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!blockingTools.has(event.toolName)) return;
-		captureToolInput(event.toolCallId, event.input); // Item 6: capture input
+		captureBlockingCall(event.toolCallId, event.toolName, event.input); // Item 6: capture input
 		emit(buildQuestionAskedPayload(ctx));
 		stopSpinner();
 		stopHeartbeat(); // Item 4: pause heartbeat
@@ -147,8 +165,8 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_end", async (event, ctx) => {
 		if (!blockingTools.has(event.toolName)) return;
-		const toolInput = consumeToolInput(event.toolCallId); // Item 6: consume input
-		emit(buildToolCompletePayload(ctx, event.toolName, toolInput));
+		const pending = consumeBlockingCall(event.toolCallId); // Item 6: consume input
+		emit(buildToolCompletePayload(ctx, event.toolName, pending?.input));
 		startSpinner(titleSuffix(ctx));
 		startHeartbeat(ctx, heartbeatMs); // Item 4: resume heartbeat
 	});
@@ -157,7 +175,7 @@ export default function (pi: ExtensionAPI): void {
 		cancelIdleTimer();
 		stopHeartbeat();
 		pendingQuery = "";
-		toolInputCapture.clear();
+		pendingBlockingCalls.clear();
 		stopSpinner();
 	});
 }

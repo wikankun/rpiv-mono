@@ -18,7 +18,7 @@ vi.mock("node:fs", async () => {
 	};
 });
 
-import register from "./index.js";
+import register, { __resetState } from "./index.js";
 import { FRAME_INTERVAL_MS, __resetState as resetSpinner, SPINNER_FRAMES } from "./title-spinner.js";
 
 const WARP_ENV_VARS = ["TERM_PROGRAM", "WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"] as const;
@@ -617,5 +617,76 @@ describe("tool_input preview (Item 6)", () => {
 
 		const toolCompleteWrites = write.mock.calls.filter((c) => String(c[1]).includes("tool_complete"));
 		expect(toolCompleteWrites.length).toBe(0);
+	});
+});
+
+describe("blocking-tool abort (ESC) unblocks at agent_end", () => {
+	it("emits tool_complete from agent_end when a blocking tool_call was never resolved (ESC path)", async () => {
+		setWorkingWarpEnv();
+		const { write } = primeFs();
+		const { pi, captured } = createMockPi();
+		__resetState(); // isolate the pending-call map from prior tests
+		register(pi);
+
+		// Blocking tool asked → Warp badge goes Blocked.
+		await captured.events.get("tool_call")?.[0]?.(
+			{
+				toolName: "ask_user_question",
+				input: { questions: [{ question: "Continue?" }] },
+				toolCallId: "tc1",
+			} as never,
+			createMockCtx() as never,
+		);
+		// User presses ESC: tool_execution_end never fires — the agent loop just ends.
+		await captured.events.get("agent_end")?.[0]?.({ messages: [] } as never, createMockCtx() as never);
+
+		const toolCompleteWrites = write.mock.calls.filter((c) => String(c[1]).includes("tool_complete"));
+		expect(toolCompleteWrites.length).toBe(1); // the stale Blocked badge gets cleared
+		const json = String(toolCompleteWrites[0][1])
+			.replace(/^\x1b\]777;notify;warp:\/\/cli-agent;/, "")
+			.replace(/\x07$/, "");
+		const payload = JSON.parse(json);
+		expect(payload.event).toBe("tool_complete");
+		expect(payload.tool_name).toBe("ask_user_question");
+		expect(payload.tool_input).toEqual({ questions: [{ question: "Continue?" }] });
+	});
+
+	it("does not re-emit tool_complete on a second agent_end (pending map drained)", async () => {
+		setWorkingWarpEnv();
+		const { write } = primeFs();
+		const { pi, captured } = createMockPi();
+		__resetState();
+		register(pi);
+
+		await captured.events.get("tool_call")?.[0]?.(
+			{ toolName: "ask_user_question", input: {}, toolCallId: "tc1" } as never,
+			createMockCtx() as never,
+		);
+		await captured.events.get("agent_end")?.[0]?.({ messages: [] } as never, createMockCtx() as never);
+		await captured.events.get("agent_end")?.[0]?.({ messages: [] } as never, createMockCtx() as never);
+
+		const toolCompleteWrites = write.mock.calls.filter((c) => String(c[1]).includes("tool_complete"));
+		expect(toolCompleteWrites.length).toBe(1);
+	});
+
+	it("normal answer (tool_execution_end fires) does NOT double-emit at agent_end", async () => {
+		setWorkingWarpEnv();
+		const { write } = primeFs();
+		const { pi, captured } = createMockPi();
+		__resetState();
+		register(pi);
+
+		await captured.events.get("tool_call")?.[0]?.(
+			{ toolName: "ask_user_question", input: {}, toolCallId: "tc1" } as never,
+			createMockCtx() as never,
+		);
+		await captured.events.get("tool_execution_end")?.[0]?.(
+			{ toolCallId: "tc1", toolName: "ask_user_question", result: {}, isError: false } as never,
+			createMockCtx() as never,
+		);
+		await captured.events.get("agent_end")?.[0]?.({ messages: [] } as never, createMockCtx() as never);
+
+		const toolCompleteWrites = write.mock.calls.filter((c) => String(c[1]).includes("tool_complete"));
+		expect(toolCompleteWrites.length).toBe(1); // only the real completion, not a duplicate from agent_end
 	});
 });
