@@ -44,18 +44,19 @@ interface AdvisorDetails {
 }
 
 // Single result-envelope builder — every executeAdvisor branch and the pre-call
-// error paths funnel through here. Reads `effort` once; includes a `details` key
-// only when its input is provided so the no-model envelope omits `advisorModel`
-// (advisor.errorresult.test.ts). Reading effort fresh via getAdvisorEffort()
-// matches the pre-existing buildErrorResult behaviour.
+// error paths funnel through here. `effort` is snapshotted once at executeAdvisor
+// entry and threaded through every call so the returned details.effort always
+// matches the value sent as `reasoning` to completeSimple, even if module-level
+// state is mutated during the await window.
 function buildAdvisorResult(opts: {
 	text: string;
+	effort: ThinkingLevel | undefined;
 	advisorLabel?: string;
 	usage?: Usage;
 	stopReason?: StopReason;
 	errorMessage?: string;
 }): AgentToolResult<AdvisorDetails> {
-	const details: AdvisorDetails = { effort: getAdvisorEffort() };
+	const details: AdvisorDetails = { effort: opts.effort };
 	if (opts.advisorLabel !== undefined) details.advisorModel = opts.advisorLabel;
 	if (opts.usage !== undefined) details.usage = opts.usage;
 	if (opts.stopReason !== undefined) details.stopReason = opts.stopReason;
@@ -65,10 +66,11 @@ function buildAdvisorResult(opts: {
 
 function buildErrorResult(
 	advisorLabel: string | undefined,
+	effort: ThinkingLevel | undefined,
 	userText: string,
 	errorMessage: string,
 ): AgentToolResult<AdvisorDetails> {
-	return buildAdvisorResult({ text: userText, advisorLabel, errorMessage });
+	return buildAdvisorResult({ text: userText, effort, advisorLabel, errorMessage });
 }
 
 export async function executeAdvisor(
@@ -77,19 +79,22 @@ export async function executeAdvisor(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<AdvisorDetails> | undefined,
 ): Promise<AgentToolResult<AdvisorDetails>> {
+	// Snapshot effort once at entry — every result envelope and the API call
+	// itself use this same value so a concurrent setAdvisorEffort() during the
+	// await window cannot desync details.effort from the `reasoning` actually sent.
+	const effort = getAdvisorEffort();
 	const advisor = getAdvisorModel();
 	if (!advisor) {
-		return buildErrorResult(undefined, ERR_NO_MODEL, ERR_NO_MODEL_SELECTED);
+		return buildErrorResult(undefined, effort, ERR_NO_MODEL, ERR_NO_MODEL_SELECTED);
 	}
 	const advisorLabel = `${advisor.provider}:${advisor.id}`;
-	const effort = getAdvisorEffort();
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(advisor);
 	if (!auth.ok) {
-		return buildErrorResult(advisorLabel, errMisconfigured(advisorLabel, auth.error), auth.error);
+		return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, auth.error), auth.error);
 	}
 	if (!auth.apiKey) {
-		return buildErrorResult(advisorLabel, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
 	}
 
 	// Live-read every call — advisor runs mid-turn so any message_end snapshot
@@ -123,6 +128,7 @@ export async function executeAdvisor(
 		if (response.stopReason === "aborted") {
 			return buildAdvisorResult({
 				text: ERR_CALL_ABORTED,
+				effort,
 				advisorLabel,
 				usage: response.usage,
 				stopReason: response.stopReason,
@@ -133,6 +139,7 @@ export async function executeAdvisor(
 		if (response.stopReason === "error") {
 			return buildAdvisorResult({
 				text: errCallFailed(response.errorMessage),
+				effort,
 				advisorLabel,
 				usage: response.usage,
 				stopReason: response.stopReason,
@@ -149,6 +156,7 @@ export async function executeAdvisor(
 		if (!advisorText) {
 			return buildAdvisorResult({
 				text: ERR_EMPTY_RESPONSE,
+				effort,
 				advisorLabel,
 				usage: response.usage,
 				stopReason: response.stopReason,
@@ -158,12 +166,13 @@ export async function executeAdvisor(
 
 		return buildAdvisorResult({
 			text: advisorText,
+			effort,
 			advisorLabel,
 			usage: response.usage,
 			stopReason: response.stopReason,
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		return buildErrorResult(advisorLabel, errCallThrew(message), message);
+		return buildErrorResult(advisorLabel, effort, errCallThrew(message), message);
 	}
 }
