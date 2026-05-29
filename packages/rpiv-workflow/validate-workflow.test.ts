@@ -14,6 +14,7 @@ import {
 	defineWorkflow,
 	type EdgeFn,
 	gate,
+	type IterateFn,
 	type ProducesScriptFn,
 	produces as producesRaw,
 	type ScriptContext,
@@ -508,6 +509,53 @@ describe("validateWorkflow — script stage invariants", () => {
 			edges: { do: "cleanup", cleanup: "stop" },
 		});
 		expect(validateWorkflow(w)).toEqual([]);
+	});
+});
+
+describe("validateWorkflow — iterate invariants", () => {
+	const iter: IterateFn = () => null;
+	const namedOutcome = { name: "plans", collector: noopCollector };
+	const noopActsScript: ActsScriptFn = (_ctx: ScriptContext) => {};
+
+	const wf = (stage: StageDef): Workflow => ({
+		name: "iterating",
+		start: "s",
+		stages: { s: stage },
+		edges: { s: "stop" },
+	});
+
+	it("accepts a well-formed iterate stage (produces + named outcome + fresh)", () => {
+		const w = wf({ kind: "produces", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter });
+		expect(errors(w)).toEqual([]);
+	});
+
+	it("rejects iterate alongside fanout (mutually exclusive)", () => {
+		const e = errors(
+			wf({ kind: "produces", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter, fanout: () => [] }),
+		);
+		expect(e.some((i) => /iterate and fanout are mutually exclusive/.test(i.message))).toBe(true);
+	});
+
+	it("rejects iterate on a script stage (run set)", () => {
+		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopActsScript, iterate: iter }));
+		expect(e.some((i) => /script stages cannot iterate/.test(i.message))).toBe(true);
+	});
+
+	it('rejects iterate with sessionPolicy: "continue"', () => {
+		const e = errors(wf({ kind: "produces", sessionPolicy: "continue", outcome: namedOutcome, iterate: iter }));
+		expect(e.some((i) => /cannot combine iterate with sessionPolicy "continue"/.test(i.message))).toBe(true);
+	});
+
+	it('rejects iterate on a non-produces stage (kind: "side-effect")', () => {
+		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter }));
+		expect(e.some((i) => /iterate requires kind "produces"/.test(i.message))).toBe(true);
+	});
+
+	it("rejects iterate when the outcome has no name", () => {
+		const e = errors(
+			wf({ kind: "produces", sessionPolicy: "fresh", outcome: { collector: noopCollector }, iterate: iter }),
+		);
+		expect(e.some((i) => /iterate requires an `outcome` with a `name`/.test(i.message))).toBe(true);
 	});
 });
 
