@@ -11,6 +11,7 @@ Complete reference for the `@juicesharp/rpiv-workflow` authoring DSL. A workflow
   - [acts](#acts)
   - [terminal](#terminal)
   - [Script stages](#script-stages)
+  - [Prompt stages (raw-text dispatch)](#prompt-stages-raw-text-dispatch)
 - [Edge targets](#edge-targets)
 - [Conditional routing](#conditional-routing)
   - [gate](#gate)
@@ -254,6 +255,63 @@ const notifySlack = terminal.script({
 - Cannot declare `skill`, `outcome`, `fanout`, `iterate`, or `sessionPolicy: "continue"` — load-time validation rejects the combination.
 - `produces.script` may declare `outputSchema`, `maxRetries`, `onInvalid`.
 - `acts.script` / `terminal.script` may declare `inputSchema`.
+
+### Prompt stages (raw-text dispatch)
+
+A stage has three **dispatch** options — orthogonal to its `kind`:
+
+| Dispatch | What runs | Set via |
+|----------|-----------|---------|
+| **skill** (default) | `/skill:<name> <args>` — the full skill body | nothing (or `skill:`) |
+| **script** | a pure TS function, no model call | `run:` |
+| **prompt** | raw text sent straight to the model — a "chat turn" | `prompt:` |
+
+A `prompt` stage sends author-owned text as the user message — no `/skill:`
+prefix, no implicit upstream-artifact arg appended. Use it for a focused,
+one-off instruction that doesn't warrant a whole skill:
+
+```typescript
+// side-effect chat turn (no artifact collected)
+acts({ prompt: "Implement the design spec discussed above.", sessionPolicy: "continue" })
+
+// produces chat turn — its reply runs the outcome collector like any produces stage
+produces({ prompt: "Write a one-paragraph summary to .rpiv/artifacts/summary/s.md", outcome: myOutcome })
+
+// dynamic — weave in the upstream Output (same ScriptContext script stages get)
+produces({
+  prompt: ({ input }) => `Refine ${handleToString(input!.artifacts[0]!.handle)} for clarity.`,
+  outcome: myOutcome,
+})
+```
+
+**The killer use — the continue follow-up turn.** With `sessionPolicy: "continue"`,
+a prompt stage sends a follow-up into a session a prior stage already populated,
+*without re-invoking a skill*. This is the only way to build on a stage whose
+output is conversation-only (e.g. a `frontend-design` pass that emits no
+artifact): the downstream `implement` step leans on the shared context.
+
+```typescript
+stages: {
+  discover:  produces({ outcome: rpivBucketOutcome("research") }),          // fresh, writes a spec
+  design:    acts({ skill: "frontend-design", sessionPolicy: "continue" }), // same session, no artifact
+  implement: acts({ prompt: "Implement the design spec.", sessionPolicy: "continue" }),
+}
+```
+
+**Constraints (load + preflight):**
+- Mutually exclusive with an explicit `skill`, with `run`, with `reads`, and —
+  in v1 — with `fanout`/`iterate`. (Read `state.named` from the `PromptFn` itself
+  instead of `reads`.)
+- `produces` + `prompt` still requires an `outcome`. `side-effect` + `prompt` is
+  a pure chat turn.
+- A prompt stage skips the skill-registry check (no skill to register) and the
+  upstream-artifact check (it owns its whole message).
+- A `continue` prompt stage as the workflow **start** warns — there is no prior
+  session to continue.
+
+> **When NOT to use it.** Prompt text in a workflow definition isn't versioned,
+> localized, or independently testable the way a `SKILL.md` is. Keep prompt
+> stages short and glue-like; anything reusable belongs in a skill.
 
 ## Edge targets
 
@@ -687,6 +745,7 @@ Generated workflows must pass `validateWorkflow()` before writing. The validator
 - Every `reads:` name is published by some `produces` stage in the workflow (publish key = `outcome.name ?? stage.<record-key>`)
 - Fanout is incompatible with `sessionPolicy: "continue"`
 - Iterate requires `kind: "produces"` + an `outcome` with a `name`; it is mutually exclusive with `fanout` and `run`, and incompatible with `sessionPolicy: "continue"`
-- Script stages cannot declare `skill`, `outcome`, `fanout`, `iterate`, or `sessionPolicy: "continue"`
+- Prompt stages cannot also set `skill`, `run`, `reads`, `fanout`, or `iterate`; a `produces` prompt stage still needs an `outcome`; an empty prompt string is rejected
+- Script stages cannot declare `skill`, `outcome`, `fanout`, `iterate`, `prompt`, or `sessionPolicy: "continue"`
 
 > **Important:** The `/wf` command blocks execution on any `severity: "error"` issue. Always validate before writing.
