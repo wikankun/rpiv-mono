@@ -407,6 +407,18 @@ describe("/advisor — blocked executor notification", () => {
 		}
 	});
 
+	it("strips advisor from active tools when /advisor runs with executor blocked and tool already active", async () => {
+		vi.mocked(showAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+		setDisabledForModels(["anthropic:sonnet"]);
+		const { pi, captured } = register();
+		pi.setActiveTools([ADVISOR_TOOL_NAME, "other"]);
+		vi.mocked(pi.setActiveTools).mockClear();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA], model: modelBlocked });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["other"]);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("inactive for current executor"), "info");
+	});
+
 	it("shows enabled notification without inactive qualifier when executor is not blocked", async () => {
 		vi.mocked(showAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
 		const { captured } = register();
