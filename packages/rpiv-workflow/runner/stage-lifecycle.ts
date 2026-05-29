@@ -9,7 +9,7 @@
  * catches `StagePreflightError` and records the JSONL row.
  */
 
-import type { StageDef } from "../api.js";
+import type { PromptFn, StageDef } from "../api.js";
 import { notifyPartialArtifacts, recordTerminalFailure } from "../audit.js";
 import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
@@ -105,6 +105,18 @@ function buildPrompt(skill: string, inputForStage: string): string {
 }
 
 /**
+ * Resolve a `prompt`-dispatch stage's text. The whole user message is
+ * author-owned — no `/skill:` prefix, no implicit arg. The dynamic form gets
+ * the same `ScriptContext` script stages get, so it can weave in the upstream
+ * `Output` (`run.state.output`) or `state.named`. A throw here propagates to
+ * `runStageOrRecordFailure`, which records a terminal failure for the stage.
+ */
+async function resolvePrompt(prompt: string | PromptFn, run: RunContext): Promise<string> {
+	if (typeof prompt === "string") return prompt;
+	return prompt({ cwd: run.cwd, input: run.state.output, state: run.state });
+}
+
+/**
  * The arg string the stage's `/skill:<name> <args>` prompt carries. Four
  * cases (checked in order):
  *   1. The start stage always receives `originalInput` (the user's brief).
@@ -194,7 +206,15 @@ export async function runStage(curCtx: RunnerCtx, currentName: string, idx: numb
 
 	for (const check of PRE_PROMPT_CHECKS) await check.run(stage, run);
 
-	const prompt = buildPrompt(stage.skill, inputForStage(stage, run));
+	// Dispatch: a `prompt` stage sends author-owned raw text; a skill stage
+	// sends `/skill:<name> <inputForStage>`. `stage.skill` already equals the
+	// record key for a prompt stage (it cannot set an explicit skill — load
+	// validation forbids it), so the status/session/audit labels are correct
+	// for both without a separate label.
+	const prompt =
+		stage.def.prompt !== undefined
+			? await resolvePrompt(stage.def.prompt, run)
+			: buildPrompt(stage.skill, inputForStage(stage, run));
 	curCtx.ui.setStatus(STATUS_KEY, STATUS_STAGE(stage.stageNumber, run.totalStages, stage.skill));
 	const branchOffset = computeBranchOffset(curCtx, stage.def);
 
@@ -365,6 +385,9 @@ async function haltIterations(curCtx: RunnerCtx, run: RunContext, stageName: str
  * surface).
  */
 function ensureSkillRegistered(stage: ResolvedStage, run: RunContext): void {
+	// A prompt stage dispatches raw text, not /skill:<name> — there is no skill
+	// to verify. (Mirrors how the script-stage path skips this check entirely.)
+	if (stage.def.prompt !== undefined) return;
 	if (!run.registeredSkills) return;
 	if (run.registeredSkills.has(stage.skill)) return;
 
@@ -393,6 +416,10 @@ function ensureUpstreamArtifact(stage: ResolvedStage, run: RunContext): void {
 	if (stage.name === run.workflow.start) return;
 	if (stage.def.inheritsArtifacts === false) return;
 	if (stage.def.reads?.length) return;
+	// A prompt stage builds its own text and never consumes the rolling primary
+	// as an arg, so it doesn't require an upstream artifact (a continue chat
+	// turn typically leans on session context, not a handle).
+	if (stage.def.prompt !== undefined) return;
 	if (currentPrimaryArtifact(run.state)) return;
 	throw new StagePreflightError(
 		"halt",

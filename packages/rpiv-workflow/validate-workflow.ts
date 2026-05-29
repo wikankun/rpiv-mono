@@ -183,6 +183,7 @@ function checkStageSemantics(w: Workflow, issues: WorkflowValidationIssue[]): vo
 		checkStageEnums(w, name, stage, issues);
 		checkFanoutContinueInvariant(w, name, stage, issues);
 		checkIterateInvariants(w, name, stage, issues);
+		checkPromptInvariants(w, name, stage, issues);
 		checkInheritsArtifactsKind(w, name, stage, issues);
 		checkScriptStageInvariants(w, name, stage, issues);
 	}
@@ -324,6 +325,75 @@ function checkIterateInvariants(w: Workflow, name: string, stage: StageDef, issu
 }
 
 /**
+ * `prompt` is the raw-text dispatch — the third option alongside skill
+ * (`/skill:<name>`) and script `run`. Its invariants keep the dispatch
+ * discriminator unambiguous and the input model single:
+ *
+ *   - mutually exclusive with an explicit `skill` (you're either invoking a
+ *     skill or sending raw text — `skill` defaulting to the record key does
+ *     NOT trip this, only an explicitly-set `skill`);
+ *   - mutually exclusive with `fanout`/`iterate` in v1 (chat fan-out is a
+ *     deferred composition — see the design's §3 non-goals);
+ *   - mutually exclusive with `reads` — a skill stage's `reads` auto-builds a
+ *     labelled-flag arg, but a prompt stage's text is author-owned; rather than
+ *     give `reads` two meanings, require the prompt to read `state.named`
+ *     itself via its `PromptFn`;
+ *   - a literal empty/whitespace string is a no-op dispatch → author error.
+ *
+ * (`prompt` + `run` is reported by checkScriptStageInvariants, mirroring
+ * fanout/iterate + run. `produces` + `prompt` with no `outcome` is already
+ * caught by the produces-requires-outcome rule — `prompt`, unlike `run`, is not
+ * carved out of it.)
+ *
+ * A `continue` prompt stage used as the workflow START gets a WARNING: a
+ * follow-up turn with no prior context to lean on is almost certainly an
+ * authoring mistake (the continue session would have nothing to continue).
+ */
+function checkPromptInvariants(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
+	if (stage.prompt === undefined) return;
+	if (stage.skill !== undefined) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": a prompt stage cannot also set \`skill\` — it dispatches raw text, not /skill:<skill>`,
+			),
+		);
+	}
+	if (stage.fanout) {
+		issues.push(
+			error(w.name, name, `stage "${name}": prompt and fanout are mutually exclusive (chat fan-out is deferred)`),
+		);
+	}
+	if (stage.iterate) {
+		issues.push(
+			error(w.name, name, `stage "${name}": prompt and iterate are mutually exclusive (chat iterate is deferred)`),
+		);
+	}
+	if (stage.reads?.length) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": a prompt stage cannot set \`reads\` — read state.named from the PromptFn instead`,
+			),
+		);
+	}
+	if (typeof stage.prompt === "string" && stage.prompt.trim() === "") {
+		issues.push(error(w.name, name, `stage "${name}": prompt is an empty string — nothing would be dispatched`));
+	}
+	if (stage.sessionPolicy === "continue" && name === w.start) {
+		issues.push(
+			warning(
+				w.name,
+				name,
+				`stage "${name}": a continue prompt stage is the workflow start — there is no prior session to continue; it will open a fresh one`,
+			),
+		);
+	}
+}
+
+/**
  * `inheritsArtifacts: false` is the `terminal()` factory's mechanism — it
  * tells the runner to bypass upstream-artifact inheritance for a
  * side-effect stage. Setting it on a `produces` stage is meaningless: a
@@ -405,6 +475,11 @@ function checkScriptStageInvariants(
 	if (stage.iterate) {
 		issues.push(
 			error(w.name, name, `stage "${name}": script stages cannot iterate — write a loop inside run() instead`),
+		);
+	}
+	if (stage.prompt !== undefined) {
+		issues.push(
+			error(w.name, name, `stage "${name}": script stages cannot set a raw prompt — the run function IS the work`),
 		);
 	}
 	if (stage.sessionPolicy === "continue") {
