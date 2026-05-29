@@ -738,3 +738,48 @@ describe("polish workflow", () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// design-to-code — the prompt-dispatch worked example. NOT registered in
+// builtInWorkflows: it names `frontend-design` (a separate plugin skill, not
+// bundled by rpiv-pi) and rides the unexercised continue path. Kept here as a
+// validated example proving the spec's three-dispatch chain is well-formed.
+// ---------------------------------------------------------------------------
+
+describe("design-to-code example (prompt dispatch)", () => {
+	const designToCode = defineWorkflow({
+		name: "design-to-code",
+		description: "Discover a spec, design in the same session, then implement from conversation context.",
+		start: "discover",
+		stages: {
+			// skill dispatch, fresh — writes a spec artifact, opens the session
+			discover: produces({ outcome: rpivArtifactMdOutcome }),
+			// skill dispatch, continue — reasons in-session, produces no tracked artifact
+			design: acts({ skill: "frontend-design", sessionPolicy: "continue" }),
+			// prompt dispatch, continue — a focused instruction leaning on context
+			implement: acts({ prompt: "Implement the design spec discussed above.", sessionPolicy: "continue" }),
+		},
+		edges: { discover: "design", design: "implement", implement: "stop" },
+	});
+
+	it("validates with zero errors and zero warnings", () => {
+		expect(validateWorkflow(designToCode)).toEqual([]);
+	});
+
+	it("all stages are reachable from start", () => {
+		expect(validateWorkflow(designToCode).filter((i) => /unreachable/.test(i.message))).toEqual([]);
+	});
+
+	it("resolves all three dispatch types in one chain", () => {
+		// discover → skill dispatch (no prompt, no run)
+		expect(designToCode.stages.discover?.prompt).toBeUndefined();
+		expect(designToCode.stages.discover?.run).toBeUndefined();
+		// design → skill dispatch in a continued session
+		expect(designToCode.stages.design?.skill).toBe("frontend-design");
+		expect(designToCode.stages.design?.sessionPolicy).toBe("continue");
+		// implement → prompt dispatch in a continued session
+		expect(typeof designToCode.stages.implement?.prompt).toBe("string");
+		expect(designToCode.stages.implement?.sessionPolicy).toBe("continue");
+		expect(designToCode.stages.implement?.skill).toBeUndefined();
+	});
+});
