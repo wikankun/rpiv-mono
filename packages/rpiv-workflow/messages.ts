@@ -17,6 +17,14 @@ export const STATUS_STAGE = (stage: number, total: number, skill: string) => `rp
 export const STATUS_FANOUT_UNIT = (stage: number, total: number, skill: string, label: string) =>
 	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
 
+/**
+ * Status line for an iterate unit. Same shape as `STATUS_FANOUT_UNIT` — the
+ * status denominator is the reachable-stage count, so the stage number repeats
+ * across units and `label` (e.g. `"phase 2/3 — Vocabulary"`) disambiguates.
+ */
+export const STATUS_ITERATE_UNIT = (stage: number, total: number, skill: string, label: string) =>
+	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
+
 export const MSG_STAGE_COMPLETE = (skill: string) => `✓ ${skill} completed`;
 export const MSG_STAGE_FAILED = (skill: string) => `✗ ${skill} failed — stopping workflow`;
 export const MSG_STAGE_ABORTED = (skill: string) => `⏸ ${skill} aborted (ESC) — stopping workflow`;
@@ -90,6 +98,27 @@ export const MSG_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
 
 export const ERR_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
 	`Backward-jump limit exceeded: ${jumps} backward jumps (max ${max})`;
+
+/**
+ * An `iterate` stage's generator kept returning units past the run-wide
+ * `maxIterations` safety cap (the backstop for a generator that never returns
+ * `null`). Stops the stage with a terminal failure, mirroring the
+ * backward-jump guard.
+ */
+export const MSG_ITERATIONS_EXHAUSTED = (count: number, max: number) =>
+	`rpiv: iterate limit exceeded (${count}/${max}) — stopping workflow to prevent an unbounded generator`;
+
+export const ERR_ITERATIONS_EXHAUSTED = (count: number, max: number) =>
+	`Iterate limit exceeded: generator produced ${count} units (max ${max})`;
+
+/**
+ * An `iterate` stage's generator returned null on its FIRST call — the stage
+ * produced zero units. Not an error (a legitimately empty input is valid), but
+ * the stage published nothing and left the primary artifact untouched, so warn
+ * the author rather than silently advancing.
+ */
+export const MSG_ITERATE_ZERO_UNITS = (skill: string) =>
+	`rpiv: ${skill} iterate produced zero units — nothing published, advancing`;
 
 export const MSG_AUDIT_WRITE_FAILED = (skill: string) =>
 	`✗ ${skill} completed but audit row could not be written — stopping workflow`;

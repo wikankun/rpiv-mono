@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- New `iterate` stage mode — the sequential, accumulating dual of `fanout`. A `produces` stage with `iterate: IterateFn` pulls units one at a time, feeding each generator call the validated outputs of all prior units in the stage; each unit runs the stage's `outcome` collector and accumulates into `state.named[outcome.name]`. Validated at load + preflight (requires `kind: "produces"` + a named `outcome`; mutually exclusive with `fanout`/`run`; incompatible with `sessionPolicy: "continue"`). Backstopped by a run-wide `maxIterations` cap (default 32, configurable via `RunWorkflowOptions.maxIterations`). New exports: `IterateFn`, `IterateContext`, `IterateUnit`. See the authoring guide's "iterate (sequential accumulation)" section.
+
 ## [1.15.0] - 2026-05-28
 
 ## [1.14.7] - 2026-05-28

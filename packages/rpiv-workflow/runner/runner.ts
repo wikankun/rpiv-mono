@@ -51,6 +51,14 @@ import { runStage, StagePreflightError } from "./stage-lifecycle.js";
  */
 export const MAX_BACKWARD_JUMPS = 2;
 
+/**
+ * Run-wide safety cap on `iterate`-stage units — the backstop for a generator
+ * that never returns `null`. Mirrors rpiv-pi's `MAX_PHASES` (the convention
+ * cap a fanout author would self-impose); 32 is comfortably above any
+ * realistic per-stage unit count while still halting a runaway loop.
+ */
+export const MAX_ITERATIONS = 32;
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -64,6 +72,8 @@ export interface RunWorkflowOptions {
 	host?: WorkflowHost;
 	/** Defaults to MAX_BACKWARD_JUMPS. */
 	maxBackwardJumps?: number;
+	/** Run-wide safety cap on iterate-stage units. Defaults to MAX_ITERATIONS. */
+	maxIterations?: number;
 	/**
 	 * What triggered this run. `/wf` sets `{ kind: "command", name: "wf" }`;
 	 * programmatic embedders default to `DEFAULT_TRIGGER`. Recorded in the
@@ -175,6 +185,7 @@ export async function runWorkflow(ctx: WorkflowContext, options: RunWorkflowOpti
 	};
 
 	const maxBackwardJumps = options.maxBackwardJumps ?? MAX_BACKWARD_JUMPS;
+	const maxIterations = options.maxIterations ?? MAX_ITERATIONS;
 	const lifecycle = new LifecycleDispatcher(options.lifecycle);
 
 	// Snapshot the skill registry BEFORE any stage opens a fresh session.
@@ -194,6 +205,7 @@ export async function runWorkflow(ctx: WorkflowContext, options: RunWorkflowOpti
 		registeredSkills,
 		continueHost: options.host,
 		maxBackwardJumps,
+		maxIterations,
 		trigger,
 		lifecycle,
 	};

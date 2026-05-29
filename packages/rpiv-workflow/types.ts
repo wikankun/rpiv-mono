@@ -151,6 +151,14 @@ export interface RunContext {
 	 */
 	continueHost?: WorkflowHost;
 	maxBackwardJumps: number;
+	/**
+	 * Run-wide safety cap on `iterate`-stage units. The generator is
+	 * loop-terminated (returns `null`), not array-bounded like `fanout`, so the
+	 * runner backstops a runaway generator: when `accumulated.length` reaches
+	 * this, the stage halts with a terminal failure. Defaults to
+	 * `MAX_ITERATIONS`.
+	 */
+	maxIterations: number;
 	/** What triggered the run; defaulted at `runWorkflow` entry. */
 	trigger: RunTrigger;
 	/** Lifecycle event dispatcher — see `lifecycle.ts`. Threaded by reference. */

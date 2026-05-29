@@ -10,18 +10,21 @@
  */
 
 import type { StageDef } from "../api.js";
-import { notifyPartialArtifacts } from "../audit.js";
+import { notifyPartialArtifacts, recordTerminalFailure } from "../audit.js";
 import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
 import { currentPrimaryArtifact, withTimeout } from "../internal-utils.js";
+import { runIterate } from "../iterate.js";
 import { skillStageRef } from "../lifecycle.js";
 import {
 	ERR_INPUT_VALIDATION_FAILED,
+	ERR_ITERATIONS_EXHAUSTED,
 	ERR_MISSING_ARTIFACT,
 	ERR_MISSING_NAMED_READ,
 	ERR_SCHEMA_TIMEOUT,
 	ERR_SKILL_NOT_REGISTERED,
 	MSG_INPUT_VALIDATION_FAILED,
+	MSG_ITERATIONS_EXHAUSTED,
 	MSG_MISSING_ARTIFACT,
 	MSG_MISSING_NAMED_READ,
 	MSG_SKILL_NOT_REGISTERED,
@@ -153,6 +156,9 @@ function formatNamedInputs(names: ReadonlyArray<string>, run: RunContext): strin
  *   1. tryFanout                 — shortcut: the stage's FanoutFn returned
  *                                  units, runner ran them; subsequent
  *                                  slots skipped for this stage.
+ *   1b. tryIterate              — shortcut: the stage's IterateFn pulls units
+ *                                  sequentially (each a produces pass);
+ *                                  subsequent slots skipped for this stage.
  *   2. PRE_PROMPT_CHECKS         — preflights that don't need prompt prep.
  *      a. ensureUpstreamArtifact — halt: missing inherited artifact.
  *      b. enforceSessionInvariants — invariant: authoring-time-knowable
@@ -172,6 +178,7 @@ export async function runStage(curCtx: RunnerCtx, currentName: string, idx: numb
 	const stage = resolveStage(currentName, idx, run);
 
 	if (await tryFanout(curCtx, stage, idx, run)) return;
+	if (await tryIterate(curCtx, stage, idx, run)) return;
 
 	// Script stages (`stage.def.run` set) skip the entire skill pipeline —
 	// no `/skill:<name>` prompt to build, no skill-registry check, no
@@ -262,6 +269,77 @@ async function tryFanout(curCtx: RunnerCtx, stage: ResolvedStage, idx: number, r
 		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
 	});
 	return true;
+}
+
+/**
+ * A stage that opts into iteration via `StageDef.iterate` expands into one Pi
+ * session per unit pulled from the user's `IterateFn` — the sequential,
+ * accumulating dual of fanout. Unlike fanout, each unit runs the stage's
+ * `outcome` collector (it reuses `runStageSession`), so units accumulate into
+ * `state.named[outcome.name]` and roll the primary artifact forward. Returns
+ * true iff this is an iterate stage (always — even a zero-unit no-op handles
+ * its own chain advance inside `runIterate`), so the caller returns without
+ * running the single-stage path.
+ *
+ * `onStageStart` fires here, ONCE, matching the "stage expands to N units"
+ * mental model; `onStageEnd` fires per unit via `recordStageSuccess`. The
+ * stage-entry primary is frozen and threaded as `entryArtifact` so the
+ * generator keeps seeing its true source even as the rolling primary advances.
+ */
+async function tryIterate(curCtx: RunnerCtx, stage: ResolvedStage, idx: number, run: RunContext): Promise<boolean> {
+	if (!stage.def.iterate) return false;
+	// Runtime mirror of the load-time invariant — defense-in-depth for embedders
+	// that bypass validateWorkflow. iterate dispatches via runStageSession, which
+	// honors sessionPolicy; a "continue" policy would replay the prior unit's
+	// branch into the next unit's session, so reject before any dispatch. (This
+	// lives here, not in enforceSessionInvariants, because the iterate shortcut
+	// returns before PRE_PROMPT_CHECKS run.)
+	if (stage.def.sessionPolicy === "continue") {
+		const reason =
+			`runStage: stage "${stage.name}" cannot combine iterate with sessionPolicy "continue" — ` +
+			"each unit requires an isolated session";
+		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
+	}
+	const entryArtifact = currentPrimaryArtifact(run.state); // frozen for the whole loop
+	await run.lifecycle.fire(
+		curCtx,
+		"onStageStart",
+		skillStageRef(stage.name, stage.stageNumber, stage.skill),
+		lifecycleCtxFor(run),
+	);
+	await runIterate(curCtx, idx, stage.name, stage.skill, stage.def, entryArtifact, [], run, {
+		runStageSession,
+		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
+		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
+		haltIterations,
+	});
+	return true;
+}
+
+/**
+ * Record the terminal failure when an iterate stage's generator blows past the
+ * run-wide `maxIterations` cap. Mirrors `checkBackwardJumpGuard`'s terminal
+ * path (chain-advance.ts): attribution targets the iterate node's real name.
+ */
+async function haltIterations(curCtx: RunnerCtx, run: RunContext, stageName: string, count: number): Promise<void> {
+	await recordTerminalFailure(
+		curCtx,
+		{
+			cwd: run.cwd,
+			runId: run.runId,
+			state: run.state,
+			stageName,
+			skill: stageName,
+			lifecycle: run.lifecycle,
+			runIdentity: { workflow: run.workflow.name, totalStages: run.totalStages, trigger: run.trigger },
+		},
+		{
+			status: "failed",
+			notifyMsg: MSG_ITERATIONS_EXHAUSTED(count, run.maxIterations),
+			notifyLevel: "error",
+			errMsg: ERR_ITERATIONS_EXHAUSTED(count, run.maxIterations),
+		},
+	);
 }
 
 /**

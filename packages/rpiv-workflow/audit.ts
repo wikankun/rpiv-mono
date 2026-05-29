@@ -57,6 +57,18 @@ export type AuditCtx = Pick<
 export const fanoutRowStage = (s: FanoutSession): string => `${s.stageName} (${s.id ?? s.label})`;
 
 /**
+ * JSONL `WorkflowStage.stage` value for iterate-unit rows. Same projection as
+ * `fanoutRowStage` — the parent stage's record key suffixed with the unit's
+ * `id ?? label` (e.g. `"blueprint (phase-2)"`) so post-hoc readers can tell
+ * the accumulated units apart. Takes the decorated parts directly (rather than
+ * a session) because the iterate executor synthesizes the `StageSession` after
+ * building this label. Decoration is SAFE for named keying: iterate mandates
+ * `outcome.name`, so `resolvePublishName` ignores the decorated `stageName`
+ * and every unit publishes to the same `state.named` slot.
+ */
+export const iterateRowStage = (stageName: string, tag: string): string => `${stageName} (${tag})`;
+
+/**
  * Allocates the next `stageNumber`, attempts the append, and returns the
  * assigned number on success (or undefined on I/O failure). `lastAllocatedStageNumber`
  * advances monotonically — once per call — so a transient failure doesn't
