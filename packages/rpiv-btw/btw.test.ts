@@ -139,8 +139,9 @@ describe("executeBtw — ok path", () => {
 		vi.mocked(completeSimple).mockResolvedValueOnce(makeCompletionResponse({ text: "answer text" }) as never);
 		const r = await executeBtw("question", ctx, new AbortController());
 		expect(r.ok).toBe(true);
+		if (!r.ok) throw new Error("unexpected");
 		expect(r.answer).toBe("answer text");
-		expect(r.userMessage?.content).toEqual([{ type: "text", text: "question" }]);
+		expect(r.userMessage.content).toEqual([{ type: "text", text: "question" }]);
 		expect(r.assistantMessage).toBeDefined();
 	});
 });
@@ -161,6 +162,7 @@ describe("executeBtw — error branches", () => {
 		} as never;
 		const r = await executeBtw("q", ctx, new AbortController());
 		expect(r.ok).toBe(false);
+		if (r.ok || "aborted" in r) throw new Error("unexpected");
 		expect(r.error).toContain("misconfigured");
 		expect(r.error).toContain("bad creds");
 	});
@@ -173,6 +175,7 @@ describe("executeBtw — error branches", () => {
 		} as never;
 		const r = await executeBtw("q", ctx, new AbortController());
 		expect(r.ok).toBe(false);
+		if (r.ok || "aborted" in r) throw new Error("unexpected");
 		expect(r.error).toContain("no API key");
 	});
 	it("returns aborted when stopReason=aborted", async () => {
@@ -190,6 +193,7 @@ describe("executeBtw — error branches", () => {
 		);
 		const r = await executeBtw("q", ctx, new AbortController());
 		expect(r.ok).toBe(false);
+		if (r.ok || "aborted" in r) throw new Error("unexpected");
 		expect(r.error).toContain("remote 500");
 	});
 	it("returns error when response has no text content", async () => {
@@ -198,6 +202,7 @@ describe("executeBtw — error branches", () => {
 		vi.mocked(completeSimple).mockResolvedValueOnce(makeCompletionResponse({ stopReason: "done" }) as never);
 		const r = await executeBtw("q", ctx, new AbortController());
 		expect(r.ok).toBe(false);
+		if (r.ok || "aborted" in r) throw new Error("unexpected");
 		expect(r.error).toContain("no text content");
 	});
 	it("translates controller.signal.aborted on thrown error to aborted=true", async () => {
@@ -215,6 +220,7 @@ describe("executeBtw — error branches", () => {
 		vi.mocked(completeSimple).mockRejectedValueOnce(new Error("boom"));
 		const r = await executeBtw("q", ctx, new AbortController());
 		expect(r.ok).toBe(false);
+		if (r.ok || "aborted" in r) throw new Error("unexpected");
 		expect(r.error).toContain("call threw");
 		expect(r.error).toContain("boom");
 	});

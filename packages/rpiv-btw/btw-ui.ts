@@ -37,14 +37,14 @@ import {
 } from "@earendil-works/pi-tui";
 import { type BtwTurn, userMessageText } from "./btw.js";
 
+const BTW_MAX_HEIGHT_RATIO = 0.85;
+
 const BTW_OVERLAY_OPTIONS: OverlayOptions = {
 	anchor: "bottom-center",
 	width: "100%",
-	maxHeight: "85%",
+	maxHeight: `${BTW_MAX_HEIGHT_RATIO * 100}%`,
 	margin: { left: 0, right: 0, bottom: 0 },
 };
-
-const BTW_MAX_HEIGHT_RATIO = 0.85;
 
 const SIDE_PAD = "  "; // 2-col left gutter for history, echo, footer
 const ANSWER_PAD = "    "; // 4-col left gutter for answer body (double of SIDE_PAD)
@@ -187,6 +187,16 @@ export class BtwOverlayController implements Component {
 		return `${SIDE_PAD + this.theme.fg("accent", BTW_LITERAL)} ${this.theme.fg("muted", qTrunc)}`;
 	}
 
+	private wrapBodyLines(text: string, bodyWidth: number, colorFn?: (s: string) => string): string[] {
+		const out: string[] = [];
+		for (const ln of text.split("\n")) {
+			const src = ln.length === 0 ? " " : ln;
+			const colored = colorFn ? colorFn(src) : src;
+			out.push(...wrapTextWithAnsi(colored, bodyWidth));
+		}
+		return out;
+	}
+
 	private renderAnswer(width: number): string[] {
 		const bodyWidth = Math.max(1, width - ANSWER_PAD.length);
 		const indent = (lines: string[]) => lines.map((l) => ANSWER_PAD + l);
@@ -195,19 +205,9 @@ export class BtwOverlayController implements Component {
 			return indent([this.theme.fg("warning", PENDING_GLYPH)]);
 		}
 		if (this.mode === "error") {
-			const out: string[] = [];
-			for (const ln of this.error.split("\n")) {
-				const src = ln.length === 0 ? " " : ln;
-				out.push(...wrapTextWithAnsi(this.theme.fg("error", src), bodyWidth));
-			}
-			return indent(out);
+			return indent(this.wrapBodyLines(this.error, bodyWidth, (s) => this.theme.fg("error", s)));
 		}
-		const out: string[] = [];
-		for (const ln of this.answer.split("\n")) {
-			const src = ln.length === 0 ? " " : ln;
-			out.push(...wrapTextWithAnsi(src, bodyWidth));
-		}
-		return indent(out);
+		return indent(this.wrapBodyLines(this.answer, bodyWidth));
 	}
 }
 

@@ -65,9 +65,16 @@ export interface BtwTurn {
 	assistantMessage: AssistantMessage;
 }
 
-export interface BtwState {
+interface BtwState {
 	histories: Map<string, BtwTurn[]>;
 	snapshots: Map<string, { messages: Message[] }>;
+}
+
+function branchToMessages(branch: SessionEntry[]): Message[] {
+	const agentMessages = branch
+		.filter((e): e is SessionEntry & { type: "message" } => e.type === "message")
+		.map((e) => e.message);
+	return convertToLlm(agentMessages);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,25 +176,17 @@ function getCrossSessionHint(): string {
 // Modeled after rpiv-advisor/advisor.ts:225-336
 // ---------------------------------------------------------------------------
 
-export interface BtwExecResult {
-	ok: boolean;
-	answer?: string;
-	userMessage?: UserMessage;
-	assistantMessage?: AssistantMessage;
-	error?: string;
-	stopReason?: StopReason;
-	aborted?: boolean;
-}
+export type BtwExecResult =
+	| { ok: true; answer: string; userMessage: UserMessage; assistantMessage: AssistantMessage; stopReason: StopReason }
+	| { ok: false; error: string; stopReason?: StopReason }
+	| { ok: false; aborted: true; stopReason: StopReason };
 
 function readBranchMessages(ctx: ExtensionContext): Message[] {
 	const cached = getSnapshot(ctx);
 	if (cached) return cached.messages;
 	// Cold start (no message_end fired yet) — fall back to live read
 	const branch = ctx.sessionManager.getBranch() as SessionEntry[];
-	const agentMessages = branch
-		.filter((e): e is SessionEntry & { type: "message" } => e.type === "message")
-		.map((e) => e.message);
-	return convertToLlm(agentMessages);
+	return branchToMessages(branch);
 }
 
 function buildBtwMessages(ctx: ExtensionContext, userMessage: UserMessage): Message[] {
@@ -267,7 +266,7 @@ export async function executeBtw(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (controller.signal.aborted) {
-			return { ok: false, aborted: true };
+			return { ok: false, aborted: true, stopReason: "aborted" as const };
 		}
 		return { ok: false, error: errCallThrew(message) };
 	}
@@ -283,10 +282,7 @@ export function registerMessageEndSnapshot(pi: ExtensionAPI): void {
 		if (msg.role !== "assistant") return;
 		if ((msg as AssistantMessage).stopReason === "toolUse") return;
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
-		const agentMessages = branch
-			.filter((e): e is SessionEntry & { type: "message" } => e.type === "message")
-			.map((e) => e.message);
-		setSnapshot(ctx, { messages: convertToLlm(agentMessages) });
+		setSnapshot(ctx, { messages: branchToMessages(branch) });
 	});
 }
 
@@ -331,16 +327,16 @@ async function handleBtwCommand(_pi: ExtensionAPI, args: string, ctx: ExtensionC
 	const overlayCtl = await controllerReady;
 	const result = await executeBtw(question, ctx, controller);
 
-	if (result.ok && result.answer && result.userMessage && result.assistantMessage) {
+	if (result.ok) {
 		overlayCtl.setAnswer(result.answer);
 		pushSessionTurn(ctx, {
 			userMessage: result.userMessage,
 			assistantMessage: result.assistantMessage,
 		});
 		// No disk persistence — process-scoped only (Decision 4)
-	} else if (result.aborted) {
+	} else if ("aborted" in result) {
 		// User Esc'd — overlay already dismissed via done(); no further action
-	} else if (result.error) {
+	} else {
 		overlayCtl.setError(result.error);
 	}
 
