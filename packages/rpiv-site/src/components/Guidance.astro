@@ -8,16 +8,13 @@
 
 <section id="guidance">
 	<div class="container">
-		<p class="kicker">§ secondary flows · brownfield onboarding</p>
-		<h2>
-			<span class="gd-h2__line">Guidance:</span>
-			<span class="gd-h2__line gd-h2__line--accent">shadow docs the agent reads on its way in.</span>
-		</h2>
+		<p class="kicker">§ guidance · per-folder shadow docs</p>
+		<h2>Context that narrows as the agent descends.</h2>
 		<p class="gd__lede">
 			Inline <code>CLAUDE.md</code> works on greenfield, but it doesn't scale to a
 			codebase nobody can fit in their head.
-			<strong><code>/skill:annotate-guidance</code> writes a parallel <code>.rpiv/guidance/</code> tree of compact <code>architecture.md</code> files</strong>
-			— one per folder you care about, resolved per-depth and injected at
+			<strong><code>/skill:annotate-guidance</code> writes a parallel <code>.rpiv/guidance/</code> tree of compact <code>architecture.md</code> files</strong>,
+			one per folder you care about, resolved per-depth and injected at
 			<code>session_start</code> and on every <code>tool_call</code>, so context
 			narrows as the agent navigates deeper.
 		</p>
@@ -282,7 +279,7 @@
 
 				<p class="gd-desc gd-desc--hero">
 					A shadow tree mirrors the source. Each folder's <code>architecture.md</code>
-					is the smallest thing the agent needs to act correctly <em>here</em> —
+					is the smallest thing the agent needs to act correctly <em>here</em>,
 					not the whole repo.
 				</p>
 
@@ -293,13 +290,13 @@
 						<p class="mono gd-trade__label">gain</p>
 						<ul class="gd-trade__list">
 							<li>context follows the agent into deep folders</li>
-							<li>zero source-code noise — docs live alongside, not inside</li>
+							<li>zero source-code noise: docs live alongside, not inside</li>
 						</ul>
 					</div>
 					<div class="gd-trade__col gd-trade__col--cost">
 						<p class="mono gd-trade__label">cost</p>
 						<ul class="gd-trade__list">
-							<li>shadow tree drifts after structural changes — regenerate</li>
+							<li>shadow tree drifts after structural changes: regenerate</li>
 						</ul>
 					</div>
 				</div>
@@ -351,7 +348,7 @@
 				<p class="gd-desc">
 					On <code>session_start</code>, root guidance loads. On every
 					<code>read</code>/<code>edit</code>/<code>write</code>, the closest
-					ancestor <code>architecture.md</code> for the touched path injects too —
+					ancestor <code>architecture.md</code> for the touched path injects too,
 					silently, as a hidden context message.
 				</p>
 
@@ -411,15 +408,13 @@
 		<p class="gd__seealso mono">
 			<span class="gd__seealso-label">see also</span>
 			<span class="chip">/skill:migrate-to-guidance</span>
-			<span class="gd__seealso-text">— convert an existing <code>CLAUDE.md</code> project into the guidance system.</span>
+			<span class="gd__seealso-text">convert an existing <code>CLAUDE.md</code> project into the guidance system.</span>
 		</p>
 	</div>
 </section>
 
 <style>
 	#guidance h2 { margin-bottom: var(--space-5); }
-	.gd-h2__line { display: block; }
-	.gd-h2__line--accent { color: var(--ochre); }
 
 	.gd__lede {
 		color: var(--text-quiet);

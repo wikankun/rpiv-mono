@@ -1,6 +1,6 @@
 ---
 slug: commit
-tagline: Reads the working tree, groups related changes into logical commits, and writes descriptive messages in the repo's style — never amends, never adds AI attribution.
+tagline: Reads the working tree, groups related changes into logical commits, and writes descriptive messages in the repo's style. Never amends, never adds AI attribution.
 purpose: |
   Closes the implementation loop. Analyses staged + unstaged changes, splits them into atomic commits grouped by purpose (feature · fix · refactor · docs), and commits using the repo's style. Order is interchangeable with `code-review`.
 when_to_use:

@@ -6,10 +6,7 @@ const skills = await getCodeReviewSkills();
 <section id="review">
 	<div class="container">
 		<p class="kicker">§ code review · verified findings</p>
-		<h2>
-			<span class="cr-h2__line">Code review:</span>
-			<span class="cr-h2__line cr-h2__line--accent">commit → review → report.</span>
-		</h2>
+		<h2>Findings, not opinions.</h2>
 		<p class="cr__lede">
 			Point it at staged work, a single hash, or a whole branch.
 			<strong>Quality</strong>, <strong>security</strong>, and
@@ -385,8 +382,6 @@ const skills = await getCodeReviewSkills();
 
 <style>
 	#review h2 { margin-bottom: var(--space-5); }
-	.cr-h2__line { display: block; }
-	.cr-h2__line--accent { color: var(--ochre); }
 
 	.cr__lede {
 		color: var(--text-quiet);

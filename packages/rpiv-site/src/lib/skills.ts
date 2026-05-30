@@ -100,7 +100,7 @@ export const PIPELINE_META = {
 	},
 	research: {
 		collects: ["Open questions", "Codebase facts", "Cross-file traces", "Cited line refs"],
-		why: "The cited document becomes design's single source of truth — it reads this, never the codebase. Parallelism keeps a wide question set cheap.",
+		why: "Design reads the cited document as its single source of truth, never the codebase. Parallelism keeps a wide question set cheap.",
 	},
 	design: {
 		collects: ["Architectural decisions", "Vertical slices", "File map", "Ordering", "Risk notes"],
@@ -116,7 +116,7 @@ export const PIPELINE_META = {
 	},
 	validate: {
 		collects: ["Pass/fail per criterion", "Drift notes", "Follow-up tickets"],
-		why: "A separate pass that never saw the implement loop can't inherit its blind spots — the re-check is only trustworthy because it's independent.",
+		why: "A separate pass that never saw the implement loop can't inherit its blind spots. The re-check is only trustworthy because it's independent.",
 	},
 } satisfies Record<PipelineStep, PipelineMeta>;
 

@@ -1,6 +1,6 @@
 ---
 slug: revise
-tagline: Surgically updates an existing implementation plan after review feedback, mid-implementation discoveries, or scope changes — preserves structure rather than rewriting.
+tagline: Surgically updates an existing implementation plan after review feedback, mid-implementation discoveries, or scope changes, preserving structure rather than rewriting.
 purpose: |
   Lets a finished plan absorb new information without losing its shape. `revise` reads the existing plan, applies precisely the requested changes (add phase · adjust criteria · trim scope · split a phase), and leaves everything else identical. Use it instead of regenerating a plan from scratch when only part of it is wrong.
 when_to_use:

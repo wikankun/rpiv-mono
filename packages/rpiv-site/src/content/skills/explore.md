@@ -1,6 +1,6 @@
 ---
 slug: explore
-tagline: Compares 2–4 candidate approaches across precedent-fit, integration risk, migration cost, verification cost, and novelty, then recommends one — ready to feed `design` or `blueprint`.
+tagline: Compares 2–4 candidate approaches across precedent-fit, integration risk, migration cost, verification cost, and novelty, then recommends one, ready to feed `design` or `blueprint`.
 purpose: |
   When several valid approaches exist, `explore` produces a side-by-side comparison instead of jumping to one. Surface trade-offs explicitly so the design pass starts with the architectural shape already chosen.
 when_to_use:

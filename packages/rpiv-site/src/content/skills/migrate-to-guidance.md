@@ -1,6 +1,6 @@
 ---
 slug: migrate-to-guidance
-tagline: One-shot move from inline `CLAUDE.md` files to the `.rpiv/guidance/` shadow tree — transforms cross-references along the way.
+tagline: One-shot move from inline `CLAUDE.md` files to the `.rpiv/guidance/` shadow tree, transforming cross-references along the way.
 purpose: |
   Converts a project that already uses inline `CLAUDE.md` files into the shadow-tree layout consumed by `annotate-guidance`. The migration relocates every file to `.rpiv/guidance/<path>/architecture.md` and rewrites internal references so links keep working after the move.
 when_to_use:

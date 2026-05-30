@@ -1,6 +1,6 @@
 ---
 slug: blueprint
-tagline: One-pass replacement for `design` + `plan` — decomposes a feature into vertical slices with developer micro-checkpoints and emits an implement-ready phased plan in a single run.
+tagline: One-pass replacement for `design` + `plan` that decomposes a feature into vertical slices with developer micro-checkpoints and emits an implement-ready phased plan in a single run.
 purpose: |
   Mid-sized features where the architecture is not load-bearing enough to deserve a separate `design` pass, but a phased plan is still required. `blueprint` collapses decomposition and phasing into one skill, with checkpoints *between* slices so review happens mid-flight instead of after the whole plan is final.
 when_to_use:

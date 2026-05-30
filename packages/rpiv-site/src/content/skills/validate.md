@@ -1,6 +1,6 @@
 ---
 slug: validate
-tagline: Independently re-runs each phase's success criteria against the working tree and emits a pass/fail validation report — catches half-finished phases the implement loop missed.
+tagline: Independently re-runs each phase's success criteria against the working tree and emits a pass/fail validation report that catches half-finished phases the implement loop missed.
 purpose: |
   A post-implementation audit. `validate` re-reads the plan, re-runs every `- [ ]` success-criterion against the actual working tree, and emits a structured report — pass/fail per criterion plus drift notes and follow-up tickets. Trust-but-verify after `implement` declares done.
 when_to_use:
