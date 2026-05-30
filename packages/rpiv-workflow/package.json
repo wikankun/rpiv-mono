@@ -42,6 +42,7 @@
 		"handle.ts",
 		"host.ts",
 		"internal-utils.ts",
+		"iterate.ts",
 		"layers.ts",
 		"lifecycle.ts",
 		"load",
