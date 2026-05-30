@@ -10,7 +10,7 @@
  * packages with one canonical implementation.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,11 +45,14 @@ export function verifyShipManifest(packageDirOrUrl: string): ShipManifestResult 
 	const exactFiles = new Set<string>();
 	const dirPrefixes: string[] = [];
 	for (const entry of declared) {
-		// Treat trailing-slash entries (and bare directory names that exist on
-		// disk) as recursive directory inclusion — matches npm's own `files`
+		// Treat trailing-slash entries AND bare directory names that exist on
+		// disk as recursive directory inclusion — matches npm's own `files`
 		// semantics so the test answers "would npm publish actually include this?"
-		// rather than enforcing a stylistic preference.
+		// rather than enforcing a stylistic preference. Bare dir names are
+		// normalized to a trailing-slash prefix so a `"load"` entry covers
+		// `load/cache.ts` without spuriously matching a sibling `loader.ts`.
 		if (entry.endsWith("/")) dirPrefixes.push(entry);
+		else if (isDirOnDisk(packageDir, entry)) dirPrefixes.push(`${entry}/`);
 		else exactFiles.add(entry);
 	}
 
@@ -57,6 +60,16 @@ export function verifyShipManifest(packageDirOrUrl: string): ShipManifestResult 
 	const missing = onDisk.filter((f) => !isCovered(f, exactFiles, dirPrefixes));
 
 	return { declared, onDisk, missing };
+}
+
+function isDirOnDisk(packageDir: string, entry: string): boolean {
+	try {
+		return statSync(resolve(packageDir, entry)).isDirectory();
+	} catch {
+		// Entry not present on disk (e.g. an asset/extraneous `files` entry) —
+		// not a directory we can recurse into; the caller treats it as an exact file.
+		return false;
+	}
 }
 
 function isCovered(file: string, exactFiles: Set<string>, dirPrefixes: readonly string[]): boolean {
