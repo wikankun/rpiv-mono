@@ -1,6 +1,6 @@
 # @juicesharp/rpiv-workflow
 
-## [Unreleased]
+## [1.16.1] - 2026-05-30
 
 ### Fixed
 - Add `iterate.ts` to the published `files` allowlist. It was introduced in 1.16.0 but omitted from the package manifest, so the published tarball shipped `runner/stage-lifecycle.ts` (which imports `../iterate.js`) without the module it requires. Loading the extension from an npm install failed with `Cannot find module '../iterate.js'`. Source builds and tests were unaffected because the file is git-tracked, which is why it slipped past CI.
