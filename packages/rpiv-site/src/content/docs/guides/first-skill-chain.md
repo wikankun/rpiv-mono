@@ -39,7 +39,7 @@ Hand the FRD (or your spec) to research.
 
 ## 03 · Blueprint
 
-Research becomes an implement-ready plan in a single step.
+Research becomes an implement-ready plan in a single step. `/skill:blueprint` collapses the canonical `design` and `plan` steps into one pass, the right default at this scope. On large or architecturally load-bearing work you'd run them separately instead; see [Pick your path](/docs/guides/pick-a-path) for which scope gets which chain.
 
 ```
 /skill:blueprint .rpiv/artifacts/research/password-reset.md
@@ -115,7 +115,7 @@ If you skip a step, the next skill notices and offers to run the missing one. If
 
 ## Next steps
 
-- [Pick your path](/docs/guides/pick-a-path): small / mid / large workflow selection
+- [Pick your path](/docs/guides/pick-a-path): five paths mapped to feature scope (trivial to large)
 - [Reset between skills](/docs/guides/reset-between-skills): the fresh-context rule between every transition
 - [Skills reference](/docs/reference/skills): every skill and what it writes
 - [Agents reference](/docs/reference/agents): the specialists skills dispatch internally

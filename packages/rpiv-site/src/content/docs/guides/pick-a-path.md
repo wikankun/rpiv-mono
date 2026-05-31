@@ -1,11 +1,11 @@
 ---
 title: "Pick your path"
-description: "Four workflows mapped to feature scope. Trivial, small, mid, large."
+description: "Five paths mapped to feature scope. Trivial, small, small+, mid, large."
 section: "guides"
 order: 0
 ---
 
-Four recipes. The smallest that still keeps the driver in the loop where it matters is the one to run.
+Five recipes. The smallest that still keeps the driver in the loop where it matters is the one to run.
 
 The pipeline is a menu, not a script. Each skill writes a markdown artifact under `.rpiv/artifacts/<stage>/` that the next skill reads, so you can stop, review, and resume between any two steps. Two inputs decide your chain: scope, and what's already in hand.
 
