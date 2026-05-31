@@ -101,9 +101,15 @@ Walk Step 2 findings, inherited research Q/As, and carried Open Questions throug
 - **Verification** — tests, assertions, risk-bearing behaviors
 - **Performance** — load paths, caching, N+1 risks
 
-For each dimension, classify findings as **simple decisions** (one valid option, obvious from codebase — record in Decisions with `file:line` evidence, do not ask) or **genuine ambiguities** (multiple valid options, conflicting patterns, scope questions, novel choices — queue for Step 4). Inherited research Q/As land as simple; Open Questions filter by dimension — architectural survives, implementation-detail defers.
+For each dimension, classify findings into three classes:
 
-**Pre-validate every option** before queuing it against research constraints and runtime code behavior. Eliminate or caveat options that contradict Steps 1-2 evidence. **Coverage check**: every Step 2 file read appears in at least one decision or ambiguity; every dimension is addressed (silently-resolved valid, skipped-unchecked not).
+- **simple** — one valid option, obvious from codebase, no directional weight. Record in Decisions with `file:line` evidence; do not ask.
+- **directional** — obvious *fit*, but the choice encodes a direction: propagates an existing pattern across new files, picks extend-vs-replace, or spreads a convention the project may be moving off. Queue for the **directional confirm** (Step 4, one batched ask).
+- **genuine ambiguity** — multiple valid options, conflicting patterns, scope questions, novel choices. Queue for Step 4, one-at-a-time.
+
+Inherited research Q/As land as simple unless directional; Open Questions filter by dimension — architectural survives, implementation-detail defers.
+
+**Pre-validate every option** before queuing it against research constraints and runtime code behavior. Eliminate or caveat options that contradict Steps 1-2 evidence. **Coverage check**: every Step 2 file read appears in at least one decision, directional confirm, or ambiguity; every dimension is addressed (silently-resolved valid, skipped-unchecked not).
 
 ### Step 4: Developer Checkpoint
 
@@ -111,6 +117,12 @@ Use the grounded-questions-one-at-a-time pattern. Use a **❓ Question:** prefix
 - Reference real findings with `file:line` evidence
 - Present concrete options (not abstract choices)
 - Pull a DECISION from the developer, not confirm what you already found
+
+**Directional confirms first.** Before the one-at-a-time questions, clear every **directional** finding from Step 3 in a single batched `ask_user_question` (up to 4 per call). Do not mark the "follow" option Recommended.
+
+> Question: "About to follow {pattern X} (`file:line`, used ×N) across {the N new files} — confirm that's the direction, or moving off it?". Header: "Direction". Options: "Follow {X}" (propagate as-is); "Moving off {X}" (deliberate departure).
+
+**Follow** records the decision as stated. **Moving off** promotes the finding to a genuine ambiguity — ask it one-at-a-time below with the alternative in view.
 
 **Question patterns by ambiguity type:**
 
@@ -274,6 +286,12 @@ Present a **condensed review** of the slice — NOT the full generated code. The
 1. **Summary** (1-2 sentences): what changed, what pattern used, what it connects to
 2. **Signatures**: type/interface definitions, exported function signatures with parameter and return types
 3. **Key code blocks**: factory calls, wiring, non-obvious logic — the interesting parts that show the design decision in action
+
+**Then, once per slice, a mandatory Fit line** (always shown, regardless of the omit list below):
+
+> **Fit** — Reused: {existing helpers/utils/types this slice builds on, `file:line`}. New surface: {new abstractions/exports introduced}. Convention: {naming/error/logging pattern followed + source `file:line`}.
+
+If the slice introduces a new abstraction where an existing one would serve, or reuses nothing, say so explicitly.
 
 **Omit**: boilerplate, import lists, full function bodies, obvious implementations.
 **MODIFY files**: focused diff (`- old` / `+ new`) with ~3 lines context. **Test files**: test case names only.
