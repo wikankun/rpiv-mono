@@ -5,6 +5,8 @@
  *   Pi's session transition (the status line is the durable channel).
  */
 
+import { join } from "node:path";
+
 export const STATUS_KEY = "rpiv-workflow";
 
 export const STATUS_STAGE = (stage: number, total: number, skill: string) => `rpiv: stage ${stage}/${total} — ${skill}`;
@@ -196,10 +198,23 @@ export const MSG_WORKFLOW_NOT_FOUND = (name: string) => `/wf: workflow "${name}"
  * instead of trying to run with an undefined default — without rpiv-pi
  * installed and no user overlay, the merged registry is genuinely empty
  * and the user needs to install a sibling that bundles workflows or
- * author one in `.rpiv-workflow/workflows.config.ts`.
+ * author one in `.rpiv/workflows/config.ts`.
  */
 export const MSG_NO_WORKFLOWS_REGISTERED =
-	"/wf: no workflows registered — install a sibling that bundles workflows or author one in `.rpiv-workflow/workflows.config.ts`";
+	"/wf: no workflows registered — install a sibling that bundles workflows or author one in `.rpiv/workflows/config.ts`";
+
+/**
+ * Legacy `.rpiv-workflow/` overlay directory detected at load time. The
+ * package moved project config under the unified `.rpiv/workflows/` tree
+ * (config.ts + packs/) alongside run state. The old directory is NO LONGER
+ * read — this notice points the user at the new location and the one-line
+ * `mv` migration. Emitted as a load WARNING (advisory, non-blocking).
+ */
+export const LEGACY_OVERLAY_NOTICE = (cwd: string): string =>
+	`rpiv-workflow: detected legacy \`${join(cwd, ".rpiv-workflow")}\` — project config now lives at ` +
+	"`.rpiv/workflows/config.ts` + `.rpiv/workflows/packs/` and is the only location read. " +
+	"Move it: `mv .rpiv-workflow/workflows.config.ts .rpiv/workflows/config.ts` && " +
+	"`mv .rpiv-workflow/workflows .rpiv/workflows/packs` (the old directory is ignored).";
 
 /** Pi command registry — displayed by Pi's `/?` / command list. */
 export const CMD_DESCRIPTION = "Run a skill workflow: /wf [workflow] [description]";

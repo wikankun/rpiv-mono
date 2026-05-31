@@ -10,10 +10,10 @@ import {
 	readAllStages,
 	readHeader,
 	readLastStage,
+	runsDir,
 	stateFilePath,
 	type WorkflowHeader,
 	type WorkflowStage,
-	workflowsDir,
 	writeHeader,
 } from "./state/index.js";
 
@@ -51,14 +51,14 @@ describe("generateRunId", () => {
 	});
 });
 
-describe("workflowsDir / stateFilePath", () => {
-	it("resolves to .rpiv/workflows under cwd", () => {
-		expect(workflowsDir("/project")).toBe("/project/.rpiv/workflows");
+describe("runsDir / stateFilePath", () => {
+	it("resolves to .rpiv/workflows/runs under cwd", () => {
+		expect(runsDir("/project")).toBe("/project/.rpiv/workflows/runs");
 	});
 
 	it("resolves state file with .jsonl extension", () => {
 		expect(stateFilePath("/project", "2026-05-20_15-30-45")).toBe(
-			"/project/.rpiv/workflows/2026-05-20_15-30-45.jsonl",
+			"/project/.rpiv/workflows/runs/2026-05-20_15-30-45.jsonl",
 		);
 	});
 });
@@ -287,7 +287,7 @@ describe("readHeader", () => {
 	it("treats trigger as optional — legacy headers without trigger still parse", () => {
 		// Simulate a header written before the trigger field was added.
 		const runId = "legacy-no-trigger";
-		mkdirSync(workflowsDir(tmpDir), { recursive: true });
+		mkdirSync(runsDir(tmpDir), { recursive: true });
 		appendFileSync(
 			stateFilePath(tmpDir, runId),
 			`${JSON.stringify({ runId, workflow: "mid", input: "x", ts: "2026" })}\n`,
@@ -317,7 +317,7 @@ describe("readHeader", () => {
 
 	it("returns undefined when the first line is malformed JSON (fail-soft)", () => {
 		const runId = "garbled";
-		mkdirSync(workflowsDir(tmpDir), { recursive: true });
+		mkdirSync(runsDir(tmpDir), { recursive: true });
 		appendFileSync(stateFilePath(tmpDir, runId), "NOT-JSON\n", "utf-8");
 		expect(readHeader(tmpDir, runId)).toBeUndefined();
 	});
@@ -356,7 +356,7 @@ describe("listRuns", () => {
 
 	it("ignores non-.jsonl entries in the workflows directory", () => {
 		writeHeader(tmpDir, { runId: "good", workflow: "mid", input: "ok", ts: "2026" });
-		appendFileSync(join(workflowsDir(tmpDir), "stray.txt"), "ignore me\n", "utf-8");
+		appendFileSync(join(runsDir(tmpDir), "stray.txt"), "ignore me\n", "utf-8");
 		const runs = listRuns(tmpDir);
 		expect(runs.map((r) => r.runId)).toEqual(["good"]);
 	});

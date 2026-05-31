@@ -140,7 +140,7 @@ const FOO_EQ_2_SCHEMA = typeboxSchema(Type.Object({ foo: Type.Literal(2) }, { ad
 
 /** Read JSONL rows the audit layer wrote under cwd/.rpiv/workflows/<runId>.jsonl. */
 const readStageRows = (cwd: string): Array<Record<string, unknown>> => {
-	const dir = join(cwd, ".rpiv", "workflows");
+	const dir = join(cwd, ".rpiv", "workflows", "runs");
 	const files = readdirSync(dir);
 	const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");
 	return lines.map((l) => JSON.parse(l));

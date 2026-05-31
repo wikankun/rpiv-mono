@@ -18,7 +18,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Artifact } from "../handle.js";
-import { stateFilePath, workflowsDir } from "./paths.js";
+import { runsDir, stateFilePath } from "./paths.js";
 import type { RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
@@ -150,8 +150,8 @@ export function readHeader(cwd: string, runId: string): WorkflowHeader | undefin
 }
 
 /**
- * Enumerate every `<cwd>/.rpiv/workflows/<run-id>.jsonl` and return its
- * header projected as a `RunSummary`. Empty array when the workflows
+ * Enumerate every `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl` and return its
+ * header projected as a `RunSummary`. Empty array when the runs
  * directory doesn't exist (no runs yet). Files without a valid header
  * are skipped silently (corrupt / mid-write).
  *
@@ -164,7 +164,7 @@ export function readHeader(cwd: string, runId: string): WorkflowHeader | undefin
  * `runId` is monotonic for runs created on the same host).
  */
 export function listRuns(cwd: string): RunSummary[] {
-	const dir = workflowsDir(cwd);
+	const dir = runsDir(cwd);
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);

@@ -11,11 +11,11 @@
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
-import { stateFilePath, workflowsDir } from "./paths.js";
+import { runsDir, stateFilePath } from "./paths.js";
 import type { RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
- * Shared append primitive: ensure the workflows directory exists, then
+ * Shared append primitive: ensure the runs directory exists, then
  * append one JSON-serialised row + newline. Returns true on success;
  * on any throw, warns to stderr and returns false. The three public
  * append helpers below are thin wrappers — `writeHeader` discards the
@@ -23,7 +23,7 @@ import type { RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js"
  */
 function tryAppendJsonl(cwd: string, runId: string, row: unknown): boolean {
 	try {
-		const dir = workflowsDir(cwd);
+		const dir = runsDir(cwd);
 		mkdirSync(dir, { recursive: true });
 		const filePath = stateFilePath(cwd, runId);
 		appendFileSync(filePath, `${JSON.stringify(row)}\n`, "utf-8");

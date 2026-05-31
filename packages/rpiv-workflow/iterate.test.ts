@@ -103,7 +103,7 @@ describe("iterate executor", () => {
 	};
 
 	const readState = (): Array<Record<string, unknown>> => {
-		const dir = join(tmpDir, ".rpiv", "workflows");
+		const dir = join(tmpDir, ".rpiv", "workflows", "runs");
 		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
 		const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");

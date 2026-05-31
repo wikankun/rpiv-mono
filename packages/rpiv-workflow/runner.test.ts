@@ -183,7 +183,7 @@ describe("runWorkflow", () => {
 
 	/** Read the single JSONL state file produced for a run, as parsed objects. */
 	const readState = (cwd: string): { header: Record<string, unknown>; stages: Array<Record<string, unknown>> } => {
-		const dir = join(cwd, ".rpiv", "workflows");
+		const dir = join(cwd, ".rpiv", "workflows", "runs");
 		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
 		const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");
@@ -217,7 +217,7 @@ describe("runWorkflow", () => {
 		expect(result.stagesCompleted).toBe(0);
 		expect(result.error).toMatch(/start stage "ghost" is not declared/);
 		expect(chain.ctx.newSession).not.toHaveBeenCalled();
-		expect(existsSync(join(tmpDir, ".rpiv", "workflows"))).toBe(false);
+		expect(existsSync(join(tmpDir, ".rpiv", "workflows", "runs"))).toBe(false);
 	});
 
 	it("completes a single-step workflow on success and records header + completed step", async () => {
@@ -1076,7 +1076,7 @@ describe("runWorkflow", () => {
 
 			// Preflight short-circuits before writeHeader / any recordStage call —
 			// no JSONL workflow file is produced at all.
-			expect(existsSync(join(tmpDir, ".rpiv", "workflows"))).toBe(false);
+			expect(existsSync(join(tmpDir, ".rpiv", "workflows", "runs"))).toBe(false);
 		});
 
 		// -------------------------------------------------------------------
@@ -1415,7 +1415,7 @@ describe("runWorkflow", () => {
 
 			await runWorkflow(chain.ctx, { workflow, input: "x" });
 
-			const dir = join(tmpDir, ".rpiv", "workflows");
+			const dir = join(tmpDir, ".rpiv", "workflows", "runs");
 			const files = readdirSync(dir);
 			const content = readFileSync(join(dir, files[0]!), "utf-8").trim();
 			const lines = content.split("\n");
@@ -1461,7 +1461,7 @@ describe("runWorkflow", () => {
 
 			await runWorkflow(chain.ctx, { workflow, input: "x" });
 
-			const dir = join(tmpDir, ".rpiv", "workflows");
+			const dir = join(tmpDir, ".rpiv", "workflows", "runs");
 			const files = readdirSync(dir);
 			const content = readFileSync(join(dir, files[0]!), "utf-8").trim();
 			const lines = content.split("\n");
@@ -1539,7 +1539,7 @@ describe("runWorkflow", () => {
 			expect(result.droppedRoutingRows).toBeUndefined();
 
 			// Find the runId from the JSONL file
-			const dir = join(tmpDir, ".rpiv", "workflows");
+			const dir = join(tmpDir, ".rpiv", "workflows", "runs");
 			const files = readdirSync(dir);
 			const runId = files[0]!.replace(".jsonl", "");
 

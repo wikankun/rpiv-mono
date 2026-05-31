@@ -93,7 +93,7 @@ export interface RunWorkflowOptions {
 export interface RunWorkflowResult {
 	/**
 	 * The run's identity on disk — the `<run-id>` portion of
-	 * `<cwd>/.rpiv/workflows/<run-id>.jsonl`. Live consumers can hand
+	 * `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`. Live consumers can hand
 	 * this to `readLastStage` / `listArtifacts` / future inspect-past-run
 	 * helpers without recomputing the slug.
 	 *

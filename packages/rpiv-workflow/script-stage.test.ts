@@ -35,7 +35,7 @@ interface JsonlRow {
 }
 
 const readState = (cwd: string): { header: Record<string, unknown>; stages: JsonlRow[] } => {
-	const dir = join(cwd, ".rpiv", "workflows");
+	const dir = join(cwd, ".rpiv", "workflows", "runs");
 	const files = readdirSync(dir);
 	expect(files).toHaveLength(1);
 	const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");

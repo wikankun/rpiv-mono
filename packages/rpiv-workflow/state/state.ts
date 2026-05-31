@@ -1,11 +1,11 @@
 /**
- * JSONL state at `.rpiv/workflows/<run-id>.jsonl`. Append-only audit
+ * JSONL state at `.rpiv/workflows/runs/<run-id>.jsonl`. Append-only audit
  * trail; every line is a self-contained JSON object. All I/O is
  * fail-soft (logs via console.warn with `[rpiv-workflow]` prefix, never
  * throws).
  *
  * Internally split into three modules:
- *   - paths.ts  — workflowsDir + stateFilePath + generateRunId
+ *   - paths.ts  — runsDir + stateFilePath + generateRunId
  *   - writes.ts — tryAppendJsonl + writeHeader + appendStage +
  *                 appendRoutingDecision
  *   - reads.ts  — readLastStage + readAllStages + readRoutingDecisions +
@@ -103,7 +103,7 @@ export interface RoutingDecision {
 // Public barrel — paths + writes + reads
 // ---------------------------------------------------------------------------
 
-export { generateRunId, stateFilePath, workflowsDir } from "./paths.js";
+export { generateRunId, runsDir, stateFilePath } from "./paths.js";
 export {
 	listArtifacts,
 	listRuns,

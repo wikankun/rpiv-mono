@@ -1,10 +1,14 @@
 /**
  * Overlay file system paths for the user and project layers.
  *
- *   user    — config `~/.config/rpiv-workflow/workflows.config.ts`
- *             packs  `~/.config/rpiv-workflow/workflows/*.ts`
- *   project — config `<cwd>/.rpiv-workflow/workflows.config.ts`
- *             packs  `<cwd>/.rpiv-workflow/workflows/*.ts`
+ *   user    — config `~/.config/rpiv-workflow/config.ts`
+ *             packs  `~/.config/rpiv-workflow/packs/*.ts`
+ *   project — config `<cwd>/.rpiv/workflows/config.ts`
+ *             packs  `<cwd>/.rpiv/workflows/packs/*.ts`
+ *
+ * Project config lives under the unified `.rpiv/<domain>/` tree alongside
+ * run state (`.rpiv/workflows/runs/`), so the package no longer carries the
+ * legacy `.rpiv-workflow/` outlier directory.
  */
 
 import { join } from "node:path";
@@ -17,16 +21,16 @@ export interface OverlayPaths {
 	packsDir: string;
 }
 
-/** Project overlay paths under `<cwd>/.rpiv-workflow/`. */
+/** Project overlay paths under `<cwd>/.rpiv/workflows/`. */
 export function projectOverlayPaths(cwd: string): OverlayPaths {
-	const root = join(cwd, ".rpiv-workflow");
-	return { configFile: join(root, "workflows.config.ts"), packsDir: join(root, "workflows") };
+	const root = join(cwd, ".rpiv", "workflows");
+	return { configFile: join(root, "config.ts"), packsDir: join(root, "packs") };
 }
 
 /** User overlay paths under `~/.config/rpiv-workflow/`. */
 export function userOverlayPaths(): OverlayPaths {
 	return {
-		configFile: configPath("rpiv-workflow", "workflows.config.ts"),
-		packsDir: configPath("rpiv-workflow", "workflows"),
+		configFile: configPath("rpiv-workflow", "config.ts"),
+		packsDir: configPath("rpiv-workflow", "packs"),
 	};
 }

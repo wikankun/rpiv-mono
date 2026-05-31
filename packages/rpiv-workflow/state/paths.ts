@@ -3,7 +3,7 @@
  * no I/O. Writes and reads import from here so the on-disk layout has
  * one authoritative source.
  *
- *   <cwd>/.rpiv/workflows/<run-id>.jsonl
+ *   <cwd>/.rpiv/workflows/runs/<run-id>.jsonl
  *
  * The slug format mirrors `skills/_shared/now.mjs` so audit files
  * sort chronologically by filename.
@@ -37,10 +37,10 @@ export function generateRunId(
 // Directory resolution
 // ---------------------------------------------------------------------------
 
-export function workflowsDir(cwd: string): string {
-	return join(cwd, ".rpiv", "workflows");
+export function runsDir(cwd: string): string {
+	return join(cwd, ".rpiv", "workflows", "runs");
 }
 
 export function stateFilePath(cwd: string, runId: string): string {
-	return join(workflowsDir(cwd), `${runId}.jsonl`);
+	return join(runsDir(cwd), `${runId}.jsonl`);
 }

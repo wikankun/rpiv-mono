@@ -74,9 +74,9 @@
  *      `validateOutputData`, `SchemaValidationFailure`.
  *
  *   8. Persistence (low-level — JSONL inspect) — `./state/index.js`
- *      Read past runs at `<cwd>/.rpiv/workflows/<run-id>.jsonl`:
+ *      Read past runs at `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`:
  *      `listRuns`, `readHeader`, `readLastStage`, `listArtifacts`,
- *      `stateFilePath`, `workflowsDir`, `RunSummary`,
+ *      `stateFilePath`, `runsDir`, `RunSummary`,
  *      `WorkflowHeader`, `WorkflowStage`. `recordStage` lives on
  *      `@juicesharp/rpiv-workflow/internal` (test-only — rpiv-pi's
  *      `[I3]` regression test pokes it directly; runner owns row
@@ -213,10 +213,10 @@ export {
 	type RunSummary,
 	readHeader,
 	readLastStage,
+	runsDir,
 	stateFilePath,
 	type WorkflowHeader,
 	type WorkflowStage,
-	workflowsDir,
 } from "./state/index.js";
 export { DEFAULT_TRIGGER, type RunTrigger } from "./triggers.js";
 export { typeboxSchema } from "./typebox-adapter.js";

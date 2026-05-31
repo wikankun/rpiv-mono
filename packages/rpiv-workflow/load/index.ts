@@ -7,10 +7,10 @@
  * they installed.
  *
  * Paths (per layer):
- *   user    — config  `~/.config/rpiv-workflow/workflows.config.ts`
- *             packs   `~/.config/rpiv-workflow/workflows/*.ts`
- *   project — config  `<cwd>/.rpiv-workflow/workflows.config.ts`
- *             packs   `<cwd>/.rpiv-workflow/workflows/*.ts`
+ *   user    — config  `~/.config/rpiv-workflow/config.ts`
+ *             packs   `~/.config/rpiv-workflow/packs/*.ts`
+ *   project — config  `<cwd>/.rpiv/workflows/config.ts`
+ *             packs   `<cwd>/.rpiv/workflows/packs/*.ts`
  *
  * Config file — accepts three default-export shapes:
  *   1. A single `Workflow`               — single-entry namespace
@@ -38,7 +38,7 @@
  * tool that respects `<cwd>` configuration: Pi already operates in a
  * context that implicitly trusts the current working directory. Users
  * running Pi in a freshly-cloned untrusted repo should diff
- * `.rpiv-workflow/workflows.config.ts` and `.rpiv-workflow/workflows/*.ts`
+ * `.rpiv/workflows/config.ts` and `.rpiv/workflows/packs/*.ts`
  * (the config file + pack files) before running `/wf`.
  *
  * Module map:
@@ -50,9 +50,12 @@
  *   ./cache.ts            — mtime-keyed jiti import cache + __resetLoadCache
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Workflow } from "../api.js";
 import { getBuiltIns } from "../built-ins.js";
 import type { ConfigLayer } from "../layers.js";
+import { LEGACY_OVERLAY_NOTICE } from "../messages.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
 import { type LoadAccumulator, loadLayer } from "./merge.js";
 import { projectOverlayPaths, userOverlayPaths } from "./paths.js";
@@ -135,6 +138,14 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 
 	const projectOutcome = await loadLayer(projectOverlayPaths(cwd), "project", acc);
 	if (projectOutcome.contributed) layers.push("project");
+
+	// Mandatory one-time legacy-overlay notice. The dashed `.rpiv-workflow/`
+	// directory is no longer read; surface an advisory warning pointing at the
+	// new `.rpiv/workflows/` location so a silent config-ignored never happens.
+	// Never blocks the run (warning, not error).
+	if (existsSync(join(cwd, ".rpiv-workflow"))) {
+		acc.issues.push({ kind: "load", layer: "project", severity: "warning", message: LEGACY_OVERLAY_NOTICE(cwd) });
+	}
 
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user

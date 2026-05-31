@@ -3,8 +3,8 @@
  *
  * Each test writes a config / pack fixture under a temp cwd, loads
  * it, and asserts the merged `LoadedWorkflows` shape. The user-level
- * overlays (`~/.config/rpiv/workflows.config.ts` and the `workflows/`
- * packs dir) are exercised via the same temp-tree pattern — cleaned
+ * overlays (`~/.config/rpiv-workflow/config.ts` and the `packs/`
+ * dir) are exercised via the same temp-tree pattern — cleaned
  * between tests so one test's overlay doesn't leak into the next.
  */
 
@@ -109,7 +109,7 @@ describe("loadWorkflows — baseline", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadWorkflows — project overlay", () => {
-	it("merges a single-workflow default-export from workflows.config.ts", async () => {
+	it("merges a single-workflow default-export from config.ts", async () => {
 		writeProjectConfig(
 			TEST_TMP,
 			`${importApi}
@@ -618,5 +618,71 @@ export default {
 		expect(loaded.workflows).toHaveLength(0);
 		expect(loaded.default).toBeUndefined();
 		expect(loaded.layers).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Path layout — unified `.rpiv/workflows/` tree
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — unified .rpiv/workflows/ layout", () => {
+	it("resolves project overlay paths under .rpiv/workflows/{config.ts, packs}", () => {
+		expect(PROJECT_PATHS.configFile).toBe(join(TEST_TMP, ".rpiv", "workflows", "config.ts"));
+		expect(PROJECT_PATHS.packsDir).toBe(join(TEST_TMP, ".rpiv", "workflows", "packs"));
+	});
+
+	it("loads a config.ts + pack from the new .rpiv/workflows/ location", async () => {
+		writeProjectConfig(
+			TEST_TMP,
+			`${importApi}
+export default defineWorkflow({ name: "from-config", start: "x", stages: { x: produces() }, edges: { x: "stop" } });
+`,
+		);
+		writeProjectPack(
+			TEST_TMP,
+			"a-pack.ts",
+			`${importApi}
+export default defineWorkflow({ name: "from-pack", start: "x", stages: { x: produces() }, edges: { x: "stop" } });
+`,
+		);
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.workflowSources.get("from-config")).toBe("project");
+		expect(loaded.workflowSources.get("from-pack")).toBe("project");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Legacy overlay — mandatory one-time notice, no fallback read
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — legacy .rpiv-workflow/ overlay", () => {
+	it("warns when a legacy .rpiv-workflow/ directory exists and does NOT load it", async () => {
+		// Author a workflow under the OLD dashed path. It must be ignored.
+		const legacyRoot = join(TEST_TMP, ".rpiv-workflow");
+		mkdirSync(legacyRoot, { recursive: true });
+		writeFileSync(
+			join(legacyRoot, "workflows.config.ts"),
+			`${importApi}
+export default defineWorkflow({ name: "legacy-wf", start: "x", stages: { x: produces() }, edges: { x: "stop" } });
+`,
+			"utf-8",
+		);
+
+		const loaded = await loadWorkflows(TEST_TMP);
+
+		// The legacy workflow is NOT loaded — only the new path is read.
+		expect(loaded.workflows.find((w) => w.name === "legacy-wf")).toBeUndefined();
+
+		// A mandatory advisory warning points at the new location.
+		const notice = loaded.issues.find(
+			(i) => i.kind === "load" && i.severity === "warning" && /\.rpiv\/workflows\/config\.ts/.test(i.message),
+		);
+		expect(notice).toBeDefined();
+		expect(notice?.message).toMatch(/\.rpiv-workflow/);
+	});
+
+	it("emits no legacy notice when no .rpiv-workflow/ directory exists", async () => {
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.issues.some((i) => i.kind === "load" && /\.rpiv-workflow/.test(i.message))).toBe(false);
 	});
 });

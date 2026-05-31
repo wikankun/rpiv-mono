@@ -36,11 +36,11 @@ import {
 	type FanoutFn,
 	produces,
 	type RunState,
+	runsDir,
 	runWorkflow,
 	stateFilePath,
 	validateWorkflow,
 	type Workflow,
-	workflowsDir,
 } from "@juicesharp/rpiv-workflow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rpivArtifactMdOutcome } from "./artifact-collector.js";
@@ -102,7 +102,7 @@ describe("[I2] readers must not silently drop the first row when no header is on
 	it("readLastStage returns the row even when the header line is missing", async () => {
 		const { readLastStage } = await import("@juicesharp/rpiv-workflow");
 		const runId = "2026-05-23_13-05-38-abcd";
-		mkdirSync(workflowsDir(tmpDir), { recursive: true });
+		mkdirSync(runsDir(tmpDir), { recursive: true });
 		const filePath = stateFilePath(tmpDir, runId);
 		const stageRow = {
 			stageNumber: 1,
@@ -181,7 +181,7 @@ describe("[I7] truncated reply (stopReason=length) must not record as completed"
 		});
 
 	const readStages = (cwd: string): Array<Record<string, unknown>> => {
-		const dir = join(cwd, ".rpiv", "workflows");
+		const dir = join(cwd, ".rpiv", "workflows", "runs");
 		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
 		const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");
@@ -348,7 +348,7 @@ describe("[I9] phase fanout rows preserve both stage name (record key) and skill
 	});
 
 	const readRows = (cwd: string): Array<Record<string, unknown>> => {
-		const dir = join(cwd, ".rpiv", "workflows");
+		const dir = join(cwd, ".rpiv", "workflows", "runs");
 		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
 		const lines = readFileSync(join(dir, files[0]!), "utf-8").trim().split("\n");
