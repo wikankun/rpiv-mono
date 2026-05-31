@@ -1,6 +1,6 @@
 ---
 title: "Run a workflow"
-description: "Hand the skill chain to /wf. The four bundled workflows, when to use each, and when hand-driving still wins."
+description: "Hand the skill chain to /wf. The five bundled workflows, when to use each, and when hand-driving still wins."
 section: "guides"
 order: 5
 ---
@@ -14,16 +14,16 @@ Two reasons to reach for it. The chain is a graph, not a line, and the runner is
 ## Three commands
 
 ```
-/wf                        Preview every loaded workflow.
-/wf <name>                 Preview one workflow's stage graph.
-/wf <name> <input>         Run a workflow with <input> piped to the start stage.
+/wf                  Preview every loaded workflow.
+/wf <name>           Preview one workflow's stage graph.
+/wf <name> <input>   Run a workflow, piping <input> to the start stage.
 ```
 
 Preview first. The graph view shows every stage, its skill, the edges out (linear, `stop`, or a predicate), and where the routing branches land. Run when the graph matches what you'd hand-drive.
 
-## The four bundled workflows
+## The five bundled workflows
 
-`rpiv-pi` ships four workflows. Each maps to a posture from [Pick your path](/docs/guides/pick-a-path), not 1:1, but close enough to pick by name:
+`rpiv-pi` ships five workflows. Each maps to a posture from [Pick your path](/docs/guides/pick-a-path), not 1:1, but close enough to pick by name:
 
 ### `/wf ship <input>`
 
@@ -37,9 +37,13 @@ Research-backed feature work with a review loop. `research → blueprint → imp
 
 Design-led pipeline for complex changes. `research → design → plan → implement → validate → code-review → design → loop ... → commit`. The large recipe without a `revise` stage at all — when `code-review` reports blockers, the loop returns to `design` directly and the full design/plan/implement/validate/review cycle runs again. Use when the architecture itself is what's wrong and the plan needs to be rebuilt, not patched. Same `maxBackwardJumps` bound applies.
 
-### `/wf vet`
+### `/wf vet [scope]`
 
-Examine an existing diff for approval, optionally repair it. `code-review → (blueprint → implement → validate → back to code-review) → commit`. Routing here doesn't use `gate` — `code-review` emits a string `status` of `"approved" | "needs_changes" | "requesting_changes"` and a `defineRoute` predicate sends `"approved"` to `commit` and the two not-approved statuses to `blueprint`. Orthogonal to the scope axis: point it at your own staged work or a teammate's PR branch when you want a structured second pass with an optional fix cycle.
+Examine an existing diff for approval, optionally repair it. `code-review → (blueprint → implement → validate → back to code-review) → commit`. The input piped to the start stage is the review scope `code-review` accepts — `commit` (HEAD), `staged`, `working` (unstaged), a commit hash, an `A..B` range, or a PR branch name. Leave it empty and the scope auto-detects to feature-branch-vs-default-branch (first-parent). Routing here doesn't use `gate` — `code-review` emits a string `status` of `"approved" | "needs_changes" | "requesting_changes"` and a `defineRoute` predicate sends `"approved"` to `commit` and the two not-approved statuses to `blueprint`. Orthogonal to the scope axis: point it at your own staged work or a teammate's PR branch when you want a structured second pass with an optional fix cycle.
+
+### `/wf polish <input>`
+
+Architecture-review-driven polish for a review too large to plan in one pass. `architecture-review → blueprint (one pass per review phase) → implement → validate → code-review → (blueprint loop) → commit`. The distinguishing move is the `blueprint` stage's `iterate` — the dual of the `fanout` the other chains run on `implement`. Where `fanout` spawns one stage instance per unit in parallel, `iterate` runs `blueprint` sequentially, once per `### Phase N — <name>` heading the architecture review declares, and each pass is handed the plans the earlier passes already wrote so it builds on them instead of duplicating. `implement` then fans out over the `## Phase N:` headings of every plan in that latest blueprint pass, and `validate` is handed all of them in one session. The review loop routes on the same `{ blockers_count: integer }` schema as `build`, but the backward edge returns to `blueprint` — a corrective pass re-plans every review phase, folding the latest review's blockers in — under the same `maxBackwardJumps` bound. Reach for it when an architecture review has surfaced dependency-ordered phases that have to be planned in sequence, each on top of the last, rather than enumerated in a single plan.
 
 ## What `/wf` adds over hand-driving
 
@@ -51,14 +55,17 @@ Examine an existing diff for approval, optionally repair it. `code-review → (b
 
 ## What the runtime lets you express
 
-The runner is the visible surface, but the foundation is a typed graph runtime. Four capabilities the chain wouldn't have on its own:
+The runner is the visible surface, but the foundation is a typed graph runtime. Five capabilities the chain wouldn't have on its own:
 
 ### Mix skills with TypeScript stages
 
 Not every stage needs an LLM. Merging two upstream artifacts, bumping a version field, fanning a payload to Slack — these are pure functions. Each factory exposes a `.script` accessor that runs a TypeScript body in place of a Pi skill, with no `/skill:<name>` dispatch and no session:
 
 ```ts
-import { acts, type ScriptContext } from "@juicesharp/rpiv-workflow";
+import {
+  acts,
+  type ScriptContext,
+} from "@juicesharp/rpiv-workflow";
 
 const bumpVersion = acts.script({
   run: async (ctx: ScriptContext) => {
@@ -84,7 +91,10 @@ A stage's `outcome` tells the runtime what the skill produced and how to read it
 The default prompt to a stage carries one positional arg — the upstream rolling primary artifact. When a stage needs more (the canonical case: a "revise plan based on review" step that consumes both the plan and the review), it declares `reads:` against names in the named-publish registry:
 
 ```ts
-revise: produces({ outcome: planOutcome, reads: ["plans", "reviews"] })
+revise: produces({
+  outcome: planOutcome,
+  reads: ["plans", "reviews"],
+})
 ```
 
 The runner replaces the default prompt with a labelled-flag form — `/skill:revise --plans <plan-path> --reviews <review-path>` — and repeats flags when a slot holds more than one artifact (`--plans <a> --plans <b>`), matching how `argparse` / `clap` / shell utilities collect repeated flags. The registry persists every `produces` stage's `Output` across the run, so two stages can converge on the same name (both publish the canonical plan), iteration history survives backward-jump loops, and the load-time validator catches `reads:` typos before the workflow ever runs.
@@ -96,14 +106,17 @@ Every stage runs in a **fresh Pi session by default** (`sessionPolicy: "fresh"`)
 When a stage genuinely needs the prior conversation — typically because the reasoning isn't capturable in an artifact, or you want a clarifying second turn on the same context — opt into `sessionPolicy: "continue"`:
 
 ```ts
-"clarify-plan": produces({ outcome: planOutcome, sessionPolicy: "continue" })
+"clarify-plan": produces({
+  outcome: planOutcome,
+  sessionPolicy: "continue",
+})
 ```
 
 `continue` reuses the previous stage's session via `host.sendUserMessage()` rather than opening a new one. Two costs: context grows monotonically (every continued stage stacks on top of the last), and `continue` is incompatible with `fanout` and with script stages (load-time validation rejects the combination). Reach for it only when the alternative — materializing reasoning into an artifact the next fresh stage can read — would lose something important.
 
 ## When hand-driving still wins
 
-Pick the runner when the shape of the work matches one of the four bundled chains and you've walked that chain enough times to trust it. Otherwise stay in the loop:
+Pick the runner when the shape of the work matches one of the five bundled chains and you've walked that chain enough times to trust it. Otherwise stay in the loop:
 
 - **First pass on an unfamiliar codebase.** The artifact-by-artifact pause is where you learn what the model is doing. The runner collapses that into one command — useful later, not now.
 - **Exploratory work where you'll pivot mid-chain.** If you'll likely abandon `blueprint`'s output to re-run `discover` with a different framing, the runner's straight-through execution costs you tokens you didn't need to spend.
@@ -111,10 +124,17 @@ Pick the runner when the shape of the work matches one of the four bundled chain
 
 ## Author your own workflow
 
-The four bundled workflows are skill-agnostic in shape — the runner doesn't know `research` or `commit` ship from `rpiv-pi`. Drop a TypeScript file under `.rpiv-workflow/workflows.config.ts` in your project (or `~/.config/rpiv-workflow/workflows.config.ts` for a user-level default) and chain your own skills:
+The five bundled workflows are skill-agnostic in shape — the runner doesn't know `research` or `commit` ship from `rpiv-pi`. Drop a TypeScript file under `.rpiv-workflow/workflows.config.ts` in your project (or `~/.config/rpiv-workflow/workflows.config.ts` for a user-level default) and chain your own skills:
 
 ```ts
-import { defineWorkflow, produces, acts, gate, gt, eq } from "@juicesharp/rpiv-workflow";
+import {
+  defineWorkflow,
+  produces,
+  acts,
+  gate,
+  gt,
+  eq,
+} from "@juicesharp/rpiv-workflow";
 // myPlanOutcome / myReviewOutcome are your OutputSpec values
 // (collector + optional parser). produces stages require one — the
 // load-time validator rejects a produces stage without an outcome.
@@ -125,14 +145,23 @@ export default defineWorkflow({
   stages: {
     plan: produces({ outcome: myPlanOutcome }),
     implement: acts(),
-    "code-review": produces({ outcome: myReviewOutcome, outputSchema: REVIEW_SCHEMA }),
-    revise: produces({ outcome: myPlanOutcome, reads: ["plan", "code-review"] }),
+    "code-review": produces({
+      outcome: myReviewOutcome,
+      outputSchema: REVIEW_SCHEMA,
+    }),
+    revise: produces({
+      outcome: myPlanOutcome,
+      reads: ["plan", "code-review"],
+    }),
     commit: acts(),
   },
   edges: {
     plan: "implement",
     implement: "code-review",
-    "code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }),
+    "code-review": gate("blockers_count", {
+      revise: gt(0),
+      commit: eq(0),
+    }),
     revise: "implement",
     commit: "stop",
   },
