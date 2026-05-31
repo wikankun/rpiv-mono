@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### BREAKING CHANGES
+- Project workflow config moved from `.rpiv-workflow/` to the unified `.rpiv/workflows/` tree, and the three concerns now each have their own subfolder:
+  - `.rpiv-workflow/workflows.config.ts` → `.rpiv/workflows/config.ts`
+  - `.rpiv-workflow/workflows/*.ts` → `.rpiv/workflows/packs/*.ts`
+  - run state `.rpiv/workflows/<run-id>.jsonl` → `.rpiv/workflows/runs/<run-id>.jsonl`
+
+  The user layer's inner names are aligned for symmetry: `~/.config/rpiv-workflow/{config.ts, packs/}`. The new paths are the **only** locations read — there is no legacy fallback. A one-time load-time warning fires when a legacy `.rpiv-workflow/` directory is detected, pointing at the new location (the old files are ignored, never loaded). Migrate:
+
+  ```sh
+  mv .rpiv-workflow/workflows.config.ts .rpiv/workflows/config.ts
+  mv .rpiv-workflow/workflows .rpiv/workflows/packs
+  ```
+
+- The public `workflowsDir` export is renamed `runsDir` and now points at `.rpiv/workflows/runs` (was `.rpiv/workflows`). Update any direct importers.
+
+### Added
+- New `skillAliases` config field — declaratively remap skill names across **all** workflows (built-in + user + project) at load time, without redeclaring any workflow or touching the runner. In `config.ts`:
+
+  ```ts
+  export default { skillAliases: { commit: "attributed-commit" } }
+  ```
+
+  Every dispatching stage whose effective skill (`stage.skill ?? stageName`) matches an alias key is remapped — implicit skills are materialised. One hop only (no transitive chains); `run`/`prompt` stages are skipped; aliases merge project-over-user per key. Surfaced in `/wf` preview as a `Skill aliases in effect: …` banner; an alias key matching no dispatched skill emits a load-time warning (no-op). The `{ workflows, default?, skillAliases? }` envelope now makes `workflows` optional (an alias-only config is valid); packs still reject the envelope. New export: `aliasSkills`; `LoadedWorkflows` gains `skillAliases` (the merged, applied map).
+
 ## [1.16.1] - 2026-05-30
 
 ### Fixed

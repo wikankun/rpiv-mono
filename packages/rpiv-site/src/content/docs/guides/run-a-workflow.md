@@ -49,7 +49,7 @@ Architecture-review-driven polish for a review too large to plan in one pass. `a
 
 **Conditional routing with a bounded loop.** The hand-driven chain treats `code-review → commit` as the default and you eyeball the review to decide whether to `revise`. The workflow makes the routing explicit — a `gate(field, branches)` over `output.data`, or a `defineRoute(targets, fn)` for non-numeric discriminators (the path `vet` takes for its string `status`). Backward edges are first-class: a `revise → implement` jump or a `code-review → design` jump is just another edge target, with the runner counting backward jumps and halting at `maxBackwardJumps` (default 2) so a stuck loop can't burn through your tokens forever.
 
-**An audited trail.** Every run writes one JSONL file under `<cwd>/.rpiv/workflows/<run-id>.jsonl`. The first line is a `WorkflowHeader` carrying the run id, workflow name, original input, timestamp, and trigger (`command`, `programmatic`, or `external` with a source string for webhooks and cron). Subsequent lines are one `WorkflowStage` row per executed stage plus routing-decision rows. `listRuns(cwd)` enumerates headers cheaply (first-line reads only); `readLastStage`, `readAllStages`, and `listArtifacts` open a specific run for inspection.
+**An audited trail.** Every run writes one JSONL file under `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`. The first line is a `WorkflowHeader` carrying the run id, workflow name, original input, timestamp, and trigger (`command`, `programmatic`, or `external` with a source string for webhooks and cron). Subsequent lines are one `WorkflowStage` row per executed stage plus routing-decision rows. `listRuns(cwd)` enumerates headers cheaply (first-line reads only); `readLastStage`, `readAllStages`, and `listArtifacts` open a specific run for inspection.
 
 **Programmatic entry points.** `/wf` is one of three doors. `runWorkflow(ctx, { workflow, input, host, trigger?, lifecycle? })` lets a sibling extension, a cron job, or a webhook handler kick off the same chain — the JSONL header records which it was via `trigger`, so post-hoc readers know whether a run came from your terminal or a deploy hook. The return envelope (`{ runId, stagesCompleted, success, lastArtifact?, error? }`) is what calling code branches on.
 
@@ -124,7 +124,7 @@ Pick the runner when the shape of the work matches one of the five bundled chain
 
 ## Author your own workflow
 
-The five bundled workflows are skill-agnostic in shape — the runner doesn't know `research` or `commit` ship from `rpiv-pi`. Drop a TypeScript file under `.rpiv-workflow/workflows.config.ts` in your project (or `~/.config/rpiv-workflow/workflows.config.ts` for a user-level default) and chain your own skills:
+The five bundled workflows are skill-agnostic in shape — the runner doesn't know `research` or `commit` ship from `rpiv-pi`. Drop a TypeScript file under `.rpiv/workflows/config.ts` in your project (or `~/.config/rpiv-workflow/config.ts` for a user-level default) and chain your own skills:
 
 ```ts
 import {
@@ -168,7 +168,15 @@ export default defineWorkflow({
 });
 ```
 
-Two file roles per layer. **Config files** (`workflows.config.ts`) are the one TypeScript file you hand-edit per project or per user, and the only place that can set `default` — the workflow `/wf <input>` runs without a name. **Pack files** (`workflows/*.ts`) are installable bundles: drop them in, get new workflows, no risk of overwriting your default. This is what makes shared workflow packs safe.
+Two file roles per layer. **Config files** (`config.ts`) are the one TypeScript file you hand-edit per project or per user, and the only place that can set `default` — the workflow `/wf <input>` runs without a name. **Pack files** (`packs/*.ts`) are installable bundles: drop them in, get new workflows, no risk of overwriting your default. This is what makes shared workflow packs safe.
+
+**Reuse a bundled skill everywhere.** Want the bundled `ship`/`build`/`arch`/`vet` chains but with your own commit skill — say one that adds model attribution to the message? Don't fork the workflows. Declare a `skillAliases` map in your `config.ts` and every stage that would dispatch `/skill:commit` dispatches yours instead:
+
+```ts
+export default { skillAliases: { commit: "attributed-commit" } };
+```
+
+It remaps the skill name across all loaded workflows (built-in included) at load time — one hop, project-over-user, surfaced in the `/wf` preview banner. The bundled workflows stay untouched and upgrade-safe.
 
 The full DSL — every stage factory, the bundled outcome catalog, conditional routing, script stages without a Pi session, lifecycle observers, the programmatic runner — lives next to the runtime: see the [rpiv-workflow README](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-workflow/README.md) and the [authoring reference](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-workflow/docs/workflow-authoring.md).
 

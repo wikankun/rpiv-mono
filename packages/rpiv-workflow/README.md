@@ -41,11 +41,13 @@ The loader merges workflows from three layers (each later layer overrides earlie
 
 ```
 built-in (programmatic — registered by sibling packages like rpiv-pi)
-  ← user packs        (~/.config/rpiv-workflow/workflows/*.ts, alpha-sorted)
-  ← user config       (~/.config/rpiv-workflow/workflows.config.ts)
-  ← project packs     (<cwd>/.rpiv-workflow/workflows/*.ts, alpha-sorted)
-  ← project config    (<cwd>/.rpiv-workflow/workflows.config.ts)
+  ← user packs        (~/.config/rpiv-workflow/packs/*.ts, alpha-sorted)
+  ← user config       (~/.config/rpiv-workflow/config.ts)
+  ← project packs     (<cwd>/.rpiv/workflows/packs/*.ts, alpha-sorted)
+  ← project config    (<cwd>/.rpiv/workflows/config.ts)
 ```
+
+Run state for each `/wf` invocation lands under `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl` — the third subfolder of the same domain dir.
 
 Two file roles per layer:
 
@@ -71,7 +73,25 @@ Two file roles per layer:
   };
   ```
 
-- **Pack files** (`workflows/*.ts`) — installable bundles others can drop in. Accept only `Workflow | Workflow[]`. Packs **cannot** set `default` — that lives in the config file. This is what makes installable workflow packs safe: a pack contributes new workflows without overriding the user's default.
+- **Pack files** (`packs/*.ts`) — installable bundles others can drop in. Accept only `Workflow | Workflow[]`. Packs **cannot** set `default` — that lives in the config file. This is what makes installable workflow packs safe: a pack contributes new workflows without overriding the user's default.
+
+### Skill aliases
+
+`skillAliases` remaps a skill name across **every** loaded workflow (built-in + user + project) with one declarative config entry — no workflow redeclaration. It's a config-file-only envelope field (packs reject it), applied at load time so preview, the JSONL audit, and the runtime skill preflight all see the final skill; the runner is untouched.
+
+```ts
+// config.ts — alias-only is valid (no `workflows` needed)
+export default { skillAliases: { commit: "attributed-commit" } };
+
+// or alongside workflows + default
+export default {
+  workflows: [ /* … */ ],
+  default: "ship",
+  skillAliases: { commit: "attributed-commit", "code-review": "strict-review" },
+};
+```
+
+The key is the **skill** name (`stage.skill ?? <stage key>`), not the stage id. One hop only (no transitive chains); `run`/`prompt` stages are skipped; aliases merge project-over-user per key. `/wf` shows a `Skill aliases in effect: …` banner; an alias matching no dispatched skill warns at load time (no-op); a bad target reuses the existing runtime "skill not found" preflight. Use it to point a bundled skill (say `commit`) at your own variant (`attributed-commit`) everywhere, upgrade-safe.
 
 ## Authoring DSL
 

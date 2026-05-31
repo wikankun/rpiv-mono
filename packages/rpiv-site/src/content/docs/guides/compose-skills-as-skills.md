@@ -228,10 +228,33 @@ The review loop routes on the same `{ blockers_count }` schema as `build`, but t
 
 A workflow lives in one of two file roles per layer:
 
-- **Config files** (`.rpiv-workflow/workflows.config.ts` in a project, `~/.config/rpiv-workflow/workflows.config.ts` for a user default) are the one TypeScript file you hand-edit, and the **only** place that can set `default` — the workflow `/wf <input>` runs with no name.
-- **Pack files** (`workflows/*.ts`) are installable bundles: drop them in, get new workflows, no risk of overwriting anyone's default. That split is what makes shared workflow packs safe.
+- **Config files** (`.rpiv/workflows/config.ts` in a project, `~/.config/rpiv-workflow/config.ts` for a user default) are the one TypeScript file you hand-edit, and the **only** place that can set `default` — the workflow `/wf <input>` runs with no name.
+- **Pack files** (`packs/*.ts`) are installable bundles: drop them in, get new workflows, no risk of overwriting anyone's default. That split is what makes shared workflow packs safe.
 
 The runner is skill-agnostic — it doesn't know `research` or `commit` ship from `rpiv-pi`. Chain your own skills the same way, and run `validateWorkflow()` before you ship; `/wf` blocks execution on any error-severity issue, so catching it at authoring time is free.
+
+## Reuse a bundled skill everywhere: `skillAliases`
+
+You often want the bundled chains — `ship`, `build`, `arch`, `vet`, `polish` — exactly as shipped, but with one skill swapped for your own. The canonical case: a team that wants **model attribution on commits** authors an `attributed-commit` skill and needs every chain to use it instead of the bundled `commit`. Forking five workflow definitions to change one stage is the wrong move — they'd drift on the next upgrade.
+
+`skillAliases` is the seam for this. A single declarative entry in your `config.ts` remaps a skill name across **every** loaded workflow — built-in, user, and project — at load time:
+
+```ts
+// .rpiv/workflows/config.ts
+export default { skillAliases: { commit: "attributed-commit" } };
+```
+
+Now every stage that would dispatch `/skill:commit` — in `ship`, `build`, `arch`, `vet`, and any workflow you authored — dispatches `/skill:attributed-commit`. The bundled definitions stay byte-for-byte untouched and upgrade-safe.
+
+A few properties worth knowing:
+
+- **The key is the skill name**, not the stage id — `stage.skill ?? <stage key>`. An implicit-skill `commit:` stage and an explicit `release: acts({ skill: "commit" })` stage are both caught by `{ commit: … }`.
+- **One hop only.** `{ a: "b", b: "c" }` maps a `→ b`, never `a → c`. No transitive chains, no cycles.
+- **`run`/`prompt` stages are skipped** — they don't dispatch a `/skill:`.
+- **Project overrides user** per key; the merged map applies to the whole set.
+- **It's config-only** — packs reject the envelope, keeping `default` and aliases one-source-of-truth-per-layer. An alias-only `config.ts` (no `workflows`) is valid.
+
+It's visible, not magic: `/wf` previews a `Skill aliases in effect: commit → attributed-commit` banner, and an alias key that matches no dispatched skill anywhere surfaces a load-time warning. A bad target (a skill that doesn't exist) trips the same runtime "skill not found" preflight a mistyped `skill:` would.
 
 ## What's next
 

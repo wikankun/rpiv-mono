@@ -30,7 +30,7 @@ The recipes below run the same skills in the same order whether you invoke them 
 - **`/wf arch`** — `research → design → plan → implement → validate → code-review → (back to design → loop) → commit`. Design-led. The loop returns to `design` directly — there's no `revise` stage in this chain.
 - **`/wf vet`** — `code-review → (blueprint → implement → validate → loop) → commit`. Orthogonal to scope: point it at an existing diff (yours or a teammate's) for a structured review with an optional fix cycle.
 
-The runner writes artifacts under `.rpiv/artifacts/` exactly as the hand-driven chain does, plus an audited JSONL trail per run under `.rpiv/workflows/<run-id>.jsonl` you can resume from. Routing is typed — `code-review` declares an output schema (`blockers_count` for build/arch, `status` for vet) and the runner picks the next stage from the value, no eyeballing required. Both build and arch fan out `implement` into one Pi session per `## Phase N:` heading in the inherited plan.
+The runner writes artifacts under `.rpiv/artifacts/` exactly as the hand-driven chain does, plus an audited JSONL trail per run under `.rpiv/workflows/runs/<run-id>.jsonl` you can resume from. Routing is typed — `code-review` declares an output schema (`blockers_count` for build/arch, `status` for vet) and the runner picks the next stage from the value, no eyeballing required. Both build and arch fan out `implement` into one Pi session per `## Phase N:` heading in the inherited plan.
 
 Hand-drive when you want the pause between every artifact — for exploratory work, mid-flow pivots, or your first pass through a codebase. Use `/wf` once the chain's rhythm is muscle memory. → [Run a workflow](/docs/guides/run-a-workflow).
 
