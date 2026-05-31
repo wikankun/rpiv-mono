@@ -49,6 +49,8 @@ export interface LoadAccumulator {
 export interface LayerOutcome {
 	contributed: boolean;
 	configDefault: string | undefined;
+	/** The config file's `skillAliases` map (or `undefined`). Packs can't set it. */
+	skillAliases: Record<string, string> | undefined;
 }
 
 export function loadError(acc: LoadAccumulator, layer: ConfigLayer, path: string | undefined, message: string): void {
@@ -70,6 +72,7 @@ export function loadError(acc: LoadAccumulator, layer: ConfigLayer, path: string
 export async function loadLayer(paths: OverlayPaths, layer: ConfigLayer, acc: LoadAccumulator): Promise<LayerOutcome> {
 	let contributed = false;
 	let configDefault: string | undefined;
+	let skillAliases: Record<string, string> | undefined;
 
 	for (const packPath of enumeratePacks(paths.packsDir)) {
 		const parsed = await loadOverlayFile(packPath, layer, acc, "pack");
@@ -83,11 +86,12 @@ export async function loadLayer(paths: OverlayPaths, layer: ConfigLayer, acc: Lo
 		if (configParsed) {
 			mergeOverlay(configParsed, layer, paths.configFile, acc);
 			configDefault = configParsed.default;
+			skillAliases = configParsed.skillAliases;
 			contributed = true;
 		}
 	}
 
-	return { contributed, configDefault };
+	return { contributed, configDefault, skillAliases };
 }
 
 /** Alpha-sorted `*.ts` files directly under `dir`. Empty array if `dir` doesn't exist. */

@@ -312,3 +312,27 @@ describe("formatWorkflowDetails", () => {
 		expect(aliasLine).toContain("implement-after-revise (skill: implement)");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Skill-alias banner — shown in both formatters when aliases are in effect
+// ---------------------------------------------------------------------------
+
+describe("skill-alias banner", () => {
+	it("renders the banner in the details view when aliases are in effect", () => {
+		const out = formatWorkflowDetails(
+			baseLoaded({ skillAliases: { commit: "attributed-commit", "code-review": "strict-review" } }),
+			"mid",
+		);
+		expect(out).toContain("Skill aliases in effect: commit → attributed-commit, code-review → strict-review");
+	});
+
+	it("renders the banner in the list view when aliases are in effect", () => {
+		const out = formatWorkflowList(baseLoaded({ skillAliases: { commit: "attributed-commit" } }));
+		expect(out).toContain("Skill aliases in effect: commit → attributed-commit");
+	});
+
+	it("omits the banner when no aliases are in effect", () => {
+		expect(formatWorkflowDetails(baseLoaded(), "mid")).not.toContain("Skill aliases in effect");
+		expect(formatWorkflowList(baseLoaded())).not.toContain("Skill aliases in effect");
+	});
+});

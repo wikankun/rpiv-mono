@@ -52,11 +52,13 @@ export function formatWorkflowList(loaded: LoadedWorkflows): string {
 		return `  ${name}  ${stages}  ${layerTag}  ${defaultTag}${desc}`.trimEnd();
 	});
 
+	const aliasBanner = formatAliasBanner(loaded.skillAliases);
 	return [
 		"Available workflows:",
 		"",
 		...rows,
 		"",
+		...(aliasBanner ? [aliasBanner] : []),
 		formatLayerBanner(loaded.layers),
 		CMD_USAGE_LIST,
 		CMD_USAGE_PREVIEW,
@@ -76,8 +78,17 @@ export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): st
 	const stageRows = Object.entries(workflow.stages).map(([stageName, stage], i) =>
 		formatStageRow(i + 1, stageName, stage, workflow),
 	);
+	const aliasBanner = formatAliasBanner(loaded.skillAliases);
 
-	return [heading, ...descriptionLine, "", ...stageRows, "", CMD_USAGE_RUN(name)].join("\n");
+	return [
+		heading,
+		...descriptionLine,
+		"",
+		...stageRows,
+		"",
+		...(aliasBanner ? [aliasBanner, ""] : []),
+		CMD_USAGE_RUN(name),
+	].join("\n");
 }
 
 // ===========================================================================
@@ -139,4 +150,16 @@ function formatEdge(workflow: Workflow, from: string): string | undefined {
 /** "Sources: built-in + user + project" — single-line layer banner. */
 function formatLayerBanner(layers: readonly ConfigLayer[]): string {
 	return `Sources: ${layers.map(renderConfigLayer).join(" + ")}`;
+}
+
+/**
+ * "Skill aliases in effect: commit → attributed-commit, code-review → strict-review"
+ * — shown only when a `skillAliases` map is in effect. No silent magic: the
+ * banner surfaces every active remap so a reader can see why a stage dispatches
+ * a different skill than its name.
+ */
+function formatAliasBanner(aliases: Readonly<Record<string, string>> | undefined): string | undefined {
+	const entries = Object.entries(aliases ?? {});
+	if (entries.length === 0) return undefined;
+	return `Skill aliases in effect: ${entries.map(([from, to]) => `${from} → ${to}`).join(", ")}`;
 }

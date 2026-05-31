@@ -8,8 +8,9 @@
 import type { Workflow } from "../api.js";
 
 export interface Envelope {
-	workflows: Workflow[];
+	workflows?: Workflow[];
 	default?: string;
+	skillAliases?: Record<string, string>;
 }
 
 export function isWorkflow(v: unknown): v is Workflow {
@@ -27,7 +28,12 @@ export function isWorkflow(v: unknown): v is Workflow {
 
 export function isEnvelope(v: unknown): v is Envelope {
 	if (!v || typeof v !== "object") return false;
-	return Array.isArray((v as Record<string, unknown>).workflows);
+	if (isWorkflow(v)) return false; // a bare Workflow is not an envelope
+	const e = v as Record<string, unknown>;
+	// An envelope is the config-file shape: it carries `workflows`, and/or the
+	// config-only fields `skillAliases` / `default`. (An alias-only config has
+	// no `workflows`.)
+	return Array.isArray(e.workflows) || "skillAliases" in e || "default" in e;
 }
 
 export function describe(v: unknown): string {

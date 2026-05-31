@@ -21,6 +21,7 @@ export type FileKind = "config" | "pack";
 export interface ParsedConfig {
 	workflows: Workflow[];
 	default?: string;
+	skillAliases?: Record<string, string>;
 }
 
 export type NormalizeResult = { kind: "ok"; value: ParsedConfig } | { kind: "err"; error: string };
@@ -56,13 +57,28 @@ export function normalizeDefaultExport(raw: unknown, kind: FileKind): NormalizeR
 				kind: "err",
 				error:
 					"pack workflow files must export a `Workflow` or `Workflow[]` — the " +
-					"`{ workflows, default? }` envelope is only accepted in the config file workflows.config.ts.",
+					"`{ workflows, default?, skillAliases? }` envelope is only accepted in the config file config.ts.",
 			};
 		}
-		if (!raw.workflows.every(isWorkflow)) {
+		const workflows = raw.workflows ?? [];
+		if (!workflows.every(isWorkflow)) {
 			return { kind: "err", error: "default-export `workflows` must contain only Workflow objects" };
 		}
-		return { kind: "ok", value: { workflows: raw.workflows, default: raw.default } };
+		if (raw.skillAliases !== undefined) {
+			const aliases = raw.skillAliases as unknown;
+			const ok =
+				typeof aliases === "object" &&
+				aliases !== null &&
+				!Array.isArray(aliases) &&
+				Object.values(aliases).every((t) => typeof t === "string");
+			if (!ok) {
+				return {
+					kind: "err",
+					error: "`skillAliases` must be a Record<string, string> (skill name → skill name)",
+				};
+			}
+		}
+		return { kind: "ok", value: { workflows, default: raw.default, skillAliases: raw.skillAliases } };
 	}
 	return {
 		kind: "err",

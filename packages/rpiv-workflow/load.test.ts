@@ -686,3 +686,104 @@ export default defineWorkflow({ name: "legacy-wf", start: "x", stages: { x: prod
 		expect(loaded.issues.some((i) => i.kind === "load" && /\.rpiv-workflow/.test(i.message))).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// skillAliases — declarative load-time skill remapping
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — skillAliases", () => {
+	it("remaps a stage's dispatched skill end-to-end (envelope form)", async () => {
+		writeProjectConfig(
+			TEST_TMP,
+			`${importApi}
+export default {
+  workflows: [
+    defineWorkflow({
+      name: "ship",
+      start: "implement",
+      stages: { implement: acts(), commit: acts() },
+      edges: { implement: "commit", commit: "stop" },
+    }),
+  ],
+  skillAliases: { commit: "attributed-commit" },
+};
+`,
+		);
+
+		const loaded = await loadWorkflows(TEST_TMP);
+		const ship = loaded.workflows.find((w) => w.name === "ship")!;
+		expect(ship.stages.commit?.skill).toBe("attributed-commit");
+		expect(loaded.skillAliases).toEqual({ commit: "attributed-commit" });
+		expect(loaded.issues.filter((i) => i.severity === "error")).toEqual([]);
+	});
+
+	it("aliases built-in workflows too (global scope)", async () => {
+		// Built-in `small` has an implicit-skill `implement` stage.
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { implement: 'impl2' } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		const small = loaded.workflows.find((w) => w.name === "small")!;
+		expect(small.stages.implement?.skill).toBe("impl2");
+	});
+
+	it("never mutates the shared built-in registry — a later alias-free load is vanilla", async () => {
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { implement: 'impl2' } };\n");
+		const aliased = await loadWorkflows(TEST_TMP);
+		expect(aliased.workflows.find((w) => w.name === "small")!.stages.implement?.skill).toBe("impl2");
+
+		// Drop the overlay and reload: the built-in must be back to its implicit skill.
+		rmSync(PROJECT_PATHS.configFile, { force: true });
+		const plain = await loadWorkflows(TEST_TMP);
+		expect(plain.workflows.find((w) => w.name === "small")!.stages.implement?.skill).toBeUndefined();
+		expect(plain.skillAliases).toEqual({});
+	});
+
+	it("project aliases override user aliases per key", async () => {
+		writeUserConfig("export default { skillAliases: { implement: 'user-impl', extra: 'user-extra' } };\n");
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { implement: 'proj-impl' } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.skillAliases).toEqual({ implement: "proj-impl", extra: "user-extra" });
+		expect(loaded.workflows.find((w) => w.name === "small")!.stages.implement?.skill).toBe("proj-impl");
+	});
+
+	it("accepts an alias-only config (no `workflows` field)", async () => {
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { implement: 'impl2' } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(loaded.skillAliases).toEqual({ implement: "impl2" });
+		expect(loaded.issues.filter((i) => i.severity === "error")).toEqual([]);
+	});
+
+	it("warns (no error) when an alias key matches no dispatched skill", async () => {
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { 'does-not-exist': 'x' } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(
+			loaded.issues.some(
+				(i) => i.kind === "load" && i.severity === "warning" && /matches no dispatched skill/.test(i.message),
+			),
+		).toBe(true);
+		expect(loaded.issues.filter((i) => i.severity === "error")).toEqual([]);
+	});
+
+	it("rejects a non-string alias value with a load error", async () => {
+		writeProjectConfig(TEST_TMP, "export default { skillAliases: { commit: 123 } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(
+			loaded.issues.some(
+				(i) =>
+					i.kind === "load" && i.severity === "error" && /skillAliases.*Record<string, string>/.test(i.message),
+			),
+		).toBe(true);
+	});
+
+	it("rejects the skillAliases envelope in a pack file", async () => {
+		writeProjectPack(TEST_TMP, "aliases.ts", "export default { skillAliases: { commit: 'x' } };\n");
+		const loaded = await loadWorkflows(TEST_TMP);
+		expect(
+			loaded.issues.some(
+				(i) =>
+					i.kind === "load" &&
+					i.severity === "error" &&
+					/pack workflow files must export a `Workflow` or `Workflow\[\]`/.test(i.message),
+			),
+		).toBe(true);
+	});
+});

@@ -57,6 +57,7 @@ import { getBuiltIns } from "../built-ins.js";
 import type { ConfigLayer } from "../layers.js";
 import { LEGACY_OVERLAY_NOTICE } from "../messages.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
+import { aliasSkills } from "./alias.js";
 import { type LoadAccumulator, loadLayer } from "./merge.js";
 import { projectOverlayPaths, userOverlayPaths } from "./paths.js";
 import { resolveDefault } from "./resolve-default.js";
@@ -66,6 +67,7 @@ import { resolveDefault } from "./resolve-default.js";
 // ===========================================================================
 
 export type { ConfigLayer } from "../layers.js";
+export { aliasSkills } from "./alias.js";
 export { __resetLoadCache } from "./cache.js";
 export type { OverlayPaths } from "./paths.js";
 export { projectOverlayPaths, userOverlayPaths } from "./paths.js";
@@ -94,6 +96,14 @@ export interface LoadedWorkflows {
 	layers: readonly ConfigLayer[];
 	/** Aggregated load + validation issues. Errors block the runner; warnings are advisory. */
 	issues: readonly Issue[];
+	/**
+	 * The merged, applied skill-alias map (project over user, per-key).
+	 * `loadWorkflows` always populates it (empty `{}` when no layer declared
+	 * `skillAliases`); optional only so external constructors (test mocks) may
+	 * omit it. `/wf` preview renders this as a banner; every dispatching stage
+	 * in `workflows` already reflects the remap.
+	 */
+	skillAliases?: Readonly<Record<string, string>>;
 }
 
 // ===========================================================================
@@ -147,6 +157,37 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 		acc.issues.push({ kind: "load", layer: "project", severity: "warning", message: LEGACY_OVERLAY_NOTICE(cwd) });
 	}
 
+	// Merge skill aliases (project overrides user, per-key) and apply them to
+	// every workflow — built-ins included — BEFORE the validation loop, so the
+	// aliased workflows are validated and preview / JSONL / the runtime
+	// skill-registry preflight all observe the final skill. The runner is untouched.
+	const skillAliases: Record<string, string> = {
+		...(userOutcome.skillAliases ?? {}),
+		...(projectOutcome.skillAliases ?? {}),
+	};
+	if (Object.keys(skillAliases).length > 0) {
+		// Snapshot the pre-remap dispatched-skill set so the "no-op alias" warning
+		// compares against the skills authors actually wrote — not alias targets
+		// freshly introduced by this very remap.
+		const dispatchedBefore = new Set<string>();
+		for (const w of acc.workflowMap.values()) {
+			for (const [stageName, stage] of Object.entries(w.stages)) {
+				if (stage.run == null && stage.prompt == null) dispatchedBefore.add(stage.skill ?? stageName);
+			}
+		}
+		for (const [name, w] of acc.workflowMap) acc.workflowMap.set(name, aliasSkills(w, skillAliases));
+		for (const key of Object.keys(skillAliases)) {
+			if (!dispatchedBefore.has(key)) {
+				acc.issues.push({
+					kind: "load",
+					layer: "project",
+					severity: "warning",
+					message: `skillAliases: "${key}" matches no dispatched skill in any workflow (no-op).`,
+				});
+			}
+		}
+	}
+
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user
 	// errors. Each issue is attributed to the exact file the surviving workflow
@@ -166,5 +207,6 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 		workflowSources: acc.sources,
 		layers,
 		issues: acc.issues,
+		skillAliases,
 	};
 }
