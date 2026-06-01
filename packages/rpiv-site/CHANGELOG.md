@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- New authoring guide: "Compose skills as skills" — walks the bundled `polish` workflow as the iterate+prompt capstone, including the four-questions protocol and raw-text prompt dispatch.
+- Blogroll rows are fully clickable, with a row-level hover affordance.
+
+### Changed
+- Docs reference the unified `.rpiv/workflows/{config.ts, packs/, runs/}` paths and document `skillAliases`.
+- Documented the `polish` workflow and the `vet` workflow scope; reflowed code blocks to fit narrow columns.
+- Clarified the difference between `design` + `plan` and `blueprint`, and reconciled pipeline path counts.
+- Pipeline cards: moved optional/manual tags into the card header, reserved tagline and `collects` heights so COLLECTS / WHY / PRODUCES align row-to-row across panels, and rewrote the WHY copy to give design rationale.
+- Unified section headers and ledes into one voice and removed em dashes across rendered copy (headings, taglines, figure captions, pipeline WHY text, and blog excerpts).
+
+### Fixed
+- Docs layout: the reading-measure cap now applies only to running text, so code, tables, and images use the full content column; the TOC gets a roomier column on pages with one.
+- Agent carousel: drag-to-scroll and arrow / Home / End keyboard navigation now work, and the scrollbar matches the pipeline and sibling scrollers.
+
 ## [1.16.1] - 2026-05-30
 
 ## [1.16.0] - 2026-05-30

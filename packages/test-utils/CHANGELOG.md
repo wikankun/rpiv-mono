@@ -4,6 +4,9 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `verifyShipManifest` now treats a bare directory name in `package.json#files` (e.g. `"load"`) as recursive directory inclusion, matching npm's `files` semantics. Previously only trailing-slash entries (`"load/"`) were recognised, producing false-positive "missing" reports for packages using bare directory names.
+
 ## [1.16.1] - 2026-05-30
 
 ## [1.16.0] - 2026-05-30

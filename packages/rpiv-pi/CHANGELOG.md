@@ -7,6 +7,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `design` and `blueprint`: new directional-decision tier in the developer checkpoint. Directional findings (extend-vs-replace, propagate-a-pattern, spread-a-convention) get a single batched confirm at Step 4, separate from genuine ambiguities. "Follow the pattern" is offered without a Recommended badge; "move off" promotes the finding to a one-at-a-time genuine question.
+- `design` and `blueprint`: mandatory per-slice **Fit** line at Step 6.3 (reused / new surface / convention) renders on every slice regardless of the omit list.
+
+### Fixed
+- Clean `npm install @juicesharp/rpiv-pi` no longer crashes when the `@juicesharp/rpiv-workflow` peer is absent. Built-in workflow registration is now deferred behind a guarded dynamic import, so `/rpiv-setup` and the missing-siblings banner always load and can offer to install the missing sibling.
+
 ## [1.16.1] - 2026-05-30
 
 ## [1.16.0] - 2026-05-30

@@ -11,6 +11,7 @@
   The user layer's inner names are aligned for symmetry: `~/.config/rpiv-workflow/{config.ts, packs/}`. The new paths are the **only** locations read — there is no legacy fallback. One-time load-time warnings fire when a stale layout is detected (each advisory, never blocking): a legacy project `.rpiv-workflow/` directory, orphaned top-level `.rpiv/workflows/*.jsonl` run files written before the `runs/` relocation, and a legacy user-layer `~/.config/rpiv-workflow/workflows.config.ts`. Each points at the matching `mv`. Migrate:
 
   ```sh
+  mkdir -p .rpiv/workflows
   mv .rpiv-workflow/workflows.config.ts .rpiv/workflows/config.ts
   mv .rpiv-workflow/workflows .rpiv/workflows/packs
   ```
@@ -27,6 +28,10 @@
   ```
 
   Every dispatching stage whose effective skill (`stage.skill ?? stageName`) matches an alias key is remapped — implicit skills are materialised. One hop only (no transitive chains); `run`/`prompt` stages are skipped; aliases merge project-over-user per key. Surfaced in `/wf` preview as a `Skill aliases in effect: …` banner; an alias key matching no dispatched skill emits a load-time warning (no-op). The `{ workflows, default?, skillAliases? }` envelope now makes `workflows` optional (an alias-only config is valid); packs still reject the envelope. New export: `aliasSkills`; `LoadedWorkflows` gains `skillAliases` (the merged, applied map).
+
+### Fixed
+- The in-product legacy-`.rpiv-workflow/` migration shell now creates the destination directory and globs `packs/*.ts`, so the suggested commands succeed on a clean repo and the packs directory lands directly under `.rpiv/workflows/packs/` instead of being nested under `packs/workflows/`.
+- A present-but-non-array `workflows` field in an envelope-shaped `config.ts` is now reported as a load error instead of crashing the loader with `TypeError`, restoring the "loader never throws" contract.
 
 ## [1.16.1] - 2026-05-30
 
