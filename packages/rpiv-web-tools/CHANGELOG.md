@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-web-tools` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.17.1] - 2026-06-01
 
 ### Added
 - **You.com search+fetch provider** — new `FullProvider` backed by You.com's Search API (`POST /v1/search`) and Contents API (`POST /v1/contents`). Returns native markdown with `contentType: "text/markdown"`. Configure via `YOUCOM_API_KEY` env var or `apiKeys.youcom` in `~/.config/rpiv-web-tools/config.json`. `web_fetch` uses the Contents API for clean markdown extraction (same path as Jina/Firecrawl).
