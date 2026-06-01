@@ -51,21 +51,33 @@ import type { IterateFn } from "@juicesharp/rpiv-workflow";
 
 // one pass per review phase, each seeing the plans
 // the earlier passes already wrote
-const perPhase: IterateFn = ({ artifact, accumulated, index, cwd }) => {
+const perPhase: IterateFn = ({
+  artifact,
+  accumulated,
+  index,
+  cwd,
+}) => {
   if (artifact?.handle.kind !== "fs") return null;
   const phases = readPhases(artifact.handle.path, cwd);
   if (index >= phases.length) return null; // terminator
-  const prior = accumulated.flatMap((o) => o.artifacts).map(pathOf);
+  const prior = accumulated
+    .flatMap((o) => o.artifacts)
+    .map(pathOf);
   return {
     prompt:
       `${artifact.handle.path} Phase ${phases[index].n}` +
-      (prior.length ? `\nPrior plans: ${prior.join(", ")}` : ""),
+      (prior.length
+        ? `\nPrior plans: ${prior.join(", ")}`
+        : ""),
     label: `phase ${index + 1}/${phases.length}`,
     id: `phase-${phases[index].n}`, // stable audit key
   };
 };
 
-produces({ outcome: rpivBucketOutcome("plans"), iterate: perPhase });
+produces({
+  outcome: rpivBucketOutcome("plans"),
+  iterate: perPhase,
+});
 ```
 
 `iterate` requires `kind: "produces"` and an `outcome` with a `name`;
@@ -145,9 +157,12 @@ own subfolder:
 
 ```sh
 mkdir -p .rpiv/workflows
-mv .rpiv-workflow/workflows.config.ts .rpiv/workflows/config.ts
-mv .rpiv-workflow/workflows            .rpiv/workflows/packs
-# run state: .rpiv/workflows/<run-id>.jsonl → .rpiv/workflows/runs/<id>.jsonl
+mv .rpiv-workflow/workflows.config.ts \
+   .rpiv/workflows/config.ts
+mv .rpiv-workflow/workflows .rpiv/workflows/packs
+# run state moves too:
+#   .rpiv/workflows/<run-id>.jsonl
+#   → .rpiv/workflows/runs/<id>.jsonl
 ```
 
 The user layer aligns for symmetry:
@@ -186,7 +201,9 @@ user, and project) at load time:
 
 ```ts
 // .rpiv/workflows/config.ts
-export default { skillAliases: { commit: "attributed-commit" } };
+export default {
+  skillAliases: { commit: "attributed-commit" },
+};
 ```
 
 Now every stage that would dispatch `/skill:commit` dispatches
