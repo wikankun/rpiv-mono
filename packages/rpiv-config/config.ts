@@ -146,16 +146,37 @@ export function validateGuidanceFields(fields: unknown): GuidanceFields {
 // Model key codec — provider:id string ↔ { provider, modelId } object.
 // ---------------------------------------------------------------------------
 
-/** Parse a "provider:modelId" string into its components. */
+/**
+ * Parse a model key string into its components.
+ *
+ * Accepts EITHER separator on read:
+ *   - "provider/modelId" — canonical form (emitted by modelKey and persisted
+ *     by post-slash-canonical-migration consumers).
+ *   - "provider:modelId" — legacy form (persisted by released rpiv-advisor
+ *     1.16+ before the migration). Auto-rewritten on the next save by any
+ *     consumer that re-serialises via modelKey.
+ *
+ * Slash is preferred when present — a key like "provider:foo/bar" splits on
+ * `/`, so the modelId is "bar" rather than re-introducing the legacy
+ * interpretation. No current model id contains a `/` so this asymmetry has
+ * no real-world ambiguity.
+ */
 export function parseModelKey(key: string): { provider: string; modelId: string } | undefined {
-	const idx = key.indexOf(":");
-	if (idx < 1) return undefined;
-	return { provider: key.slice(0, idx), modelId: key.slice(idx + 1) };
+	const slashIdx = key.indexOf("/");
+	if (slashIdx >= 1) return { provider: key.slice(0, slashIdx), modelId: key.slice(slashIdx + 1) };
+	const colonIdx = key.indexOf(":");
+	if (colonIdx >= 1) return { provider: key.slice(0, colonIdx), modelId: key.slice(colonIdx + 1) };
+	return undefined;
 }
 
-/** Compose a "provider:modelId" string from provider and modelId components. */
+/**
+ * Compose the canonical "provider/modelId" string from provider and modelId
+ * components. Slash-only emission; paired with parseModelKey's tolerant read,
+ * legacy colon-form persisted values auto-migrate the next time any consumer
+ * re-serialises through this codec.
+ */
 export function modelKey(m: { provider: string; id: string }): string {
-	return `${m.provider}:${m.id}`;
+	return `${m.provider}/${m.id}`;
 }
 
 // ---------------------------------------------------------------------------

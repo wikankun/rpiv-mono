@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Changed
+- parseModelKey now accepts BOTH `provider/modelId` (canonical slash form) AND `provider:modelId` (legacy colon form) — slash preferred when both separators are present. Consumers persisting colon-form keys auto-migrate on the next save by any consumer that re-serialises via `modelKey`.
+- `modelKey()` now emits only the canonical slash form (`provider/modelId`). Previously emitted `provider:modelId`. Paired with the tolerant read above, this is non-breaking on the read side — but persisted output flips to slash form on every consumer's next write.
+
 ## [1.17.1] - 2026-06-01
 
 ## [1.17.0] - 2026-06-01

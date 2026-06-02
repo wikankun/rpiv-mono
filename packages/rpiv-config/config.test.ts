@@ -223,22 +223,48 @@ describe("validateGuidanceFields", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseModelKey", () => {
-	it("parses provider:modelId format", () => {
+	it("parses canonical provider/modelId (slash form)", () => {
+		expect(parseModelKey("anthropic/claude-sonnet-4-20250514")).toEqual({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-20250514",
+		});
+	});
+
+	it("parses legacy provider:modelId (colon form, back-compat)", () => {
 		expect(parseModelKey("anthropic:claude-sonnet-4-20250514")).toEqual({
 			provider: "anthropic",
 			modelId: "claude-sonnet-4-20250514",
 		});
 	});
 
-	it("returns undefined for no colon", () => {
+	it("prefers slash when both separators present (slash is canonical)", () => {
+		// "provider:foo/bar" → splits on first '/' → provider="provider:foo"
+		expect(parseModelKey("provider:foo/bar")).toEqual({
+			provider: "provider:foo",
+			modelId: "bar",
+		});
+	});
+
+	it("returns undefined when neither separator is present", () => {
 		expect(parseModelKey("just-a-string")).toBeUndefined();
 	});
 
-	it("returns undefined for leading colon", () => {
+	it("returns undefined for leading slash", () => {
+		expect(parseModelKey("/model-id")).toBeUndefined();
+	});
+
+	it("returns undefined for leading colon (legacy form)", () => {
 		expect(parseModelKey(":model-id")).toBeUndefined();
 	});
 
-	it("handles provider with hyphens", () => {
+	it("handles provider with hyphens (slash form)", () => {
+		expect(parseModelKey("google-gemini/gemini-2.5-pro")).toEqual({
+			provider: "google-gemini",
+			modelId: "gemini-2.5-pro",
+		});
+	});
+
+	it("handles provider with hyphens (legacy colon form)", () => {
 		expect(parseModelKey("google-gemini:gemini-2.5-pro")).toEqual({
 			provider: "google-gemini",
 			modelId: "gemini-2.5-pro",
@@ -251,17 +277,28 @@ describe("parseModelKey", () => {
 // ---------------------------------------------------------------------------
 
 describe("modelKey", () => {
-	it("composes provider:id format", () => {
+	it("emits canonical provider/modelId (slash form)", () => {
 		expect(modelKey({ provider: "anthropic", id: "claude-sonnet-4-20250514" })).toBe(
-			"anthropic:claude-sonnet-4-20250514",
+			"anthropic/claude-sonnet-4-20250514",
 		);
 	});
 
-	it("round-trips with parseModelKey", () => {
-		const key = "openai:o3-pro";
+	it("round-trips with parseModelKey (slash form)", () => {
+		const key = "openai/o3-pro";
 		const parsed = parseModelKey(key);
 		expect(parsed).toBeDefined();
 		expect(modelKey({ provider: parsed!.provider, id: parsed!.modelId })).toBe(key);
+	});
+
+	it("auto-migrates legacy colon-form input to slash-form output", () => {
+		// Migration story: an advisor config persisted as "anthropic:opus" parses
+		// cleanly; the next save re-serialises via modelKey and writes "anthropic/opus".
+		const legacy = "anthropic:opus";
+		const parsed = parseModelKey(legacy);
+		expect(parsed).toBeDefined();
+		const rewritten = modelKey({ provider: parsed!.provider, id: parsed!.modelId });
+		expect(rewritten).toBe("anthropic/opus");
+		expect(rewritten).not.toBe(legacy);
 	});
 });
 
