@@ -2,17 +2,21 @@
 
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
 import { renderConfigLayer } from "./layers.js";
-import { findWorkflow, type Issue, loadWorkflows } from "./load/index.js";
+import { findWorkflow, type Issue, type LoadedWorkflows, loadWorkflows } from "./load/index.js";
 import {
 	CMD_DESCRIPTION,
 	MSG_INTERACTIVE_ONLY,
 	MSG_LOAD_ABORTED,
 	MSG_NO_WORKFLOWS_REGISTERED,
+	MSG_RESUME_USAGE,
+	MSG_RESUME_WORKFLOW_GONE,
+	MSG_RUN_NOT_FOUND,
 	MSG_WORKFLOW_NOT_FOUND,
 	MSG_WORKFLOW_THREW,
 } from "./messages.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
-import { runWorkflow } from "./runner/index.js";
+import { resumeWorkflow, runWorkflow } from "./runner/index.js";
+import { resolveRun } from "./state/index.js";
 
 // ---------------------------------------------------------------------------
 // Public entry
@@ -39,7 +43,20 @@ async function handleWorkflowCommand(host: WorkflowHost, args: string, ctx: Work
 	surfaceIssues(ctx, loaded.issues);
 
 	const workflowNames = new Set(loaded.workflows.map((w) => w.name));
-	const { workflow: workflowName, input } = parseArgs(args, { workflowNames, default: loaded.default });
+	const parsed = parseArgs(args, { workflowNames, default: loaded.default });
+
+	if (parsed.kind === "resume") {
+		// Load errors still block (a partially-loaded set could mis-resolve the workflow).
+		const errorCount = loaded.issues.filter((i) => i.severity === "error").length;
+		if (errorCount > 0) {
+			ctx.ui.notify(MSG_LOAD_ABORTED(errorCount), "error");
+			return;
+		}
+		await handleResume(host, ctx, loaded, parsed.ref);
+		return;
+	}
+
+	const { workflow: workflowName, input } = parsed;
 
 	if (!input) {
 		const trimmed = args.trim();
@@ -85,22 +102,66 @@ async function handleWorkflowCommand(host: WorkflowHost, args: string, ctx: Work
 }
 
 // ---------------------------------------------------------------------------
+// Resume handler
+// ---------------------------------------------------------------------------
+
+async function handleResume(
+	host: WorkflowHost,
+	ctx: WorkflowHostContext,
+	loaded: LoadedWorkflows,
+	ref: string,
+): Promise<void> {
+	if (!ref) {
+		ctx.ui.notify(MSG_RESUME_USAGE, "error");
+		return;
+	}
+	const header = resolveRun(ctx.cwd, ref);
+	if (!header) {
+		ctx.ui.notify(MSG_RUN_NOT_FOUND(ref), "error");
+		return;
+	}
+	const workflow = findWorkflow(loaded, header.workflow);
+	if (!workflow) {
+		ctx.ui.notify(MSG_RESUME_WORKFLOW_GONE(header.workflow, ref), "error");
+		return;
+	}
+	try {
+		// resumeWorkflow owns its own refusal/stage notifies; command only catches a hard throw.
+		await resumeWorkflow(ctx, { workflow, header, host, ref });
+	} catch (e) {
+		ctx.ui.notify(MSG_WORKFLOW_THREW(e instanceof Error ? e.message : String(e)), "error");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Arg parsing (exported for tests)
 // ---------------------------------------------------------------------------
+
+export type ParsedCommand = { kind: "run"; workflow: string; input: string } | { kind: "resume"; ref: string };
 
 /**
  * First token is a workflow name iff recognised; otherwise the whole arg is
  * input bound to the resolved default. When no default is registered (the
  * empty-registry case), the returned `workflow` is `""` and the orchestrator
  * surfaces `MSG_NO_WORKFLOWS_REGISTERED`.
+ *
+ * `@<ref>` on the first token is the resume sigil — the first whitespace-
+ * delimited token after `@` is the run reference. Leading space after the
+ * sigil is tolerated (`@ ref` === `@ref`); trailing tokens are ignored.
  */
 export function parseArgs(
 	args: string,
 	loaded: { workflowNames: ReadonlySet<string>; default: string | undefined },
-): { workflow: string; input: string } {
+): ParsedCommand {
 	const trimmed = args.trim();
+
+	if (trimmed.startsWith("@")) {
+		// First token after the sigil is the ref; ignore any trailing tokens for now.
+		return { kind: "resume", ref: trimmed.slice(1).trim().split(/\s+/)[0] ?? "" };
+	}
+
 	if (!trimmed) {
-		return { workflow: loaded.default ?? "", input: "" };
+		return { kind: "run", workflow: loaded.default ?? "", input: "" };
 	}
 
 	const firstSpace = trimmed.indexOf(" ");
@@ -108,10 +169,10 @@ export function parseArgs(
 
 	if (loaded.workflowNames.has(firstToken)) {
 		const remaining = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
-		return { workflow: firstToken, input: remaining };
+		return { kind: "run", workflow: firstToken, input: remaining };
 	}
 
-	return { workflow: loaded.default ?? "", input: trimmed };
+	return { kind: "run", workflow: loaded.default ?? "", input: trimmed };
 }
 
 // ---------------------------------------------------------------------------
