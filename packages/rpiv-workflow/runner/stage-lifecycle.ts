@@ -356,7 +356,7 @@ async function tryIterate(
  * run-wide `maxIterations` cap. Mirrors `checkBackwardJumpGuard`'s terminal
  * path (chain-advance.ts): attribution targets the iterate node's real name.
  */
-async function haltIterations(
+export async function haltIterations(
 	curCtx: WorkflowHostContext,
 	run: RunContext,
 	stageName: string,
@@ -532,7 +532,7 @@ function clampValidateTimeoutMs(raw: number | undefined): number {
 	);
 }
 
-async function captureStageSnapshot(def: StageDef, idx: number, run: RunContext): Promise<unknown> {
+export async function captureStageSnapshot(def: StageDef, idx: number, run: RunContext): Promise<unknown> {
 	const snapshot = def.outcome?.collector.snapshot;
 	if (!snapshot) return undefined;
 	try {

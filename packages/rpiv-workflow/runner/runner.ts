@@ -33,9 +33,9 @@ import type { FanoutDeps } from "../fanout.js";
 import { handleToString } from "../handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "../host.js";
 import { currentPrimaryArtifact } from "../internal-utils.js";
+import type { IterateDeps } from "../iterate.js";
 import { buildLifecycleContext, LifecycleDispatcher, type LifecycleListeners } from "../lifecycle.js";
 import {
-	ERR_RESUME_ITERATE_UNSUPPORTED,
 	ERR_RESUME_NO_ROWS,
 	ERR_RESUME_STAGE_GONE,
 	ERR_WORKFLOW_ABORTED,
@@ -44,15 +44,22 @@ import {
 	MSG_WORKFLOW_COMPLETE,
 	STATUS_KEY,
 } from "../messages.js";
-import { runFanoutSession } from "../sessions/index.js";
+import { runFanoutSession, runStageSession } from "../sessions/index.js";
 import { generateRunId, writeHeader } from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
 import type { RunContext, RunState } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
-import { fanoutStageNames, matchFanoutParent, type ReconstructResult, reconstructState } from "./resume.js";
+import {
+	fanoutStageNames,
+	iterateStageNames,
+	matchFanoutParent,
+	type ReconstructResult,
+	reconstructState,
+} from "./resume.js";
 import { resumeFanoutStage } from "./resume-fanout.js";
-import { runStage, StagePreflightError } from "./stage-lifecycle.js";
+import { resumeIterateStage } from "./resume-iterate.js";
+import { captureStageSnapshot, haltIterations, runStage, StagePreflightError } from "./stage-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Policy constants
@@ -360,12 +367,17 @@ function buildRunContext(
  * Pick the chain re-entry thunk for a resumed run from its trail trailer:
  *   - decorated fanout-unit trailer → resume the fanout from the next unit
  *     (`resumeFanoutStage`);
+ *   - decorated iterate-unit trailer → re-enter the pull loop at the next unit
+ *     (`resumeIterateStage`) — catches BOTH a completed and a failed iterate-unit
+ *     trailer, since a completed unit may still have remaining units to pull;
  *   - completed normal trailer → route onward (a finished run hits stop ⇒ no-op);
  *   - failed/aborted trailer → re-run that stage.
  *
- * A decorated fanout-unit row has a `stage` key absent from `workflow.stages`
- * that matches a fanout parent — meaning the run died inside a fanout. A normal
- * trailer after a fully-completed fanout falls through to the binary arms.
+ * A decorated unit row has a `stage` key absent from `workflow.stages` matching a
+ * fanout/iterate parent — meaning the run died inside that stage. The
+ * `workflow.stages[last.stage] === undefined` outer guard keeps normal trailers on
+ * the binary arms; a normal trailer after a fully-completed fanout/iterate falls
+ * through to them.
  */
 function selectResumeEntry(
 	ctx: WorkflowHostContext,
@@ -376,18 +388,30 @@ function selectResumeEntry(
 	const last = recon.rows[recon.rows.length - 1]!;
 	const idx = last.stageNumber - 1; // status-line / routing index; JSONL number comes from the allocator
 
-	const trailerFanoutParent = workflow.stages[last.stage]
-		? undefined
-		: matchFanoutParent(last.stage, fanoutStageNames(workflow));
-
-	if (trailerFanoutParent) {
-		const fanoutDeps: FanoutDeps = {
-			runFanoutSession,
-			advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
-		};
-		const completed = recon.fanoutProgress.get(trailerFanoutParent) ?? [];
-		return () => resumeFanoutStage(ctx, trailerFanoutParent, idx, completed, run, fanoutDeps);
+	if (workflow.stages[last.stage] === undefined) {
+		const fanoutParent = matchFanoutParent(last.stage, fanoutStageNames(workflow));
+		if (fanoutParent) {
+			const fanoutDeps: FanoutDeps = {
+				runFanoutSession,
+				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
+			};
+			const completed = recon.fanoutProgress.get(fanoutParent) ?? [];
+			return () => resumeFanoutStage(ctx, fanoutParent, idx, completed, run, fanoutDeps);
+		}
+		const iterateParent = matchFanoutParent(last.stage, iterateStageNames(workflow));
+		if (iterateParent) {
+			const iterateDeps: IterateDeps = {
+				runStageSession,
+				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
+				captureSnapshot: (d, i, r) => captureStageSnapshot(d, i, r),
+				haltIterations,
+			};
+			const point = recon.iterateProgress.get(iterateParent) ?? { entryArtifact: undefined, accumulated: [] };
+			const pendingDecorated = last.status !== "completed" ? last.stage : undefined;
+			return () => resumeIterateStage(ctx, iterateParent, idx, point, pendingDecorated, run, iterateDeps);
+		}
 	}
+
 	if (last.status === "completed") {
 		return () => advanceChain(ctx, last.stage, idx, run); // route onward; finished run ⇒ hits stop ⇒ no-op
 	}
@@ -400,8 +424,6 @@ function resumeRefusalError(recon: Extract<ReconstructResult, { ok: false }>, wo
 			return ERR_RESUME_NO_ROWS(recon.detail);
 		case "stage-gone":
 			return ERR_RESUME_STAGE_GONE(recon.detail, workflow);
-		case "iterate-unsupported":
-			return ERR_RESUME_ITERATE_UNSUPPORTED(recon.detail);
 	}
 }
 

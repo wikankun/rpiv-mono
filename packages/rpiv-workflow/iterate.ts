@@ -15,6 +15,13 @@
  * terminator, and `run.maxIterations` (the backstop for a generator that never
  * returns null). No markdown regex, no per-convention counter — rpiv-workflow
  * stays convention-agnostic; the `IterateFn` body owns the convention.
+ *
+ * Resume contract: `resumeWorkflow` re-enters this pull loop at the next
+ * not-yet-completed unit by feeding `runIterate` the reconstructed entry artifact
+ * + accumulated prefix. That REQUIRES the `IterateFn` to be deterministic w.r.t.
+ * its entry artifact + accumulated outputs — resume guards the one checkable
+ * boundary (the re-pulled next unit) and trusts the completed prefix by contract.
+ * See `runner/resume-iterate.ts`.
  */
 
 import type { StageDef } from "./api.js";

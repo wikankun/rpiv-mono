@@ -11,7 +11,8 @@
  *   5. Empty file → no-rows refusal
  *   6. Stage gone from workflow → stage-gone refusal
  *   7. Decorated fanout unit rows → counters-only fold + fanoutProgress;
- *      decorated iterate unit row → iterate-unsupported refusal
+ *      decorated iterate unit rows → full-produces fold + iterateProgress
+ *      (rolling primary, named accumulation, generation reset)
  *   8. Named-slot append-order (array history preserved across repeated calls)
  */
 
@@ -46,6 +47,18 @@ const fakeOutput = (artifacts: readonly Artifact[] = []): Output => ({
 	artifacts,
 	data: {},
 	meta: { stage: "test", stageNumber: 1, ts: "", runId: "" },
+});
+
+/**
+ * Minimal named outcome for fold tests. The collector is never invoked — the
+ * reconstruct fold replays persisted rows, not live sessions — so a stub that
+ * satisfies `OutputSpec` is sufficient. `name` drives `resolvePublishName`.
+ */
+const makeOutcome = (
+	name: string,
+): import("../output.js").OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+	name,
+	collector: { collect: () => ({ kind: "ok", artifacts: [] }) },
 });
 
 /** Minimal 3-stage produces workflow used by most tests. */
@@ -379,25 +392,194 @@ describe("reconstructState", () => {
 		expect(result.visited).toEqual(new Set(["build"]));
 	});
 
-	it("decorated iterate unit row: returns iterate-unsupported refusal", () => {
+	it("looped fanout: a second generation resets fanoutProgress to the trailing pass; stagesCompleted stays cumulative", () => {
+		// build (fanout) -> review (produces) -> build (fanout, gen 2). Units are decorated rows.
 		const wf: Workflow = {
 			name: "test-wf",
-			start: "plan",
+			start: "build",
 			stages: {
-				plan: { kind: "produces", sessionPolicy: "fresh" },
-				refine: { kind: "produces", sessionPolicy: "fresh", iterate: () => null },
+				build: { kind: "produces", sessionPolicy: "fresh", fanout: () => [] },
+				review: { kind: "produces", sessionPolicy: "fresh" },
 			},
-			edges: { plan: "refine", refine: "stop" },
+			edges: { build: "review", review: "build" },
 		} as Workflow;
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1" },
-			{ stageNumber: 2, stage: "refine (phase-1)", skill: "refine", status: "completed", ts: "t2" },
+			{ stageNumber: 1, stage: "build (a)", skill: "build", status: "completed", ts: "t1" },
+			{ stageNumber: 2, stage: "build (b)", skill: "build", status: "completed", ts: "t2" },
+			{
+				stageNumber: 3,
+				stage: "review",
+				skill: "review",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput([fakeArtifact("reviews/r1.md")]),
+			},
+			// gen 2 — non-contiguous with gen 1 (a review row broke contiguity).
+			{ stageNumber: 4, stage: "build (a)", skill: "build", status: "completed", ts: "t4" },
+			{ stageNumber: 5, stage: "build (b)", skill: "build", status: "failed", ts: "t5", errMsg: "boom" },
 		]);
 		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(false);
-		if (result.ok) return;
-		expect(result.reason).toBe("iterate-unsupported");
-		expect(result.detail).toBe("refine");
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		// fanoutProgress holds ONLY the trailing generation's completed prefix (gen 2's "build (a)").
+		expect(result.fanoutProgress.get("build")).toEqual(["build (a)"]);
+		// stagesCompleted counts ALL completed units across both generations (2 + 1) + the review.
+		expect(result.state.stagesCompleted).toBe(4);
+		expect(result.visited).toEqual(new Set(["build", "review"]));
+	});
+
+	it("decorated iterate unit rows: full-produces fold — rolls primary, accumulates named, builds iterateProgress", () => {
+		const reviewArt = fakeArtifact("reviews/r1.md");
+		const plan1 = fakeArtifact("plans/p1.md");
+		const plan2 = fakeArtifact("plans/p2.md");
+		// review (produces) -> blueprint (iterate, produces "plans"). Units are decorated rows.
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "review",
+			stages: {
+				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
+				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
+			},
+			edges: { review: "blueprint", blueprint: "stop" },
+		} as Workflow;
+
+		writeRunStages([
+			{
+				stageNumber: 1,
+				stage: "review",
+				skill: "review",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([reviewArt]),
+			},
+			{
+				stageNumber: 2,
+				stage: "blueprint (phase-1)",
+				skill: "blueprint",
+				status: "completed",
+				ts: "t2",
+				output: fakeOutput([plan1]),
+			},
+			{
+				stageNumber: 3,
+				stage: "blueprint (phase-2)",
+				skill: "blueprint",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput([plan2]),
+			},
+		]);
+
+		const result = reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		// Counters advanced for every completed row (1 review + 2 units).
+		expect(result.state.stagesCompleted).toBe(3);
+		// Primary ROLLED FORWARD to the last unit (unlike fanout, which leaves it on entry).
+		expect(result.state.primaryArtifact).toStrictEqual(plan2);
+		// state.named accumulated both plans under the outcome name.
+		expect(result.state.named.plans?.map((o) => o.artifacts[0])).toEqual([plan1, plan2]);
+		// Parent is visited; decorated keys are not.
+		expect(result.visited).toEqual(new Set(["review", "blueprint"]));
+		// iterateProgress: trailing generation's accumulated (both units) + FROZEN entry artifact (the review).
+		const point = result.iterateProgress.get("blueprint")!;
+		expect(point.entryArtifact).toStrictEqual(reviewArt);
+		expect(point.accumulated.map((o) => o.artifacts[0])).toEqual([plan1, plan2]);
+	});
+
+	it("failed iterate unit is excluded from accumulated (the re-pull point)", () => {
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "blueprint",
+			stages: {
+				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
+			},
+			edges: { blueprint: "stop" },
+		} as Workflow;
+		writeRunStages([
+			{
+				stageNumber: 1,
+				stage: "blueprint (phase-1)",
+				skill: "blueprint",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([fakeArtifact("plans/p1.md")]),
+			},
+			{
+				stageNumber: 2,
+				stage: "blueprint (phase-2)",
+				skill: "blueprint",
+				status: "failed",
+				ts: "t2",
+				errMsg: "boom",
+			},
+		]);
+		const result = reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.state.stagesCompleted).toBe(1);
+		expect(result.iterateProgress.get("blueprint")!.accumulated).toHaveLength(1);
+		expect(result.visited).toEqual(new Set(["blueprint"]));
+	});
+
+	it("corrective loop: a second iterate generation resets accumulated + entry artifact, named keeps both", () => {
+		const reviewArt = fakeArtifact("reviews/r1.md");
+		const codeReviewArt = fakeArtifact("reviews/cr1.md"); // the loop-back artifact that re-enters blueprint
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "review",
+			stages: {
+				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
+				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
+				"code-review": { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
+			},
+			edges: { review: "blueprint", blueprint: "code-review", "code-review": "blueprint" },
+		} as Workflow;
+		writeRunStages([
+			{
+				stageNumber: 1,
+				stage: "review",
+				skill: "review",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([reviewArt]),
+			},
+			{
+				stageNumber: 2,
+				stage: "blueprint (phase-1)",
+				skill: "blueprint",
+				status: "completed",
+				ts: "t2",
+				output: fakeOutput([fakeArtifact("plans/g1p1.md")]),
+			},
+			{
+				stageNumber: 3,
+				stage: "code-review",
+				skill: "code-review",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput([codeReviewArt]),
+			},
+			// gen 2 starts here — non-contiguous with gen 1.
+			{
+				stageNumber: 4,
+				stage: "blueprint (phase-1)",
+				skill: "blueprint",
+				status: "completed",
+				ts: "t4",
+				output: fakeOutput([fakeArtifact("plans/g2p1.md")]),
+			},
+		]);
+		const result = reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		const point = result.iterateProgress.get("blueprint")!;
+		// Trailing generation: only gen-2's single unit, entry artifact = the code-review (loop-back primary).
+		expect(point.accumulated).toHaveLength(1);
+		expect(point.entryArtifact).toStrictEqual(codeReviewArt);
+		// state.named.plans accumulated BOTH generations.
+		expect(result.state.named.plans).toHaveLength(2);
 	});
 
 	it("prefix-name collision: 'build (x)' matches build, not 'build-extra'", () => {
@@ -943,4 +1125,6 @@ describe("resumeWorkflow", () => {
 			meta: { resumedFrom: "@my-run-ref" },
 		});
 	});
+
+	// Mid-iterate resume dispatch is covered end-to-end in `resume-iterate.test.ts`.
 });

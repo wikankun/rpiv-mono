@@ -193,15 +193,16 @@ export const ERR_RESUME_NO_ROWS = (runId: string) => `rpiv: run ${runId} has no 
 export const ERR_RESUME_STAGE_GONE = (stage: string, workflow: string) =>
 	`rpiv: cannot resume — stage "${stage}" from the run no longer exists in workflow "${workflow}" ` +
 	`(renamed or removed)`;
-// (The old combined fanout/iterate refusal message was removed once fanout became
-// resumable; iterate refusals now use the iterate-specific message below.)
-export const ERR_RESUME_ITERATE_UNSUPPORTED = (stage: string) =>
-	`rpiv: cannot resume — stage "${stage}" uses iterate; resuming iterate stages is not supported yet`;
 export const ERR_RESUME_FANOUT_MISMATCH = (stage: string) =>
 	`rpiv: cannot resume — fanout stage "${stage}" recomputed a different unit list than the run recorded ` +
 	`(the FanoutFn must be deterministic w.r.t. its entry artifact; resume refuses rather than re-run the wrong units)`;
 export const MSG_RESUME_FANOUT_MISMATCH = (stage: string) =>
 	`rpiv: fanout "${stage}" changed on resume — cannot safely continue`;
+export const ERR_RESUME_ITERATE_MISMATCH = (stage: string) =>
+	`rpiv: cannot resume — iterate stage "${stage}" recomputed a different unit than the run recorded at the resume point ` +
+	`(the IterateFn must be deterministic w.r.t. its entry artifact + accumulated outputs; resume refuses rather than re-run the wrong unit)`;
+export const MSG_RESUME_ITERATE_MISMATCH = (stage: string) =>
+	`rpiv: iterate "${stage}" changed on resume — cannot safely continue`;
 
 // ---------------------------------------------------------------------------
 // Resume-refusal messages — resumeWorkflowByRef pre-resume guards (resolve →

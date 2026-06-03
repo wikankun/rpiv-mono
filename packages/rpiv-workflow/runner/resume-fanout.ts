@@ -4,10 +4,12 @@
  *
  * Re-calls the stage's `FanoutFn` against the reconstructed entry artifact +
  * state (units never move the primary, so `reconstructState` rebuilt the
- * pre-fanout artifact exactly), guards that the completed-unit prefix still
- * matches the recomputed unit list, then re-enters `runFanout` at the first
- * not-yet-completed unit. The fanout's own continuation loop + `advanceAfter`
- * carry the chain onward from there.
+ * pre-fanout artifact exactly — for a looped fanout that is the post-loop
+ * primary, i.e. the trailing generation's entry), guards that the completed-unit
+ * prefix still matches the recomputed unit list, then re-enters `runFanout` at
+ * the first not-yet-completed unit. `reconstructState` feeds only the TRAILING
+ * generation's prefix, so a second-pass resume compares against the right pass.
+ * The fanout's own continuation loop + `advanceAfter` carry the chain onward.
  *
  * REQUIRES the FanoutFn to be deterministic w.r.t. its entry artifact: resume
  * trusts it to reproduce the same unit prefix. A divergence (FanoutFn read
