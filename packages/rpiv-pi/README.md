@@ -171,7 +171,7 @@ Invoke via `/skill:<name>` from inside a Pi Agent session.
 | Command | Description |
 |---|---|
 | `/rpiv-setup` | Install all sibling plugins in one go |
-| `/rpiv-update-agents` | Refresh `~/.pi/agent/agents/` from bundled agent definitions and clean up legacy per-project agent directories |
+| `/rpiv-update-agents` | Refresh `~/.pi/agent/agents/` from bundled agent definitions and clean up legacy per-project agent directories. Re-reads `models.json` before syncing, so mid-session per-agent `model`/`thinking` overrides take effect on disk |
 | `/advisor` | Configure advisor model and reasoning effort |
 | `/btw` | Ask a side question without polluting the main conversation _(requires `@juicesharp/rpiv-btw`, opt-in)_ |
 | `/languages` | Pick the UI language for rpiv-* TUI strings (Deutsch / English / Español / Français / Português / Português (Brasil) / Русский / Українська) |

@@ -250,7 +250,7 @@ export default function (host: WorkflowHost): void {
 }
 ```
 
-Every fired event walks the registry in registration order, then the per-call bundle (if any) the embedder passed to `runWorkflow({ lifecycle })`. Multiple bundles coexist; one bundle throwing does not affect siblings or halt the run (throws are caught and logged via `ctx.ui.notify(..., "warning")`).
+Every fired event walks the registry in registration order, then the per-call bundle (if any) the embedder passed to `runWorkflow(ctx, { lifecycle })`. Multiple bundles coexist; one bundle throwing does not affect siblings or halt the run (throws are caught and logged via `ctx.ui.notify(..., "warning")`).
 
 The registry is anchored on `Symbol.for("@juicesharp/rpiv-workflow:lifecycle")`, mirroring the `registerBuiltIns` pattern, so cross-package module resolution still shares one slot. Snapshot semantics: each event observes the registry as it stands at that instant — a registration made mid-event applies to subsequent events, not the in-flight one.
 
@@ -259,22 +259,23 @@ The registry is anchored on `Symbol.for("@juicesharp/rpiv-workflow:lifecycle")`,
 ## Host boundary
 
 `rpiv-workflow`'s public type surface names **zero** `@earendil-works/pi-coding-agent`
-types. The runtime declares two workflow-owned port interfaces in
+types. The runtime declares three workflow-owned port interfaces in
 `./host.js`:
 
 - `WorkflowHost` — registry-level host (default export, continue-policy
   sends, skill-registration preflight).
-- `WorkflowContext` — per-command ctx passed to `runWorkflow`; also the
-  replacement ctx delivered to `newSession`'s `withSession` callback.
-  `sendUserMessage` is optional at the type level (the outer command ctx
-  Pi delivers to `/wf` doesn't carry one) — the runtime guarantees it is
-  present inside `withSession`.
+- `WorkflowHostContext` — per-command ctx passed to `runWorkflow`; also the
+  base shape for the replacement ctx delivered to `newSession`'s
+  `withSession` callback. `sendUserMessage` is optional at this level (the
+  outer command ctx Pi delivers to `/wf` doesn't carry one).
+- `WorkflowSessionContext` — the narrower subtype delivered inside
+  `withSession`, where `sendUserMessage` is guaranteed present.
 
 Pi's `ExtensionAPI` / `ExtensionCommandContext` / `ReplacedSessionContext`
 structurally satisfy these ports, so existing embedders pass their Pi
 handles through unchanged. A
 compile-time tripwire (`host.test.ts`) fails immediately if Pi's API ever
-drifts below the port shape. A future non-Pi host implements the three
+drifts below the port shapes. A future non-Pi host implements the three
 port interfaces and drives the runtime without any pi-coding-agent
 dependency.
 
@@ -285,7 +286,7 @@ Embedders drive workflows from outside `/wf`:
 ```ts
 import { runWorkflow } from "@juicesharp/rpiv-workflow";
 
-const result = await runWorkflow({
+const result = await runWorkflow(ctx, {  // ctx: WorkflowHostContext
   workflow: myFlow,
   input: "task description",
   host: piHost,  // any WorkflowHost-shaped value
@@ -294,6 +295,19 @@ const result = await runWorkflow({
 
 Returns `{ runId, stagesCompleted, success }`. Past-run inspection uses `listRuns(cwd)` / `readHeader` / `readLastStage` / `listArtifacts`.
 
+### By name
+
+For the common "just run this workflow by name" case, `runWorkflowByName` folds the `loadWorkflows` → `findWorkflow` → `runWorkflow` dance into one call:
+
+```ts
+import { runWorkflowByName } from "@juicesharp/rpiv-workflow";
+
+const result = await runWorkflowByName(ctx, "research", "add dark mode", { host: piHost });
+if (!result.success) ctx.ui.notify(result.error ?? "workflow failed", "error");
+```
+
+It never throws — every expected failure comes back in the same `RunWorkflowResult` envelope: error-severity load issues refuse the run, and an unknown name returns a failure envelope listing the available workflows. The fourth argument is `RunWorkflowByNameOptions` (`RunWorkflowOptions` minus `workflow`/`input`), so `host`, `trigger`, `lifecycle`, and the iteration caps thread through unchanged.
+
 ### Lifecycle
 
 Pass `lifecycle` to observe stage progress in-process without re-reading the JSONL:
@@ -301,7 +315,7 @@ Pass `lifecycle` to observe stage progress in-process without re-reading the JSO
 ```ts
 import { runWorkflow } from "@juicesharp/rpiv-workflow";
 
-const result = await runWorkflow({
+const result = await runWorkflow(ctx, {
   workflow: myFlow,
   input: "task description",
   host: piHost,
@@ -463,7 +477,3 @@ export default defineWorkflow({
 The contract is identical — author an async `~standard.validate` and the runner awaits it. A schema whose Promise never settles is bounded by the stage's `validateTimeoutMs` (default 5 min); a rejected Promise surfaces as a clean stage halt, attributed to the stage, with the same error class as a shape-failure halt. No opt-in flag, no parallel code path.
 
 > Keep validation separate from the collector + parser. The collector's job is "what did the agent produce?" (enumerate); the parser's job is "parse it into typed data" (shape). The validator's job is "is the result correct?" (check + verify). With async validators available you don't have to push I/O verification into a custom collector/parser — keep them pure and put correctness checks on `outputSchema`.
-
-## Architecture
-
-See [`.rpiv/guidance/packages/rpiv-workflow/architecture.md`](../../.rpiv/guidance/packages/rpiv-workflow/architecture.md).

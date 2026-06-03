@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/juicesharp/rpiv-mono/branch/main/graph/badge.svg?v=2)](https://codecov.io/gh/juicesharp/rpiv-mono)
 [![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/juicesharp/rpiv-mono/badges/tests.json)](https://github.com/juicesharp/rpiv-mono/actions/workflows/ci.yml)
 
-Nine npm packages: one pipeline (rpiv-pi) and the sibling extensions it composes. Kept in one repo so orchestration and tool surfaces evolve together and ship in lockstep.
+Twelve npm packages: one pipeline (rpiv-pi) and the sibling extensions it composes. Kept in one repo so orchestration and tool surfaces evolve together and ship in lockstep.
 
 The pipeline needs most of them. **rpiv-args** expands shell-style `$1` and `$ARGUMENTS` placeholders inside skills, **rpiv-ask-user-question** lets the model put a structured questionnaire to the user instead of guessing, **rpiv-todo** keeps a live task overlay that survives `/reload` and compaction, **rpiv-advisor** escalates to a stronger reviewer model before the agent acts, **rpiv-web-tools** gives the model web search and fetch with pluggable providers, and **rpiv-workflow** chains skills into typed multi-stage pipelines (audited JSONL state, predicate routing, per-stage output validation) and ships the `/wf` command Pi calls to run them. A couple exist because I wanted them inside Pi: **rpiv-btw** is a side-conversation pattern I got used to in Claude Code, and **rpiv-warp** integrates Pi with Warp terminal's notification system, because that's where I actually run Pi. **rpiv-i18n** is the one that came from users: it started as localization for ask-user-question and grew into a small SDK. **rpiv-telemetry** wires Pi into MLflow — auto-instruments lifecycle events and sub-agent activity so runs are inspectable after the fact.
 
@@ -38,7 +38,7 @@ A few choices worth naming up front:
 
 - No build step. Packages publish raw `.ts`; Pi loads TypeScript directly. No `dist/`, no per-package tsconfig.
 - One Vitest runner at the root walks every package. No per-package vitest configs.
-- Lockstep versions. All nine packages share one version, enforced by `sync-versions.js`.
+- Lockstep versions. All twelve packages share one version, enforced by `sync-versions.js`.
 - Releases are local-only by design. `node scripts/release.mjs <patch|minor|major|x.y.z>` cuts a release; no CI publish workflow.
 - Husky gates the work. `pre-commit` runs Biome and `tsc --noEmit` (fast); `pre-push` runs the full test suite with coverage thresholds. Tests don't block commits, they block pushes.
 - Single shared config across the workspace: one `biome.json`, one `tsconfig.base.json`, one `vitest.config.ts`.
