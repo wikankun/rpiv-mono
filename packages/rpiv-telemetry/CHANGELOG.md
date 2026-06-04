@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `@mlflow/core` now loads lazily — only when an MLflow provider is configured. `pi.extensions` points at a thin `extension.ts` so loading the extension no longer evaluates the MLflow provider (the heavy SDK, ~325ms); a session without MLflow telemetry never pays that cost. The package barrel remains the embedder API.
+
 ## [1.17.1] - 2026-06-01
 
 ## [1.17.0] - 2026-06-01

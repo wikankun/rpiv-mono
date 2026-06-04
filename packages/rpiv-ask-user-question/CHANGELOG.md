@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- The questionnaire view/render graph (TUI components, preview, markdown) now loads lazily on the first `ask_user_question` invocation instead of at extension registration, cutting the extension's session-start load cost (~227ms → ~58ms).
+
 ## [1.17.1] - 2026-06-01
 
 ## [1.17.0] - 2026-06-01
