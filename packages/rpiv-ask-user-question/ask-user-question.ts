@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, validateGuidanceFields } from "./config.js";
 import { ASK_USER_PROMPT_EVENT, type AskUserPromptEventPayload } from "./events.js";
 import { displayLabel } from "./state/i18n-bridge.js";
-import { QuestionnaireSession } from "./state/questionnaire-session.js";
 import { sentinelsToAppend } from "./state/row-intent.js";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.js";
 import {
@@ -101,6 +100,10 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			emitAskUserPromptEvent(pi, typed);
 
 			const itemsByTab: WrappingSelectItem[][] = typed.questions.map((q) => buildItemsForQuestion(q));
+
+			// Lazy — QuestionnaireSession pulls the ~560ms view/TUI render graph;
+			// load it only when the tool runs, not at extension registration.
+			const { QuestionnaireSession } = await import("./state/questionnaire-session.js");
 
 			const result = await ctx.ui.custom<QuestionnaireResult>(
 				(tui, theme, _kb, done) => {
