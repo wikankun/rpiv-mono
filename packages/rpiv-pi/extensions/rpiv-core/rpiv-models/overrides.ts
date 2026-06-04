@@ -107,6 +107,12 @@ export interface KeyStep {
 }
 
 const STEP_BACK: KeyStepResult = { kind: "back" };
+/**
+ * Contract: every site returning STEP_ABORT MUST have already called
+ * `ctx.ui.notify` with the reason. The consumer (keyFrame in command.ts) exits
+ * the cascade silently on abort, so an un-notified abort leaves the user with no
+ * feedback about why the picker closed.
+ */
 const STEP_ABORT: KeyStepResult = { kind: "abort" };
 
 /**

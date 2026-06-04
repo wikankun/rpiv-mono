@@ -206,7 +206,10 @@ async function effortFrame(
 	keyCount: number,
 	state: CascadeState,
 ): Promise<FrameResult> {
-	const model = state.model as Model<Api>;
+	// The driver only reaches this frame after modelFrame set state.model; guard
+	// defensively so a future frame-ordering change fails closed instead of crashing.
+	const model = state.model;
+	if (!model) return "done";
 	const key = modelKey(model);
 	if (!model.reasoning) {
 		saveOverride(ctx, scope, state.segments, key, undefined);

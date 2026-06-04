@@ -582,6 +582,24 @@ describe("/rpiv-models — loadWorkflowMap error handling", () => {
 		await handler()("", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No workflows"), "error");
 	});
+
+	it("exits cleanly when the presets STAGE step's loadWorkflowMap rejects (second call)", async () => {
+		rmSync(CONFIG_PATH, { force: true });
+		const sources = await import("./models-config-sources.js");
+		// Workflow step succeeds; the stage step's second load rejects (e.g. the
+		// workflow was deleted between picks).
+		vi.spyOn(sources, "loadWorkflowMap")
+			.mockResolvedValueOnce({ ship: ["plan", "build"] })
+			.mockRejectedValueOnce(new Error("load failed"));
+		vi.mocked(showFilterablePicker).mockResolvedValueOnce("presets").mockResolvedValueOnce("ship"); // workflow picked; stage step then aborts before its picker
+		const { pi, handler } = makePi();
+		registerRpivModelsCommand(pi);
+		const ctx = makeCtx();
+		await handler()("", ctx);
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No workflows"), "error");
+		expect(existsSync(CONFIG_PATH)).toBe(false); // aborted before any write
+	});
 });
 
 describe("/rpiv-models — ESC navigates one level up", () => {
