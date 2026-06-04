@@ -15,8 +15,6 @@
 - The Pi extension entry is now a thin `extension.ts` (pointed to by `pi.extensions`) rather than the public API barrel, and `/wf` loads the runner + loader graph lazily on first invocation. Loading the extension no longer evaluates the execution engine (~530ms); the main `@juicesharp/rpiv-workflow` entry is unchanged for embedders.
 - `resumeWorkflow` no longer self-notifies its reconstruct refusals (no-rows / stage-gone) — it returns a pure `RunWorkflowResult` envelope like `runWorkflow`'s pre-flight rejections, with `runId` absent on every no-JSONL refusal. The caller surfaces `result.error` (the `/wf` command notifies no-JSONL refusals via the `!result.runId` discriminator). This unifies the run and resume families on one notify contract. (`resumeWorkflow` is unreleased — no prior published behavior changes.)
 - The `STOP` terminal-edge sentinel is now re-exported from the package entry, matching its long-standing mention in the authoring docstring. Authors can write `edges: { commit: STOP }` for a typed terminal edge; the bare `"stop"` literal remains valid (`EdgeTarget = string | typeof STOP | EdgeFn`).
-
-### Changed
 - The workflow host-context type is unified under a single `WorkflowHostContext` port (re-exported from the package entry) and threaded through the runner, sessions, fanout, lifecycle, and `/wf` layers.
 
 ### Breaking / Upgrade Notes
