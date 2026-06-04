@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-pi` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.18.2] - 2026-06-04
 
 ### Fixed
 - Workflow runs no longer halt when a planning skill pauses for developer input. `research`, `design`, and `blueprint` previously ended the assistant turn on a free-text "wait for the developer's response" gate (or the sanctioned "Free-text with ❓ Question:" question branch) before writing their artifact; inside a `/wf` run the runner reads turn-end as "stage done", finds no artifact path, and fails the stage (`research finished without producing a path matching …`), halting the chain. These pre-write checkpoints now go through the `ask_user_question` tool, which keeps the session alive across the pause; its automatic "Other" row preserves the free-text escape hatch, so standalone (non-workflow) behavior is unchanged. (#58)
