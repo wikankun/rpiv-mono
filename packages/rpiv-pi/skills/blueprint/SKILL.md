@@ -142,8 +142,7 @@ Use the grounded-questions-one-at-a-time pattern. Use a **❓ Question:** prefix
 
   > Use the `ask_user_question` tool with the following question: "Found 2 mapping approaches — which should new code follow?". Header: "Pattern". Options: "Manual mapping (Recommended)" (Used in OrderService (src/services/OrderService.ts:45) — 8 occurrences); "AutoMapper" (Used in UserService (src/services/UserService.ts:12) — 2 occurrences).
 
-- **Free-text with ❓ Question: prefix** — when the question is open-ended and options can't be predicted (discovery, "what am I missing?", corrections). Example:
-  "❓ Question: Research's `## Integration Points` shows no background job registration for this area. Is that expected, or is there async processing not surfaced in the inbound/outbound sweep?"
+- **Open-ended** (discovery, "what am I missing?", corrections) — still `ask_user_question`; offer your best 1-2 guesses and let "Other" carry the unpredictable answer.
 
 **Batching**: When you have 2-4 independent questions (answers don't depend on each other), you MAY batch them in a single `ask_user_question` call. Keep dependent questions sequential.
 

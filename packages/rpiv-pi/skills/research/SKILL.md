@@ -147,7 +147,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
    - **Pattern conflict**: "Found 2 implementations of {X} — which is canonical?" with options citing `file:line` + occurrence count
    - **Scope boundary**: "Question {N} references files {A,B,C} but analysis shows {D} is the real integration point. Extend scope?" with yes/no + "describe what I missed"
    - **Priority override**: "Questions Q1 and Q2 have competing implications for {area}. Which is load-bearing?" with options
-   - **Integration ambiguity**: "Found no connection between {X} and {Y}. Is there an indirect path?" (free-text — can't predict the answer)
+   - **Integration ambiguity**: "Found no connection between {X} and {Y}. Is there an indirect path?" — `ask_user_question`, "Other" carries the answer
 
    **Choosing question format:**
 
@@ -155,8 +155,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
 
      > Use the `ask_user_question` tool with the following question: "Found 2 patterns for retry logic — which is canonical?". Header: "Pattern". Options: "Event-sourced retry (Recommended)" (`src/events/orders.ts:45-67` — 3 hooks, matches precedent commit `abc123`); "Direct retry loop" (`src/services/OrderService.ts:112` — single use, no event traceability).
 
-   - **Free-text with ❓ Question: prefix** — when the question is open-ended and options can't be predicted (discovery, "what am I missing?", corrections). Example:
-     "❓ Question: `src/events/orders.ts:45-67` has 3 event hooks but no error recovery path. Is there a retry mechanism elsewhere I'm not seeing?"
+   - **Open-ended** (discovery, "what am I missing?", corrections) — still `ask_user_question`; offer your best 1-2 guesses and let "Other" carry the unpredictable answer.
 
    **Anti-pattern** — do NOT dump a verbose paragraph mixing analysis with a trailing question:
 
@@ -183,7 +182,7 @@ Findings go into Precedents & Lessons. Otherwise skip and note "git history unav
    Inconsistencies: {count} found ({short names})
    ```
 
-   Wait for the developer's response before proceeding.
+   Gate the write with `ask_user_question`. Question: "Scan complete — write the doc, or adjust first?". Header: "Research". Options: "Write the doc (Recommended)"; "Add an area"; "Correct a finding".
 
 4. **Incorporate developer input:**
 
