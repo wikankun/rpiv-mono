@@ -172,9 +172,9 @@ Always verify:
 
 Recommended workflow:
 1. `/skill:implement` - Execute the implementation
-2. `/skill:commit` - Create atomic commits for changes
-3. `/skill:validate` - Verify implementation correctness
+2. `/skill:validate` - Verify implementation correctness
+3. `/skill:commit` - Create atomic commits for the validated changes
 
-The validation works best after commits are made, as it can analyze the git history to understand what was implemented.
+Validate runs against the working tree (staged or committed), so running it before commit avoids amend churn when fixing `needs_changes`.
 
 Remember: Good validation catches issues before they reach production. Be constructive but thorough in identifying gaps or improvements.
