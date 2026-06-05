@@ -11,6 +11,7 @@ import {
 	readNamesIndex,
 	rebuildIndex,
 	resolveRun,
+	stateFilePath,
 	writeHeader,
 } from "./state/index.js";
 
@@ -94,6 +95,36 @@ describe("resolveRun", () => {
 	it("returns undefined for a stale name whose JSONL was deleted (literal fallback also misses)", () => {
 		addNameToIndex(tmpDir, "ghost", "missing-run-id");
 		expect(resolveRun(tmpDir, "ghost")).toBeUndefined();
+	});
+
+	it("resolves a runId ref carrying a trailing .jsonl extension (autosuggest paste)", () => {
+		const runId = generateRunId();
+		seedRun(runId);
+		expect(resolveRun(tmpDir, `${runId}.jsonl`)?.runId).toBe(runId);
+	});
+
+	it("resolves a full filesystem path to the run's JSONL (editor @-autosuggest)", () => {
+		const runId = generateRunId();
+		seedRun(runId);
+		const path = stateFilePath(tmpDir, runId);
+		expect(resolveRun(tmpDir, path)?.runId).toBe(runId);
+	});
+
+	it("resolves a relative path with dir prefix to the run's JSONL", () => {
+		const runId = generateRunId();
+		seedRun(runId);
+		expect(resolveRun(tmpDir, `.rpiv/workflows/runs/${runId}.jsonl`)?.runId).toBe(runId);
+	});
+
+	it("prefers a verbatim name match over slug normalization (name is never a path)", () => {
+		const named = generateRunId();
+		const slug = generateRunId();
+		seedRun(named, "auth.jsonl");
+		seedRun(slug);
+		// Both a name "auth.jsonl" and a run whose slug is "auth" could exist;
+		// the raw-ref name lookup must win.
+		addNameToIndex(tmpDir, "auth.jsonl", named);
+		expect(resolveRun(tmpDir, "auth.jsonl")?.runId).toBe(named);
 	});
 });
 

@@ -17,6 +17,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
 import type { Artifact } from "../handle.js";
 import { readNamesIndex } from "./names.js";
 import { runsDir, stateFilePath } from "./paths.js";
@@ -162,9 +163,16 @@ export function readHeader(cwd: string, runId: string): WorkflowHeader | undefin
  * intent, not behaviour.
  *
  * Resolution order:
- *  1. Check the names index (`names.json`) for a name → runId mapping.
- *     If found and the target JSONL exists, return its header.
- *  2. Fall back to literal runId lookup via `readHeader`.
+ *  1. Check the names index (`names.json`) for a name → runId mapping on the
+ *     RAW ref. If found and the target JSONL exists, return its header.
+ *  2. Fall back to runId lookup via `readHeader`, on the ref normalized to a
+ *     slug — a trailing `.jsonl` is stripped and any directory prefix is
+ *     dropped (`basename`). This lets `/wf @<path>` accept an editor's
+ *     file-autosuggested path to the run's JSONL (`.../runs/<id>.jsonl`),
+ *     a bare `<id>.jsonl`, or the plain `<id>` slug interchangeably.
+ *
+ * Name lookup stays on the raw ref: a run name is never a path, so a name like
+ * `auth.jsonl` (were it ever claimed) must match verbatim, not as a slug.
  *
  * Fail-soft like every reader — returns undefined when the ref doesn't resolve.
  * A missing or corrupt `names.json` degrades gracefully: the index lookup
@@ -172,13 +180,16 @@ export function readHeader(cwd: string, runId: string): WorkflowHeader | undefin
  */
 export function resolveRun(cwd: string, ref: string): WorkflowHeader | undefined {
 	// Try the names index first — O(1) lookup for human-readable aliases.
+	// Matched on the raw ref: a name is never a path/`.jsonl` file.
 	const index = readNamesIndex(cwd);
 	if (index?.[ref]) {
 		const resolved = readHeader(cwd, index[ref]!);
 		if (resolved) return resolved;
 	}
-	// Fall back to literal runId lookup.
-	return readHeader(cwd, ref);
+	// Fall back to runId lookup, tolerating a pasted/autosuggested path:
+	// reduce to the bare slug (drop dir prefix + trailing `.jsonl`).
+	const slug = basename(ref).replace(/\.jsonl$/, "");
+	return readHeader(cwd, slug);
 }
 
 /**

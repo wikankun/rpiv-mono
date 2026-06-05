@@ -209,7 +209,7 @@ export const MSG_RESUME_ITERATE_MISMATCH = (stage: string) =>
 // load-gate → find); returned in the envelope before resumeWorkflow is reached
 // ---------------------------------------------------------------------------
 
-export const MSG_RESUME_USAGE = "rpiv: usage — /wf @<run-id>";
+export const MSG_RESUME_USAGE = "rpiv: usage — /wf @<run-id | name | path-to.jsonl>";
 export const MSG_RUN_NOT_FOUND = (ref: string) => `rpiv: no run found for "${ref}"`;
 export const MSG_RESUME_WORKFLOW_GONE = (workflow: string, ref: string) =>
 	`rpiv: run "${ref}" used workflow "${workflow}", which is no longer registered`;
