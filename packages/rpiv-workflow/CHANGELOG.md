@@ -6,6 +6,9 @@
 - `/wf --name <slug>` assigns a human-readable alias to a run, and `@<name>` resumes it. The alias is stored in the JSONL header and a sidecar `names.json` index under `.rpiv/workflows/runs/`; `resolveRun` resolves a name to its run in O(1) and falls back to a literal run-id lookup, so existing `@<run-id>` resumes are unchanged. Names must match `/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/`. Surfaced on `RunSummary.name` / `WorkflowHeader.name` (optional — legacy unnamed runs parse unchanged). `--name` is rejected on `@resume` (the ref already identifies the run, so it's ignored with a warning).
 - `claimName(cwd, name, runId)` (state layer) — the single transactional door for reserving a name: validate → collision-check → persist, claimed before the JSONL header so the collision guard can never lag the header. Returns a tagged `ClaimResult` (`ok` / `invalid` / `collision` / `write-failed`) and writes nothing on failure. Also exports `isValidName`, `VALID_NAME`, `readNamesIndex`, `addNameToIndex`, and `rebuildIndex` (rebuilds the index from JSONL headers and warns on duplicate name claims). New `RunWorkflowOptions.name` is validated and collision-checked at the runner entry point, so programmatic callers get the same guarantees as `/wf`.
 
+### Changed
+- `resolveRun` (and therefore `/wf @<ref>`) now accepts a path to a run's JSONL, not just the bare run-id slug. The run-id fallback normalizes the ref to a slug — drops any directory prefix (`basename`) and strips a trailing `.jsonl` — so `@<id>`, `@<id>.jsonl`, and `@/abs/or/rel/path/.rpiv/workflows/runs/<id>.jsonl` resolve interchangeably, making the editor's `@` file-autosuggestion usable for resume. Name lookup still matches the raw ref (a run name is never a path). The `MSG_RESUME_USAGE` hint now reads `/wf @<run-id | name | path-to.jsonl>`.
+
 ## [1.18.2] - 2026-06-04
 
 ## [1.18.1] - 2026-06-04
