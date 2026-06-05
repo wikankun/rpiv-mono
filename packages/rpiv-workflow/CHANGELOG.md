@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- `/wf --name <slug>` assigns a human-readable alias to a run, and `@<name>` resumes it. The alias is stored in the JSONL header and a sidecar `names.json` index under `.rpiv/workflows/runs/`; `resolveRun` resolves a name to its run in O(1) and falls back to a literal run-id lookup, so existing `@<run-id>` resumes are unchanged. Names must match `/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/`. Surfaced on `RunSummary.name` / `WorkflowHeader.name` (optional — legacy unnamed runs parse unchanged). `--name` is rejected on `@resume` (the ref already identifies the run, so it's ignored with a warning).
+- `claimName(cwd, name, runId)` (state layer) — the single transactional door for reserving a name: validate → collision-check → persist, claimed before the JSONL header so the collision guard can never lag the header. Returns a tagged `ClaimResult` (`ok` / `invalid` / `collision` / `write-failed`) and writes nothing on failure. Also exports `isValidName`, `VALID_NAME`, `readNamesIndex`, `addNameToIndex`, and `rebuildIndex` (rebuilds the index from JSONL headers and warns on duplicate name claims). New `RunWorkflowOptions.name` is validated and collision-checked at the runner entry point, so programmatic callers get the same guarantees as `/wf`.
+
 ## [1.18.2] - 2026-06-04
 
 ## [1.18.1] - 2026-06-04
