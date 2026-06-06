@@ -15,6 +15,7 @@ import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
 import { currentPrimaryArtifact, withTimeout } from "../internal-utils.js";
 import { runIterate } from "../iterate.js";
+import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
 import { skillStageRef } from "../lifecycle.js";
 import {
 	ERR_INPUT_VALIDATION_FAILED,
@@ -555,6 +556,74 @@ const PRE_PROMPT_CHECKS: readonly PreflightCheck[] = [
 	{ name: "ensureSkillRegistered", kind: "halt", run: ensureSkillRegistered },
 ];
 
+/**
+ * Phase 2 runtime mirror of `checkEdgeSchemaCompat`. When the consumer skill has
+ * a DECLARED `consumes.data` contract but the stage carries no `inputSchema` of
+ * its own, validate the upstream `output.data` against the contract schema —
+ * closing the gap `ensureInputValid` leaves (it only runs when the stage has an
+ * inputSchema). A CLEAN data-vs-schema failure is a DEFINITE violation, so it
+ * HALTS like `ensureInputValid` — the load-time pass only WARNS because it
+ * compares schema-vs-schema. Fail-soft toward consumer-supplied contracts:
+ * DEGRADES (returns) when the `consumes.data` is not a plain-object schema, or
+ * the keyword engine THROWS evaluating it (unknown keywords / `$ref` / if-then) —
+ * those are the contract author's defect, not a data violation. Also degrades
+ * (returns) when: no registry snapshot, no contract/`consumes.data`, the stage
+ * owns an `inputSchema`, the stage dispatches raw `prompt`, the stage reads from
+ * NAMED channels (`reads:` — its input isn't the linear `output.data`), or there
+ * is no upstream data.
+ */
+async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): Promise<void> {
+	if (stage.def.prompt !== undefined) return;
+	if (stage.def.inputSchema) return; // ensureInputValid owns the stage-schema path
+	// Named-channel consumer: its real input comes from `reads:` (state.named), NOT
+	// the linear predecessor's output.data — validating output.data here would
+	// false-HALT. v1 defers named-channel compat (Decision 3), so degrade. (#9)
+	if (stage.def.reads?.length) return;
+	if (run.state.output?.data === undefined) return;
+	const consumesData = run.skillContracts?.get(stage.skill)?.consumes?.data;
+	// Untrusted injected contract — degrade (never HALT) on a non-object schema.
+	if (!isJsonSchemaObject(consumesData)) return;
+	const schema = jsonSchemaToStandard(consumesData);
+	const timeoutMs = clampValidateTimeoutMs(stage.def.validateTimeoutMs);
+	const prevSkill = run.state.output.meta.stage || "unknown";
+	const timeoutMsg = ERR_SCHEMA_TIMEOUT("inputSchema", timeoutMs);
+
+	let result: ValidationResult;
+	try {
+		result = await withTimeout(
+			Promise.resolve(validateOutputData(schema, run.state.output.data)),
+			timeoutMs,
+			timeoutMsg,
+		);
+	} catch (e) {
+		// Timeout is a resource bound — HALT, parity with ensureInputValid. Any
+		// OTHER throw means the keyword engine could not EVALUATE the contract
+		// schema (consumer-authored `$ref` / if-then / unknown keywords) — the
+		// author's defect, NOT a data violation — so DEGRADE rather than kill a
+		// legitimate run. `withTimeout` wraps its message in `new Error(...)`,
+		// so identity-compare on the message string.
+		const isTimeout = e instanceof Error && e.message === timeoutMsg;
+		if (!isTimeout) return;
+		throw new StagePreflightError(
+			"halt",
+			stage.skill,
+			MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
+			ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, e.message),
+			true,
+		);
+	}
+	if (result.valid) return;
+	const failureSummary = result.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+	throw new StagePreflightError(
+		"halt",
+		stage.skill,
+		MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
+		ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, failureSummary),
+		true,
+	);
+}
+
 const POST_PROMPT_CHECKS: readonly PreflightCheck[] = [
 	{ name: "ensureInputValid", kind: "halt", run: ensureInputValid },
+	{ name: "ensureContractInputValid", kind: "halt", run: ensureContractInputValid },
 ];

@@ -1,0 +1,102 @@
+/**
+ * Inject rpiv-pi's bundled skill contracts into the @juicesharp/rpiv-workflow
+ * registry. Mirrors register-built-in-workflows.ts: rpiv-workflow is a SIBLING
+ * (peerDependency a clean install does not pull), so we NEVER statically import
+ * it at runtime — a lazy provider behind a dynamic import, no-op when absent.
+ *
+ * The framework is skill-agnostic; rpiv-pi (which already imports Pi's
+ * parseFrontmatter) is the primary consumer that reads each bundled skill's
+ * `contract:` frontmatter block and supplies the parsed contracts. Skills
+ * without a `contract:` block are skipped — the provider is a no-op until skills
+ * declare one.
+ */
+
+import { readFileSync } from "node:fs";
+import { loadSkillsFromDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import type { ConsumesSpec, ProducesSpec, SkillContract } from "@juicesharp/rpiv-workflow/registration";
+import { BUNDLED_SKILLS_DIR } from "./paths.js";
+import { isModuleNotFound } from "./utils.js";
+
+/**
+ * Map a raw frontmatter `contract:` object to a declared SkillContract. Domain
+ * tags the framework treats as opaque (artifactKind, …) are expected under
+ * `consumes.meta` / `produces.meta` in frontmatter — how rpiv-pi shapes its own
+ * frontmatter is the consumer's call (Decision 7); the framework never reads
+ * inside `meta`. `consumes.meta` carries through unchanged; `produces` is
+ * validated (not blindly cast) so a block missing the required `kind` or with a
+ * non-object `data` can't yield a structurally-invalid ProducesSpec.
+ */
+function normalizeContract(raw: Record<string, unknown>): SkillContract {
+	const contract: SkillContract = { source: "declared" };
+	if (raw.consumes && typeof raw.consumes === "object") {
+		contract.consumes = raw.consumes as ConsumesSpec;
+	}
+	if (raw.produces && typeof raw.produces === "object") {
+		const rawProduces = raw.produces as Record<string, unknown>;
+		// `kind` is REQUIRED on ProducesSpec — default to "produces" when the
+		// frontmatter block omits it, rather than a blind cast yielding an invalid spec.
+		const produces: ProducesSpec = {
+			kind: typeof rawProduces.kind === "string" ? rawProduces.kind : "produces",
+		};
+		// Only carry a `data` schema when it's a plain object (reject a non-object).
+		if (rawProduces.data && typeof rawProduces.data === "object") {
+			produces.data = rawProduces.data as ProducesSpec["data"];
+		}
+		if (rawProduces.meta && typeof rawProduces.meta === "object") {
+			produces.meta = rawProduces.meta as Record<string, unknown>;
+		}
+		contract.produces = produces;
+	}
+	return contract;
+}
+
+/**
+ * Scan rpiv-pi's bundled skills dir for `contract:` frontmatter blocks. Returns
+ * `[skillName, SkillContract]` entries keyed by skill name (which matches the
+ * resolved `stage.skill` the registry keys on). Never throws — a malformed or
+ * unreadable skill is skipped (loader-never-throws spirit).
+ */
+export function buildSkillContractsFromFrontmatter(skillsDir: string): Array<[string, SkillContract]> {
+	const entries: Array<[string, SkillContract]> = [];
+	let skills: ReadonlyArray<{ name: string; filePath: string }>;
+	try {
+		skills = loadSkillsFromDir({ dir: skillsDir, source: "rpiv-pi" }).skills;
+	} catch {
+		return entries;
+	}
+	for (const skill of skills) {
+		try {
+			const { frontmatter } = parseFrontmatter(readFileSync(skill.filePath, "utf-8"));
+			const contract = (frontmatter as Record<string, unknown>).contract;
+			if (!contract || typeof contract !== "object") continue;
+			entries.push([skill.name, normalizeContract(contract as Record<string, unknown>)]);
+		} catch {
+			// skip unreadable / malformed skill
+		}
+	}
+	return entries;
+}
+
+/**
+ * Register a lazy provider that builds contracts from bundled skill frontmatter.
+ * Missing sibling resolves to a no-op; any other failure re-throws so genuine
+ * bugs surface. Fire AFTER registerBuiltInWorkflows (chained in the composer) so
+ * the two sibling dynamic imports never race jiti.
+ */
+export async function registerSkillContractsSource(): Promise<void> {
+	try {
+		const { registerSkillContractsProvider, registerSkillContracts } = await import(
+			"@juicesharp/rpiv-workflow/startup"
+		);
+		registerSkillContractsProvider(() => {
+			// Reuse the existing PACKAGE_ROOT/skills constant rather than re-deriving
+			// the path via an ad-hoc import.meta.url walk.
+			// Pass an owner so a `/reload` that drops a skill prunes its stale contract
+			// (#12) and a divergent override from another extension is surfaced (#4).
+			registerSkillContracts(buildSkillContractsFromFrontmatter(BUNDLED_SKILLS_DIR), "rpiv-pi");
+		});
+	} catch (err) {
+		if (isModuleNotFound(err)) return; // sibling absent — /rpiv-setup prompts the user
+		throw err;
+	}
+}

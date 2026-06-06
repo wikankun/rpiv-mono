@@ -24,6 +24,7 @@ import {
 } from "./api.js";
 import { noopCollector } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
+import type { SkillContractMap } from "./skill-contract.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 import { validateWorkflow } from "./validate-workflow.js";
 
@@ -646,5 +647,160 @@ describe("validateWorkflow — issue shape", () => {
 		}
 		// At least one issue carries a specific stage attribution.
 		expect(issues.some((i) => i.stage === "a")).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Edge-schema compatibility (Phase 6 — Slice 6)
+// ---------------------------------------------------------------------------
+
+describe("validateWorkflow — edge-schema compatibility", () => {
+	it("warns when producer outputSchema is incompatible with consumer inputSchema", () => {
+		const w: Workflow = {
+			name: "incompat",
+			start: "producer",
+			stages: {
+				producer: producesRaw({
+					outcome: STUB_ARTIFACT_OUTCOME,
+					outputSchema: typeboxSchema(Type.Object({ a: Type.String() })),
+				}),
+				consumer: acts({ inputSchema: typeboxSchema(Type.Object({ a: Type.Number() })) }),
+			},
+			edges: { producer: "consumer", consumer: "stop" },
+		};
+		const ws = warnings(w);
+		expect(ws.some((i) => /schema incompatibility/.test(i.message))).toBe(true);
+	});
+
+	it("does NOT warn when schemas are compatible", () => {
+		const w: Workflow = {
+			name: "compat",
+			start: "producer",
+			stages: {
+				producer: producesRaw({
+					outcome: STUB_ARTIFACT_OUTCOME,
+					outputSchema: typeboxSchema(Type.Object({ a: Type.String() })),
+				}),
+				consumer: acts({ inputSchema: typeboxSchema(Type.Object({ a: Type.String() })) }),
+			},
+			edges: { producer: "consumer", consumer: "stop" },
+		};
+		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+	});
+
+	it("does NOT warn when producer or consumer schema is absent (degrade)", () => {
+		const w: Workflow = {
+			name: "no-schema",
+			start: "a",
+			stages: {
+				a: producesRaw({ outcome: STUB_ARTIFACT_OUTCOME }),
+				b: acts(),
+			},
+			edges: { a: "b", b: "stop" },
+		};
+		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+	});
+
+	it("does NOT warn on predicate edges (only string edges are checked)", () => {
+		const w: Workflow = {
+			name: "predicate-edge",
+			start: "a",
+			stages: {
+				a: producesRaw({
+					outcome: STUB_ARTIFACT_OUTCOME,
+					outputSchema: typeboxSchema(Type.Object({ a: Type.String() })),
+				}),
+				b: acts({ inputSchema: typeboxSchema(Type.Object({ a: Type.Number() })) }),
+				c: acts(),
+			},
+			edges: {
+				a: gate("x", { b: gt(0), c: eq(0) }),
+				b: "stop",
+				c: "stop",
+			},
+		};
+		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+	});
+
+	it("uses registry contracts when provided (overrides stage schemas)", () => {
+		// Stage schemas say string→number (incompatible), but registry contracts
+		// say both are string→string (compatible) — registry wins.
+		const contracts: SkillContractMap = new Map([
+			[
+				"producer",
+				{
+					source: "declared",
+					produces: { kind: "produces", data: { type: "object", properties: { a: { type: "string" } } } },
+				},
+			],
+			[
+				"consumer",
+				{
+					source: "declared",
+					consumes: { data: { type: "object", properties: { a: { type: "string" } } } },
+				},
+			],
+		]);
+		const w: Workflow = {
+			name: "override",
+			start: "producer",
+			stages: {
+				producer: producesRaw({
+					outcome: STUB_ARTIFACT_OUTCOME,
+					outputSchema: typeboxSchema(Type.Object({ a: Type.String() })),
+				}),
+				consumer: acts({ inputSchema: typeboxSchema(Type.Object({ a: Type.Number() })) }),
+			},
+			edges: { producer: "consumer", consumer: "stop" },
+		};
+		const ws = validateWorkflow(w, { skillContracts: contracts }).filter(
+			(i) => i.severity === "warning" && /schema incompatibility/.test(i.message),
+		);
+		expect(ws).toEqual([]);
+	});
+
+	it("warns from registry contract incompatibility", () => {
+		const contracts: SkillContractMap = new Map([
+			[
+				"producer",
+				{
+					source: "declared",
+					produces: {
+						kind: "produces",
+						data: { type: "object", properties: { a: { type: "string" } } },
+					},
+				},
+			],
+			[
+				"consumer",
+				{
+					source: "declared",
+					consumes: {
+						data: { type: "object", properties: { a: { type: "number" } } },
+					},
+				},
+			],
+		]);
+		const w: Workflow = {
+			name: "contract-incompat",
+			start: "producer",
+			stages: {
+				producer: producesRaw({ outcome: STUB_ARTIFACT_OUTCOME }),
+				consumer: acts(),
+			},
+			edges: { producer: "consumer", consumer: "stop" },
+		};
+		const issues = validateWorkflow(w, { skillContracts: contracts });
+		expect(issues.some((i) => i.severity === "warning" && /schema incompatibility/.test(i.message))).toBe(true);
+	});
+
+	it("does NOT warn on stop edges", () => {
+		const w: Workflow = {
+			name: "stop-edge",
+			start: "a",
+			stages: { a: produces() },
+			edges: { a: "stop" },
+		};
+		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
 	});
 });

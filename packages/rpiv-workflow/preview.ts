@@ -9,6 +9,7 @@ import type { StageDef, Workflow } from "./api.js";
 import { type ConfigLayer, renderConfigLayer } from "./layers.js";
 import type { LoadedWorkflows } from "./load/index.js";
 import { CMD_USAGE_LIST, CMD_USAGE_PREVIEW, CMD_USAGE_RUN } from "./messages.js";
+import type { SkillContractMap } from "./skill-contract.js";
 
 // ===========================================================================
 // Public formatters
@@ -53,12 +54,14 @@ export function formatWorkflowList(loaded: LoadedWorkflows): string {
 	});
 
 	const aliasBanner = formatAliasBanner(loaded.skillAliases);
+	const contractsBanner = formatContractsBanner(loaded.skillContracts);
 	return [
 		"Available workflows:",
 		"",
 		...rows,
 		"",
 		...(aliasBanner ? [aliasBanner] : []),
+		...(contractsBanner ? [contractsBanner] : []),
 		formatLayerBanner(loaded.layers),
 		CMD_USAGE_LIST,
 		CMD_USAGE_PREVIEW,
@@ -162,4 +165,20 @@ function formatAliasBanner(aliases: Readonly<Record<string, string>>): string | 
 	const entries = Object.entries(aliases);
 	if (entries.length === 0) return undefined;
 	return `Skill aliases in effect: ${entries.map(([from, to]) => `${from} → ${to}`).join(", ")}`;
+}
+
+/**
+ * "Skill contracts: 3 declared, 2 harvested" — coverage summary shown when any
+ * contract is in effect. Surfaces how many skills carry a declared (frontmatter)
+ * vs harvested (usage-derived) contract so a reader knows the registry's tier.
+ */
+function formatContractsBanner(contracts: SkillContractMap): string | undefined {
+	if (contracts.size === 0) return undefined;
+	let declared = 0;
+	let harvested = 0;
+	for (const c of contracts.values()) {
+		if (c.source === "declared") declared++;
+		else if (c.source === "harvested") harvested++;
+	}
+	return `Skill contracts: ${declared} declared, ${harvested} harvested`;
 }

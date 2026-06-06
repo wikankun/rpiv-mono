@@ -52,6 +52,17 @@ export {
 	url,
 } from "./handle.js";
 export type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "./host.js";
+export {
+	extractJsonSchema,
+	hasJsonSchema,
+	isJsonSchemaObject,
+	isSchemaCompatible,
+	type JsonSchemaCapable,
+	type JsonSchemaObject,
+	jsonSchemaConverter,
+	jsonSchemaToStandard,
+	type SchemaCompatResult,
+} from "./json-schema.js";
 export { type LifecycleContext, type LifecycleListeners, registerLifecycle, type StageRef } from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { aliasSkills, loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
@@ -94,6 +105,22 @@ export type {
 } from "./output.js";
 export { defineCollector, defineParser } from "./output-spec.js";
 export { eq, gt, gte, lt, lte, type Predicate } from "./predicates.js";
+export type {
+	ConsumesReadSpec,
+	ConsumesSpec,
+	ContractSource,
+	ProducesSpec,
+	SkillContract,
+	SkillContractMap,
+} from "./skill-contract.js";
+export {
+	canCompose,
+	getSkillContracts,
+	harvestStageContracts,
+	legalNextSkills,
+	registerSkillContracts,
+	registerSkillContractsProvider,
+} from "./skill-contracts.js";
 export {
 	listArtifacts,
 	listRuns,

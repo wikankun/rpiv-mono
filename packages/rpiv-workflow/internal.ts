@@ -25,3 +25,4 @@ export { recordStage } from "./audit.js";
 export { __resetBuiltIns, flushBuiltInProviders, getBuiltIns } from "./built-ins.js";
 export { __resetLifecycleRegistry } from "./lifecycle.js";
 export { __resetLoadCache } from "./load/cache.js";
+export { __resetSkillContracts, flushSkillContractProviders, getSkillContracts } from "./skill-contracts.js";

@@ -24,7 +24,9 @@ import {
 	type StageDef,
 	type Workflow,
 } from "./api.js";
+import { extractJsonSchema, isSchemaCompatible } from "./json-schema.js";
 import type { ConfigLayer } from "./layers.js";
+import type { SkillContractMap } from "./skill-contract.js";
 import {
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
@@ -59,7 +61,10 @@ export interface WorkflowValidationIssue {
  * Validate one workflow. Aggregates all issues; never short-circuits. Caller
  * decides what's fatal — `severity === "error"` is the runner-blocking set.
  */
-export function validateWorkflow(workflow: Workflow): WorkflowValidationIssue[] {
+export function validateWorkflow(
+	workflow: Workflow,
+	opts?: { skillContracts?: SkillContractMap },
+): WorkflowValidationIssue[] {
 	const issues: WorkflowValidationIssue[] = [];
 
 	checkWorkflowName(workflow, issues);
@@ -79,6 +84,7 @@ export function validateWorkflow(workflow: Workflow): WorkflowValidationIssue[] 
 	checkStageSemantics(workflow, issues);
 	checkPredicateSchemas(workflow, issues);
 	checkReadsReferences(workflow, issues);
+	checkEdgeSchemaCompat(workflow, issues, opts?.skillContracts);
 
 	return issues;
 }
@@ -559,6 +565,37 @@ function checkPredicateSchemas(w: Workflow, issues: WorkflowValidationIssue[]): 
 					`route edge from "${from}" reads output.data but the stage has no outputSchema — routing may fire on un-validated data`,
 				),
 			);
+		}
+	}
+}
+
+/**
+ * Phase 2 — load-time edge-compat: for each direct string edge from→to, compare
+ * the producer skill's `produces.data` schema to the consumer skill's
+ * `consumes.data` schema (registry-sourced, falling back to the stage's own
+ * output/input schema). Warns (never errors) on a DEFINITE mismatch. Degrades
+ * (skips) on predicate/STOP edges and opaque/absent schemas — same posture as
+ * `checkPredicateSchemas` and the reachability skip. Paired with the runtime
+ * mirror `ensureContractInputValid` (Phase 7).
+ */
+function checkEdgeSchemaCompat(
+	w: Workflow,
+	issues: WorkflowValidationIssue[],
+	skillContracts: SkillContractMap | undefined,
+): void {
+	for (const [from, target] of Object.entries(w.edges)) {
+		if (typeof target !== "string" || target === STOP) continue; // degrade on predicate/STOP edges
+		const fromStage = w.stages[from];
+		const toStage = w.stages[target];
+		if (!fromStage || !toStage) continue; // unknown stages already reported by edge-target checks
+		const producerSkill = fromStage.skill ?? from;
+		const consumerSkill = toStage.skill ?? target;
+		const producer = skillContracts?.get(producerSkill)?.produces?.data ?? extractJsonSchema(fromStage.outputSchema);
+		const consumer = skillContracts?.get(consumerSkill)?.consumes?.data ?? extractJsonSchema(toStage.inputSchema);
+		if (!producer || !consumer) continue; // degrade: opaque/absent schema — nothing to compare
+		const compat = isSchemaCompatible(producer, consumer);
+		if (!compat.ok) {
+			issues.push(warning(w.name, from, `edge "${from}" → "${target}": schema incompatibility — ${compat.reason}`));
 		}
 	}
 }

@@ -10,11 +10,31 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, produces as producesRaw, type StageDef, type Workflow } from "./api.js";
 import { __resetBuiltIns, registerBuiltIns } from "./built-ins.js";
 import { loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
 import { noopCollector } from "./outcomes/index.js";
+import type { SkillContract } from "./skill-contract.js";
+import {
+	__resetSkillContracts,
+	getSkillContracts,
+	registerSkillContracts,
+	registerSkillContractsProvider,
+} from "./skill-contracts.js";
+import { typeboxSchema } from "./typebox-adapter.js";
+
+/** Strip symbol keys from an object tree for deep-equal comparison. */
+function stripSymbols(value: unknown): unknown {
+	if (value === null || value === undefined || typeof value !== "object") return value;
+	if (Array.isArray(value)) return value.map(stripSymbols);
+	const out: Record<string, unknown> = {};
+	for (const key of Object.keys(value as Record<string, unknown>)) {
+		out[key] = stripSymbols((value as Record<string, unknown>)[key]);
+	}
+	return out;
+}
 
 // `produces` stages require an outcome (validated at load time). Load
 // tests assert merge / source-layer shape, so we wire a noop collector
@@ -55,6 +75,7 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(TEST_TMP, { recursive: true, force: true });
 	rmSync(USER_CONFIG_DIR, { recursive: true, force: true });
+	__resetSkillContracts();
 });
 
 const writeProjectConfig = (cwd: string, body: string): void => {
@@ -869,5 +890,101 @@ export default {
 				(i) => i.kind === "load" && i.severity === "error" && /`workflows` must be a Workflow\[\]/.test(i.message),
 			),
 		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Skill contracts — declared ⊕ harvested effective registry
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — skillContracts", () => {
+	const declaredContract: SkillContract = {
+		source: "declared",
+		produces: { kind: "produces", data: { type: "object", properties: { findings: { type: "string" } } } },
+	};
+
+	it("declared contract overrides harvested for the same skill", async () => {
+		// Register a declared contract for the built-in "small" workflow's implement skill
+		registerSkillContracts([["implement", declaredContract]]);
+
+		const loaded = await loadWorkflows(TEST_TMP);
+		const implementContract = loaded.skillContracts.get("implement");
+		expect(implementContract).toBeDefined();
+		expect(implementContract?.source).toBe("declared");
+		expect(implementContract?.produces?.data).toEqual({
+			type: "object",
+			properties: { findings: { type: "string" } },
+		});
+	});
+
+	it("harvested contract appears for dispatched skills with typebox schemas but no declared contract", async () => {
+		// Register built-in workflows with typebox schemas on their stages
+		__resetBuiltIns();
+		registerBuiltIns([
+			defineWorkflow({
+				name: "harvest-test",
+				start: "a",
+				stages: {
+					a: produces({ outputSchema: typeboxSchema(Type.Object({ result: Type.String() })) }),
+					b: producesRaw({
+						outcome: STUB_ARTIFACT_OUTCOME,
+						inputSchema: typeboxSchema(Type.Object({ result: Type.String() })),
+					}),
+				},
+				edges: { a: "b", b: "stop" },
+			}),
+		]);
+
+		const loaded = await loadWorkflows(TEST_TMP);
+		// Both 'a' and 'b' should have harvested contracts
+		const aContract = loaded.skillContracts.get("a");
+		expect(aContract).toBeDefined();
+		expect(aContract?.source).toBe("harvested");
+		expect(stripSymbols(aContract?.produces?.data)).toEqual({
+			type: "object",
+			properties: { result: { type: "string" } },
+			required: ["result"],
+		});
+
+		const bContract = loaded.skillContracts.get("b");
+		expect(bContract).toBeDefined();
+		expect(bContract?.source).toBe("harvested");
+		expect(stripSymbols(bContract?.consumes?.data)).toEqual({
+			type: "object",
+			properties: { result: { type: "string" } },
+			required: ["result"],
+		});
+	});
+
+	it("produces-stage skills appear in skillContracts with kind but no data schema", async () => {
+		// Built-in 'mid' has a 'x' produces() stage — harvested with kind but no data.
+		const loaded = await loadWorkflows(TEST_TMP);
+		const xContract = loaded.skillContracts.get("x");
+		expect(xContract).toBeDefined();
+		expect(xContract?.source).toBe("harvested");
+		expect(xContract?.produces?.kind).toBe("produces");
+		expect(xContract?.produces?.data).toBeUndefined();
+	});
+
+	it("does not mutate the global registry — skillContracts is a separate map", async () => {
+		registerSkillContracts([["implement", declaredContract]]);
+		const globalBefore = getSkillContracts();
+		const loaded = await loadWorkflows(TEST_TMP);
+		// The loaded skillContracts includes harvested entries NOT in the global
+		expect(loaded.skillContracts.size).toBeGreaterThanOrEqual(globalBefore.size);
+		// The global registry is unchanged
+		expect(globalBefore.size).toBe(getSkillContracts().size);
+	});
+
+	it("surfaces provider failures as warning LoadIssues", async () => {
+		registerSkillContractsProvider(() => {
+			throw new Error("test provider failure");
+		});
+		const loaded = await loadWorkflows(TEST_TMP);
+		const providerIssue = loaded.issues.find(
+			(i) => i.kind === "load" && i.severity === "warning" && /skill-contract provider failed/.test(i.message),
+		);
+		expect(providerIssue).toBeDefined();
+		expect(providerIssue?.message).toContain("test provider failure");
 	});
 });

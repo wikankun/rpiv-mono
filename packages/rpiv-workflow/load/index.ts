@@ -56,6 +56,14 @@ import type { Workflow } from "../api.js";
 import { flushBuiltInProviders, getBuiltIns } from "../built-ins.js";
 import type { ConfigLayer } from "../layers.js";
 import { LEGACY_OVERLAY_NOTICE, LEGACY_RUNS_NOTICE, LEGACY_USER_CONFIG_NOTICE } from "../messages.js";
+import type { SkillContractMap } from "../skill-contract.js";
+import {
+	drainSkillContractCollisions,
+	drainSkillContractProviderErrors,
+	flushSkillContractProviders,
+	getSkillContracts,
+	harvestStageContracts,
+} from "../skill-contracts.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
 import { applySkillAliases } from "./alias.js";
 import { type LoadAccumulator, loadLayer } from "./merge.js";
@@ -103,6 +111,12 @@ export interface LoadedWorkflows {
 	 * the remap.
 	 */
 	skillAliases: Readonly<Record<string, string>>;
+	/**
+	 * Effective skill-contract registry: injected `declared` contracts merged
+	 * OVER `harvested` ones (derived from stage usage). Required field, empty
+	 * `Map` when no contract was declared or harvestable.
+	 */
+	skillContracts: SkillContractMap;
 }
 
 // ===========================================================================
@@ -132,6 +146,11 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	// defer constructing definitions to first `/wf` (the earliest reader).
 	await flushBuiltInProviders();
 
+	// Flush skill-contract providers beside the built-in flush. Same provider+flush
+	// idiom; contract providers read the filesystem / parse frontmatter (failure-prone),
+	// so each throw is recorded (drained below) rather than propagated.
+	await flushSkillContractProviders();
+
 	const acc: LoadAccumulator = {
 		issues: [],
 		workflowMap: new Map(),
@@ -139,6 +158,22 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 		sourcePaths: new Map(),
 	};
 	const layers: ConfigLayer[] = getBuiltIns().length > 0 ? ["built-in"] : [];
+
+	// Surface any provider failure as a LoadIssue rather than swallowing it (#6) —
+	// loader still never throws, but a buggy provider is now visible in loaded.issues.
+	for (const err of drainSkillContractProviderErrors()) {
+		acc.issues.push({
+			kind: "load",
+			layer: "built-in",
+			message: `skill-contract provider failed: ${err instanceof Error ? err.message : String(err)}`,
+			severity: "warning",
+		});
+	}
+	// Surface cross-owner contract collisions (#4) — last-writer still wins, but the
+	// divergence is no longer silent.
+	for (const message of drainSkillContractCollisions()) {
+		acc.issues.push({ kind: "load", layer: "built-in", message, severity: "warning" });
+	}
 
 	for (const w of getBuiltIns()) {
 		acc.workflowMap.set(w.name, w);
@@ -168,6 +203,13 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	// declared the key — see `applySkillAliases` in `./alias.ts`.
 	const skillAliases = applySkillAliases(acc, userOutcome, projectOutcome);
 
+	// Build the effective registry BEFORE the validation loop, so checkEdgeSchemaCompat
+	// (Phase 6) sees it. A NEW map — harvested gap-fill first, then declared overrides
+	// per skill. Never mutate the shared global registry returned by getSkillContracts().
+	const harvested = harvestStageContracts([...acc.workflowMap.values()]);
+	const skillContracts = new Map(harvested);
+	for (const [name, contract] of getSkillContracts()) skillContracts.set(name, contract);
+
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user
 	// errors. Each issue is attributed to the exact file the surviving workflow
@@ -176,7 +218,8 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	for (const w of acc.workflowMap.values()) {
 		const layer = acc.sources.get(w.name) ?? "built-in";
 		const path = acc.sourcePaths.get(w.name);
-		for (const v of validateWorkflow(w)) acc.issues.push({ ...v, kind: "validation", layer, path });
+		for (const v of validateWorkflow(w, { skillContracts }))
+			acc.issues.push({ ...v, kind: "validation", layer, path });
 	}
 
 	const defaultName = resolveDefault(projectOutcome.configDefault, userOutcome.configDefault, acc);
@@ -188,6 +231,7 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 		layers,
 		issues: acc.issues,
 		skillAliases,
+		skillContracts,
 	};
 }
 

@@ -11,6 +11,7 @@ import { fs as fsHandle } from "./handle.js";
 import type { OutputSpec } from "./output.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
+import { registerSkillContracts } from "./skill-contracts.js";
 import {
 	addNameToIndex,
 	appendRoutingDecision,
@@ -1373,6 +1374,280 @@ describe("runWorkflow", () => {
 			const { stages } = readState(tmpDir);
 			expect(stages[1]).toMatchObject({ skill: "design", status: "failed" });
 		}, 5_000);
+	});
+
+	describe("contract input validation (ensureContractInputValid)", () => {
+		it("halts chain when upstream output fails declared consumes.data contract", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			// Register a declared contract: design consumes { requiredField: string }
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: {
+							data: {
+								type: "object",
+								properties: { requiredField: { type: "string" } },
+								required: ["requiredField"],
+							},
+						},
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+			});
+
+			// design has NO inputSchema — contract mirror should catch the violation
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"]),
+				input: "x",
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.stagesCompleted).toBe(1); // research completed
+			expect(result.error).toMatch(/input validation failed/i);
+			expect(result.error).toMatch(/design/); // consumer
+
+			const { stages } = readState(tmpDir);
+			expect(stages[0]).toMatchObject({ skill: "research", status: "completed" });
+			expect(stages[1]).toMatchObject({ skill: "design", status: "failed" });
+		});
+
+		it("passes when upstream output satisfies the declared consumes.data contract", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nrequiredField: hello\n---\n\nContent");
+			writeArtifact(tmpDir, ".rpiv/artifacts/designs/d.md");
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: {
+							data: {
+								type: "object",
+								properties: { requiredField: { type: "string" } },
+								required: ["requiredField"],
+							},
+						},
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/designs/d.md")] },
+				],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"]),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+		});
+
+		it("degrades (no halt) when no declared contract exists", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			writeArtifact(tmpDir, ".rpiv/artifacts/designs/d.md");
+			// No registerSkillContracts — no contract to validate against
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/designs/d.md")] },
+				],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"]),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+		});
+
+		it("degrades (no halt) when consumes.data is a non-object (malformed contract)", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			writeArtifact(tmpDir, ".rpiv/artifacts/designs/d.md");
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: { data: "not-a-schema" as unknown as Record<string, unknown> },
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/designs/d.md")] },
+				],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"]),
+				input: "x",
+			});
+
+			// Malformed contract — degrade, not halt
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+		});
+
+		it("skips contract check when stage has its own inputSchema (no double validation)", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			// Register a contract that would fail, but the stage also has an inputSchema
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: {
+							data: {
+								type: "object",
+								properties: { neverPresent: { type: "string" } },
+								required: ["neverPresent"],
+							},
+						},
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+			});
+
+			// inputSchema that also rejects — the inputSchema path (ensureInputValid) should fire,
+			// NOT the contract mirror
+			const schema = typeboxSchema(Type.Object({ mustExist: Type.String() }));
+			await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"], { design: { inputSchema: schema } }),
+				input: "x",
+			});
+
+			const { stages } = readState(tmpDir);
+			expect(stages[1]).toMatchObject({ skill: "design", status: "failed" });
+		});
+
+		it("degrades when no consumes.data on the contract", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			writeArtifact(tmpDir, ".rpiv/artifacts/designs/d.md");
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						// No consumes.data — contract check degrades
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/designs/d.md")] },
+				],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"]),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+		});
+
+		it("skips contract check when stage reads from named channels (reads:)", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: {
+							data: {
+								type: "object",
+								properties: { neverPresent: { type: "string" } },
+								required: ["neverPresent"],
+							},
+						},
+					},
+				],
+			]);
+
+			// The stage reads from named channels — its input comes from state.named,
+			// NOT the linear output.data, so the contract check must skip.
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"], {
+					design: { reads: ["priorOutput"] },
+				}),
+				input: "x",
+			});
+
+			// reads: stage should skip the contract check entirely
+			// (it will fail on ensureNamedReads, which is fine — we just need
+			// to verify the contract check didn't halt it)
+			expect(result.success).toBe(false);
+			expect(result.error).not.toMatch(/input validation failed.*consumes\.data/i);
+		});
+
+		it("skips contract check for prompt-dispatch stages", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nfoo: 1\n---\n\nContent");
+			registerSkillContracts([
+				[
+					"design",
+					{
+						source: "declared",
+						consumes: {
+							data: {
+								type: "object",
+								properties: { neverPresent: { type: "string" } },
+								required: ["neverPresent"],
+							},
+						},
+					},
+				],
+			]);
+
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Done")] },
+				],
+			});
+
+			// prompt stage — side-effect kind, no outcome; should skip contract check
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("two", ["research", "design"], {
+					design: { kind: "side-effect", prompt: "Just do it" },
+				}),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+		});
 	});
 
 	describe("predicate routing", () => {
