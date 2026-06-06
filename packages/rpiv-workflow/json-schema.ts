@@ -142,6 +142,63 @@ function disjoint(a: ReadonlySet<unknown>, b: ReadonlySet<unknown>): boolean {
 	return true;
 }
 
+/** `integer` is a subtype of `number` — widen so the two never read as disjoint. */
+function widenNumeric(s: Set<string>): Set<string> {
+	return s.has("integer") ? new Set([...s, "number"]) : s;
+}
+
+/**
+ * Rule 1 — a producer that CLOSES its object (`additionalProperties: false`) and
+ * omits a field the consumer `requires` provably never emits it. `undefined` when
+ * the producer is open or emits every required field.
+ */
+function closedProducerOmitsRequired(
+	producer: JsonSchemaObject,
+	producerProps: Record<string, JsonSchemaObject>,
+	required: readonly string[],
+): SchemaCompatResult | undefined {
+	if (producer.additionalProperties !== false) return undefined;
+	for (const key of required) {
+		if (!(key in producerProps)) {
+			return { ok: false, reason: `consumer requires "${key}" but producer (closed object) never emits it` };
+		}
+	}
+	return undefined;
+}
+
+/** Rule 2 — producer and consumer pin disjoint `type` sets for the shared field. */
+function fieldTypeConflict(key: string, p: JsonSchemaObject, c: JsonSchemaObject): SchemaCompatResult | undefined {
+	const pt = typeSet(p);
+	const ct = typeSet(c);
+	if (pt && ct && disjoint(widenNumeric(pt), widenNumeric(ct))) {
+		return {
+			ok: false,
+			reason: `field "${key}": producer emits ${[...pt].join("|")} but consumer expects ${[...ct].join("|")}`,
+		};
+	}
+	return undefined;
+}
+
+/** Rule 3 — producer and consumer both restrict to `enum`, and the two enums are disjoint. */
+function fieldEnumConflict(key: string, p: JsonSchemaObject, c: JsonSchemaObject): SchemaCompatResult | undefined {
+	if (!Array.isArray(p.enum) || !Array.isArray(c.enum)) return undefined;
+	const pe = new Set(p.enum.map((v) => JSON.stringify(v)));
+	const ce = new Set(c.enum.map((v) => JSON.stringify(v)));
+	if (disjoint(pe, ce)) return { ok: false, reason: `field "${key}": producer enum is disjoint from consumer enum` };
+	return undefined;
+}
+
+/** Rule 4 — producer and consumer both pin a `const`, and the two constants differ. */
+function fieldConstConflict(key: string, p: JsonSchemaObject, c: JsonSchemaObject): SchemaCompatResult | undefined {
+	if ("const" in p && "const" in c && JSON.stringify(p.const) !== JSON.stringify(c.const)) {
+		return {
+			ok: false,
+			reason: `field "${key}": producer const ${JSON.stringify(p.const)} ≠ consumer const ${JSON.stringify(c.const)}`,
+		};
+	}
+	return undefined;
+}
+
 /**
  * Conservative structural compatibility of a producer's output schema against a
  * consumer's input schema. Deliberately NOT a full JSON-Schema subtype engine —
@@ -168,38 +225,16 @@ export function isSchemaCompatible(producer: JsonSchemaObject, consumer: JsonSch
 	const producerProps = (producer.properties as Record<string, JsonSchemaObject> | undefined) ?? {};
 	const consumerProps = (consumer.properties as Record<string, JsonSchemaObject> | undefined) ?? {};
 	const required = Array.isArray(consumer.required) ? (consumer.required as string[]) : [];
-	const producerClosed = producer.additionalProperties === false;
-	for (const key of required) {
-		if (producerClosed && !(key in producerProps)) {
-			return { ok: false, reason: `consumer requires "${key}" but producer (closed object) never emits it` };
-		}
-	}
-	// `integer` is a subtype of `number` — widen so the two never read as disjoint.
-	const widen = (s: Set<string>): Set<string> => (s.has("integer") ? new Set([...s, "number"]) : s);
+
+	const omission = closedProducerOmitsRequired(producer, producerProps, required);
+	if (omission) return omission;
+
 	for (const key of Object.keys(consumerProps)) {
 		const p = producerProps[key];
 		const c = consumerProps[key];
 		if (!p || !c) continue;
-		const pt = typeSet(p);
-		const ct = typeSet(c);
-		if (pt && ct && disjoint(widen(pt), widen(ct))) {
-			return {
-				ok: false,
-				reason: `field "${key}": producer emits ${[...pt].join("|")} but consumer expects ${[...ct].join("|")}`,
-			};
-		}
-		if (Array.isArray(p.enum) && Array.isArray(c.enum)) {
-			const pe = new Set(p.enum.map((v) => JSON.stringify(v)));
-			const ce = new Set(c.enum.map((v) => JSON.stringify(v)));
-			if (disjoint(pe, ce))
-				return { ok: false, reason: `field "${key}": producer enum is disjoint from consumer enum` };
-		}
-		if ("const" in p && "const" in c && JSON.stringify(p.const) !== JSON.stringify(c.const)) {
-			return {
-				ok: false,
-				reason: `field "${key}": producer const ${JSON.stringify(p.const)} ≠ consumer const ${JSON.stringify(c.const)}`,
-			};
-		}
+		const conflict = fieldTypeConflict(key, p, c) ?? fieldEnumConflict(key, p, c) ?? fieldConstConflict(key, p, c);
+		if (conflict) return conflict;
 	}
 	return { ok: true };
 }

@@ -58,11 +58,10 @@ import type { ConfigLayer } from "../layers.js";
 import { LEGACY_OVERLAY_NOTICE, LEGACY_RUNS_NOTICE, LEGACY_USER_CONFIG_NOTICE } from "../messages.js";
 import type { SkillContractMap } from "../skill-contract.js";
 import {
+	buildEffectiveContracts,
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
-	getSkillContracts,
-	harvestStageContracts,
 } from "../skill-contracts.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
 import { applySkillAliases } from "./alias.js";
@@ -204,11 +203,9 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	const skillAliases = applySkillAliases(acc, userOutcome, projectOutcome);
 
 	// Build the effective registry BEFORE the validation loop, so checkEdgeSchemaCompat
-	// (Phase 6) sees it. A NEW map — harvested gap-fill first, then declared overrides
-	// per skill. Never mutate the shared global registry returned by getSkillContracts().
-	const harvested = harvestStageContracts([...acc.workflowMap.values()]);
-	const skillContracts = new Map(harvested);
-	for (const [name, contract] of getSkillContracts()) skillContracts.set(name, contract);
+	// (Phase 6) sees it. Returns a NEW map (harvested gap-fill first, declared overriding
+	// per skill) — never mutates the shared global registry.
+	const skillContracts = buildEffectiveContracts([...acc.workflowMap.values()]);
 
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user

@@ -55,11 +55,12 @@ export interface ConsumesSpec {
 }
 
 /**
- * What a skill produces: the framework-native stage `kind` (mirrors
- * `StageKind` — `"produces" | "side-effect"`), an optional typed output `data`
- * schema (the only framework-adjudicated channel), and an opaque `meta` bag for
- * consumer domain tags (e.g. the emitted `artifactKind` under the consumer's
- * own model).
+ * What a skill produces: the stage `kind` (`StageKind`-shaped —
+ * `"produces" | "side-effect"` — for harvested contracts; a free-form `string`
+ * for declared ones, since frontmatter is untrusted and the framework never
+ * validates it), an optional typed output `data` schema (the only
+ * framework-adjudicated channel), and an opaque `meta` bag for consumer domain
+ * tags (e.g. the emitted `artifactKind` under the consumer's own model).
  */
 export interface ProducesSpec {
 	kind: string;

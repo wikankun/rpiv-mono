@@ -63,13 +63,14 @@ export default function (pi: ExtensionAPI) {
 	const logRegistrationFailure = (label: string) => (err: unknown) =>
 		console.error(`[rpiv-core] failed to register ${label}:`, err);
 
-	registerModelOverrideLifecycle(pi)
-		.catch(logRegistrationFailure("model override lifecycle"))
-		.finally(() => {
-			registerBuiltInWorkflows()
-				.catch(logRegistrationFailure("built-in workflows"))
-				.finally(() => {
-					registerSkillContractsSource().catch(logRegistrationFailure("skill contracts source"));
-				});
-		});
+	// Register the three rpiv-workflow-dependent stacks STRICTLY in sequence — each
+	// awaits the previous to settle so the concurrent `import("@juicesharp/rpiv-workflow")`
+	// race described above can't occur. Each step swallows its own failure (the others
+	// must still run) and degrades gracefully when the sibling is absent. Fire-and-forget:
+	// the workflow registry is read lazily at `/wf` time, long after this settles.
+	void (async () => {
+		await registerModelOverrideLifecycle(pi).catch(logRegistrationFailure("model override lifecycle"));
+		await registerBuiltInWorkflows().catch(logRegistrationFailure("built-in workflows"));
+		await registerSkillContractsSource().catch(logRegistrationFailure("skill contracts source"));
+	})();
 }

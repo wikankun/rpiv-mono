@@ -63,55 +63,50 @@ function deepEqual(a: unknown, b: unknown): boolean {
 	return aKeys.every((k) => Object.hasOwn(bObj, k) && deepEqual(aObj[k], bObj[k]));
 }
 
-function getRegistry(): Map<string, SkillContract> {
+/**
+ * Read a lazily-initialised global slot, creating it on first access. The single
+ * shape behind every `Symbol.for`-anchored slot below (registry, providers,
+ * owners, collisions, failures) — see the module header for why this state lives
+ * on `globalThis` rather than module-local.
+ */
+function lazyGlobalSlot<T>(key: symbol, init: () => T): T {
 	const g = globalThis as unknown as Global;
-	let registry = g[REGISTRY_KEY] as Map<string, SkillContract> | undefined;
-	if (!registry) {
-		registry = new Map();
-		g[REGISTRY_KEY] = registry;
+	let value = g[key] as T | undefined;
+	if (value === undefined) {
+		value = init();
+		g[key] = value;
 	}
-	return registry;
+	return value;
+}
+
+function getRegistry(): Map<string, SkillContract> {
+	return lazyGlobalSlot(REGISTRY_KEY, () => new Map<string, SkillContract>());
 }
 
 function getProviders(): SkillContractsProvider[] {
-	const g = globalThis as unknown as Global;
-	let providers = g[PROVIDERS_KEY] as SkillContractsProvider[] | undefined;
-	if (!providers) {
-		providers = [];
-		g[PROVIDERS_KEY] = providers;
-	}
-	return providers;
+	return lazyGlobalSlot(PROVIDERS_KEY, () => []);
 }
 
 /** name → owner label of whoever last registered it (for prune-on-reload + collision detection). */
 function getOwners(): Map<string, string> {
-	const g = globalThis as unknown as Global;
-	let owners = g[OWNERS_KEY] as Map<string, string> | undefined;
-	if (!owners) {
-		owners = new Map();
-		g[OWNERS_KEY] = owners;
-	}
-	return owners;
+	return lazyGlobalSlot(OWNERS_KEY, () => new Map<string, string>());
 }
 
 function getCollisions(): string[] {
-	const g = globalThis as unknown as Global;
-	let collisions = g[COLLISIONS_KEY] as string[] | undefined;
-	if (!collisions) {
-		collisions = [];
-		g[COLLISIONS_KEY] = collisions;
-	}
-	return collisions;
+	return lazyGlobalSlot(COLLISIONS_KEY, () => []);
 }
 
 function getFailures(): unknown[] {
-	const g = globalThis as unknown as Global;
-	let failures = g[FAILURES_KEY] as unknown[] | undefined;
-	if (!failures) {
-		failures = [];
-		g[FAILURES_KEY] = failures;
-	}
-	return failures;
+	return lazyGlobalSlot(FAILURES_KEY, () => []);
+}
+
+/** The memoised flush latch — a Promise once flushed, `undefined` before first flush / after reset. */
+function getFlushLatch(): Promise<void> | undefined {
+	return (globalThis as unknown as Global)[FLUSH_KEY] as Promise<void> | undefined;
+}
+
+function setFlushLatch(latch: Promise<void> | undefined): void {
+	(globalThis as unknown as Global)[FLUSH_KEY] = latch;
 }
 
 /**
@@ -180,8 +175,7 @@ export function registerSkillContractsProvider(provider: SkillContractsProvider)
  * don't need the guard.
  */
 export function flushSkillContractProviders(): Promise<void> {
-	const g = globalThis as unknown as Global;
-	const existing = g[FLUSH_KEY] as Promise<void> | undefined;
+	const existing = getFlushLatch();
 	if (existing) return existing;
 	const pending = getProviders().splice(0);
 	const flush = Promise.all(
@@ -193,7 +187,7 @@ export function flushSkillContractProviders(): Promise<void> {
 				}),
 		),
 	).then(() => undefined);
-	g[FLUSH_KEY] = flush;
+	setFlushLatch(flush);
 	return flush;
 }
 
@@ -232,7 +226,7 @@ export function __resetSkillContracts(): void {
 	getFailures().length = 0;
 	getCollisions().length = 0;
 	getOwners().clear();
-	(globalThis as unknown as Global)[FLUSH_KEY] = undefined;
+	setFlushLatch(undefined);
 }
 
 // --- Slice 4: harvest ----------------------------------------------------------
@@ -284,6 +278,20 @@ export function harvestStageContracts(workflows: readonly Workflow[]): Map<strin
 		}
 	}
 	return harvested;
+}
+
+/**
+ * Build the effective registry the loader hands to validation + the runner:
+ * `harvested` gap-fill first, then `declared`/injected contracts override per
+ * skill (declared outranks harvested). Returns a NEW map — never mutates the
+ * shared global registry returned by `getSkillContracts()`. Co-located with
+ * `harvestStageContracts` because the merge precedence is contract-domain logic,
+ * not loader plumbing.
+ */
+export function buildEffectiveContracts(workflows: readonly Workflow[]): Map<string, SkillContract> {
+	const effective = new Map(harvestStageContracts(workflows));
+	for (const [name, contract] of getSkillContracts()) effective.set(name, contract);
+	return effective;
 }
 
 // --- Slice 8: agent-facing composition queries ---------------------------------
