@@ -96,6 +96,59 @@ Body here`,
 		expect(result[0][1].produces?.kind).toBe("produces");
 	});
 
+	it("carries a consumes block through, per-field, into the contract", () => {
+		tmpDir = join(process.env.HOME!, `test-skills-consumes-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tmpDir, { recursive: true });
+		makeSkillsDir(tmpDir, {
+			design: `---
+description: Design skill
+contract:
+  consumes:
+    data:
+      type: object
+      properties:
+        findings:
+          type: string
+    reads:
+      research: {}
+    meta:
+      artifactKind: research
+---
+Body here`,
+		});
+		const result = buildSkillContractsFromFrontmatter(tmpDir);
+		expect(result).toHaveLength(1);
+		expect(result[0][0]).toBe("design");
+		expect(result[0][1]).toEqual({
+			source: "declared",
+			consumes: {
+				data: { type: "object", properties: { findings: { type: "string" } } },
+				reads: { research: {} },
+				meta: { artifactKind: "research" },
+			},
+		});
+	});
+
+	it("skips non-object consumes sub-fields without crashing", () => {
+		tmpDir = join(process.env.HOME!, `test-skills-bad-consumes-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tmpDir, { recursive: true });
+		makeSkillsDir(tmpDir, {
+			design: `---
+description: Design skill
+contract:
+  consumes:
+    data: "not-an-object"
+    meta:
+      artifactKind: research
+---
+Body here`,
+		});
+		const result = buildSkillContractsFromFrontmatter(tmpDir);
+		expect(result).toHaveLength(1);
+		// data (a string) is dropped; the valid meta still carries through.
+		expect(result[0][1].consumes).toEqual({ meta: { artifactKind: "research" } });
+	});
+
 	it("skips non-object produces.data without crashing", () => {
 		tmpDir = join(process.env.HOME!, `test-skills-bad-data-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tmpDir, { recursive: true });

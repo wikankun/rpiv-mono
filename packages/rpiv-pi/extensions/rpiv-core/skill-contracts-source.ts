@@ -22,14 +22,27 @@ import { isModuleNotFound } from "./utils.js";
  * tags the framework treats as opaque (artifactKind, …) are expected under
  * `consumes.meta` / `produces.meta` in frontmatter — how rpiv-pi shapes its own
  * frontmatter is the consumer's call (Decision 7); the framework never reads
- * inside `meta`. `consumes.meta` carries through unchanged; `produces` is
- * validated (not blindly cast) so a block missing the required `kind` or with a
- * non-object `data` can't yield a structurally-invalid ProducesSpec.
+ * inside `meta`. Both `consumes` and `produces` are validated per-field (not
+ * blindly cast) so a block with a non-object `data`/`reads`/`meta` (or, for
+ * produces, a missing required `kind`) can't yield a structurally-invalid spec.
  */
 function normalizeContract(raw: Record<string, unknown>): SkillContract {
 	const contract: SkillContract = { source: "declared" };
 	if (raw.consumes && typeof raw.consumes === "object") {
-		contract.consumes = raw.consumes as ConsumesSpec;
+		const rawConsumes = raw.consumes as Record<string, unknown>;
+		const consumes: ConsumesSpec = {};
+		// Only carry each sub-field when it's a plain object (reject non-objects),
+		// matching the per-field guard the produces branch uses below.
+		if (rawConsumes.data && typeof rawConsumes.data === "object") {
+			consumes.data = rawConsumes.data as ConsumesSpec["data"];
+		}
+		if (rawConsumes.reads && typeof rawConsumes.reads === "object") {
+			consumes.reads = rawConsumes.reads as ConsumesSpec["reads"];
+		}
+		if (rawConsumes.meta && typeof rawConsumes.meta === "object") {
+			consumes.meta = rawConsumes.meta as Record<string, unknown>;
+		}
+		contract.consumes = consumes;
 	}
 	if (raw.produces && typeof raw.produces === "object") {
 		const rawProduces = raw.produces as Record<string, unknown>;
