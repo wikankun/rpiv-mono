@@ -52,17 +52,12 @@ export {
 	url,
 } from "./handle.js";
 export type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "./host.js";
-export {
-	extractJsonSchema,
-	hasJsonSchema,
-	isJsonSchemaObject,
-	isSchemaCompatible,
-	type JsonSchemaCapable,
-	type JsonSchemaObject,
-	jsonSchemaConverter,
-	jsonSchemaToStandard,
-	type SchemaCompatResult,
-} from "./json-schema.js";
+// Only the contract data types are public — they're referenced by kept public
+// signatures (`JsonSchemaCapable` ← `typeboxSchema`, `JsonSchemaObject` ←
+// `ConsumesSpec`/`ProducesSpec.data`, `SchemaCompatResult` ← `canCompose`). The
+// low-level json-schema FUNCTIONS stay package-private (no consumer needs them);
+// internal callers import them from `./json-schema.js` directly.
+export type { JsonSchemaCapable, JsonSchemaObject, SchemaCompatResult } from "./json-schema.js";
 export { type LifecycleContext, type LifecycleListeners, registerLifecycle, type StageRef } from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { aliasSkills, loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
