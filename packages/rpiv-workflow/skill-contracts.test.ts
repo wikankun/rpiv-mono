@@ -137,6 +137,25 @@ describe("skill-contracts", () => {
 			expect(drainSkillContractCollisions()).toHaveLength(0);
 		});
 
+		it("semantically-identical contract with different key order records nothing (#I4)", () => {
+			// Same data, different insertion order — a JSON.stringify compare would
+			// read these as divergent and raise a spurious collision; the structural
+			// deepEqual compare treats them as identical.
+			const a: SkillContract = {
+				source: "declared",
+				consumes: { data: { type: "object", properties: { x: { type: "string" } } } },
+				produces: { kind: "produces", meta: { artifactKind: "research" } },
+			};
+			const b: SkillContract = {
+				produces: { meta: { artifactKind: "research" }, kind: "produces" },
+				consumes: { data: { properties: { x: { type: "string" } }, type: "object" } },
+				source: "declared",
+			};
+			registerSkillContracts([["research", a]], "owner-a");
+			registerSkillContracts([["research", b]], "owner-b");
+			expect(drainSkillContractCollisions()).toHaveLength(0);
+		});
+
 		it("anonymous registration relinquishes ownership claim", () => {
 			registerSkillContracts([["research", declared]], "owner-a");
 			registerSkillContracts([["research", declared]]); // anonymous

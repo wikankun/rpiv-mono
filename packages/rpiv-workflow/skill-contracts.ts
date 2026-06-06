@@ -37,6 +37,32 @@ type SkillContractsProvider = () => void | Promise<void>;
 
 type Global = Record<symbol, unknown>;
 
+/**
+ * Structural (key-order-independent) deep equality for two contracts. Used by the
+ * cross-owner collision check so two SEMANTICALLY-identical contracts built by
+ * different code paths (or with different YAML key order) don't read as divergent
+ * — `JSON.stringify` is insertion-order dependent and would raise a spurious
+ * collision warning. Contracts are plain JSON data (no functions/symbols/Dates),
+ * so a recursive value compare is sufficient and total.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+	const aArr = Array.isArray(a);
+	const bArr = Array.isArray(b);
+	if (aArr !== bArr) return false;
+	if (aArr && bArr) {
+		if (a.length !== b.length) return false;
+		return a.every((x, i) => deepEqual(x, b[i]));
+	}
+	const aObj = a as Record<string, unknown>;
+	const bObj = b as Record<string, unknown>;
+	const aKeys = Object.keys(aObj);
+	const bKeys = Object.keys(bObj);
+	if (aKeys.length !== bKeys.length) return false;
+	return aKeys.every((k) => Object.hasOwn(bObj, k) && deepEqual(aObj[k], bObj[k]));
+}
+
 function getRegistry(): Map<string, SkillContract> {
 	const g = globalThis as unknown as Global;
 	let registry = g[REGISTRY_KEY] as Map<string, SkillContract> | undefined;
@@ -120,7 +146,7 @@ export function registerSkillContracts(contracts: Iterable<readonly [string, Ski
 	for (const [name, contract] of incoming) {
 		const existing = registry.get(name);
 		const prevOwner = owners.get(name);
-		if (existing && prevOwner !== owner && JSON.stringify(existing) !== JSON.stringify(contract)) {
+		if (existing && prevOwner !== owner && !deepEqual(existing, contract)) {
 			getCollisions().push(
 				`skill "${name}": contract from ${owner ?? "an anonymous registrant"} overrides a divergent one from ${prevOwner ?? "an anonymous registrant"} (last writer wins)`,
 			);

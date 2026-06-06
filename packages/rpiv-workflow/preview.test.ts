@@ -9,6 +9,7 @@ import type { LoadedWorkflows } from "./load/index.js";
 import { gitCommitOutcome } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
+import type { SkillContract } from "./skill-contract.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -348,5 +349,40 @@ describe("skill-alias banner", () => {
 	it("omits the banner when no aliases are in effect", () => {
 		expect(formatWorkflowDetails(baseLoaded(), "mid")).not.toContain("Skill aliases in effect");
 		expect(formatWorkflowList(baseLoaded())).not.toContain("Skill aliases in effect");
+	});
+});
+
+describe("skill-contracts banner", () => {
+	const contract = (source: SkillContract["source"]): SkillContract => ({ source });
+
+	it("tallies declared vs harvested contracts in the list view", () => {
+		const out = formatWorkflowList(
+			baseLoaded({
+				skillContracts: new Map([
+					["research", contract("declared")],
+					["design", contract("declared")],
+					["plan", contract("declared")],
+					["implement", contract("harvested")],
+					["commit", contract("harvested")],
+				]),
+			}),
+		);
+		expect(out).toContain("Skill contracts: 3 declared, 2 harvested");
+	});
+
+	it("counts only the declared/harvested sources (ignores other provenance)", () => {
+		const out = formatWorkflowList(
+			baseLoaded({
+				skillContracts: new Map([
+					["research", contract("declared")],
+					["legacy", contract("inferred")],
+				]),
+			}),
+		);
+		expect(out).toContain("Skill contracts: 1 declared, 0 harvested");
+	});
+
+	it("omits the banner when no contracts are in effect", () => {
+		expect(formatWorkflowList(baseLoaded())).not.toContain("Skill contracts:");
 	});
 });
