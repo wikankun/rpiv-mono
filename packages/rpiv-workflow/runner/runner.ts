@@ -48,6 +48,7 @@ import {
 	STATUS_KEY,
 } from "../messages.js";
 import { runFanoutSession, runStageSession } from "../sessions/index.js";
+import { getSkillContracts } from "../skill-contracts.js";
 import { type ClaimResult, claimName, generateRunId, writeHeader } from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
@@ -390,6 +391,10 @@ function buildRunContext(
 		state: identity.state,
 		visited: identity.visited,
 		registeredSkills: options.host ? snapshotRegisteredSkills(options.host) : undefined,
+		// Defensive COPY (not the live global Map) so a later registerSkillContracts
+		// call cannot mutate this run's snapshot mid-run — parity with the fresh-Set
+		// copy snapshotRegisteredSkills makes.
+		skillContracts: new Map(getSkillContracts()),
 		continueHost: options.host,
 		maxBackwardJumps: options.maxBackwardJumps ?? MAX_BACKWARD_JUMPS,
 		maxIterations: options.maxIterations ?? MAX_ITERATIONS,

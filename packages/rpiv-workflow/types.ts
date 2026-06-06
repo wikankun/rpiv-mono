@@ -27,6 +27,7 @@ import type { Artifact } from "./handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
 import type { LifecycleDispatcher } from "./lifecycle.js";
 import type { Output } from "./output.js";
+import type { SkillContractMap } from "./skill-contract.js";
 import type { RunTrigger } from "./triggers.js";
 
 // Re-export the host port so runtime layers can pull `RunContext`,
@@ -128,6 +129,17 @@ export interface RunContext {
 	 * fail-soft posture as the rest of the host-optional surface).
 	 */
 	registeredSkills?: ReadonlySet<string>;
+	/**
+	 * Snapshot of the declared/injected skill-contract registry, taken once in
+	 * `buildRunContext` (mirrors `registeredSkills`). This is the
+	 * declared/injected registry — NOT the harvested-merged
+	 * `LoadedWorkflows.skillContracts` — because the runtime mirror only adds
+	 * value for a declared `consumes.data` lacking a stage `inputSchema`; a
+	 * harvested `consumes.data` is the stage's own `inputSchema` re-derived,
+	 * already covered by `ensureInputValid`. Fail-soft: Phase 7 degrades when
+	 * absent.
+	 */
+	skillContracts?: SkillContractMap;
 	/**
 	 * Pi `ExtensionAPI` handle, retained as the FALLBACK send-path for
 	 * continue-policy stages — used only when the live inner ctx lacks
