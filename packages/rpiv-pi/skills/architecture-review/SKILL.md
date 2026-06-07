@@ -3,6 +3,33 @@ name: architecture-review
 description: Conduct a top-down, layer-by-layer architecture review of a software module by reading every file in scope, running a uniform 10-dimension checklist per layer, and triaging each candidate finding through a structured developer checkpoint. Produces a phased polish plan in .rpiv/artifacts/architecture-reviews/ that blueprint can consume per phase. Language-agnostic — works on TypeScript, Java, .NET, Rust, Python, Go, or any other typed module. Use before a 1.0 release, after a major refactor, or when a module has grown enough to warrant a structural audit.
 argument-hint: "[target path: file, directory, or module]"
 shell-timeout: 10
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: architecture-review
+    data:
+      type: object
+      required: [phases]
+      properties:
+        status:
+          enum: [in-progress, ready]
+        layer_count:
+          type: integer
+          minimum: 1
+        phases:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            required: [n, title]
+            properties:
+              n: { type: integer, minimum: 1 }
+              title: { type: string }
+  consumes:
+    meta:
+      world: target-path
 ---
 
 # Architecture Review
@@ -87,7 +114,7 @@ Layers mirror dependency direction. Higher layers consume lower-layer vocabulary
 2. **Determine metadata** from the Metadata block above: filename `.rpiv/artifacts/architecture-reviews/<slug>_<topic>.md` (use `<slug>` from line 1; `<topic>` is a brief kebab-case description); `repository:` from `repo:`; `branch:` / `commit:` from matching labels; `author:` ← matching label (fallback: `unknown`); `date:` / `last_updated:` ← `<iso>` from line 1 (copy the offset verbatim).
 
 3. **Write the skeleton** using the Write tool with `status: in-progress` in frontmatter. Sections:
-   - **Frontmatter:** date, author, commit, branch, repository, target, target_kind, layer_count, unresolved_finding_count, status, tags, last_updated, last_updated_by.
+   - **Frontmatter:** date, author, commit, branch, repository, target, target_kind, layer_count, `phases` (derived from the `### Phase N — name` headings — see Step 6), unresolved_finding_count, status, tags, last_updated, last_updated_by.
    - **Conventions:** finding shape (ID, Evidence, Current state, Desired state, Proposed improvement, Severity, Effort, Blast radius, Class, Status, Depends on, Cross-cut tag).
    - **Methodology principles:** empty placeholder (`_principles emerge during Step 5 triage and are captured at Step 6_`).
    - **Layers:** one `## Layer N — {name}` heading per layer from Step 3, each empty.
@@ -240,7 +267,7 @@ Phases are agent-driven: each one will be handed to `blueprint` → `implement`.
        Phase 6 (Public-API)
    ```
 
-6. **Confirm the plan + flip status.** Use the `ask_user_question` tool: "{N} phases ({F} findings across {Files} files). Approve or adjust?". Header: "Plan". Options: "Approve (Recommended)" (Edit frontmatter `status: in-progress` → `status: ready`, proceed to Step 9); "Adjust phase boundaries" (describe); "Resequence phases" (describe); "Other".
+6. **Confirm the plan + flip status.** Use the `ask_user_question` tool: "{N} phases ({F} findings across {Files} files). Approve or adjust?". Header: "Plan". Options: "Approve (Recommended)" (**rebuild the `phases:` frontmatter array from the `### Phase N — name` headings** — one `{ n, title }` entry per heading, in body order, e.g. `phases: [{ n: 1, title: Foundation }, { n: 2, title: Vocabulary }]`; then Edit frontmatter `status: in-progress` → `status: ready`, proceed to Step 9); "Adjust phase boundaries" (describe); "Resequence phases" (describe); "Other".
 
 ### Step 9: Present and Chain
 

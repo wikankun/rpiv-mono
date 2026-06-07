@@ -15,10 +15,10 @@
 
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
 	type Artifact,
 	acts,
-	defineRoute,
 	defineWorkflow,
 	eq,
 	type FanoutFn,
@@ -32,39 +32,16 @@ import {
 	type PromptFn,
 	produces,
 	type RunState,
-	typeboxSchema,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow/registration";
-import { Type } from "typebox";
 import { rpivBucketOutcome } from "./artifact-collector.js";
 
-const CODE_REVIEW_SCHEMA = typeboxSchema(
-	Type.Object({ blockers_count: Type.Integer({ minimum: 0 }) }, { additionalProperties: true }),
-);
-
-/**
- * Status discriminator for the vet workflow's code-review stage.
- *
- * Three statuses are emitted by the code-review skill:
- *   - "approved"           — review passed, route to commit
- *   - "needs_changes"      — issues found, route to blueprint (fix loop)
- *   - "requesting_changes" — criticals > 3, route to blueprint (fix loop)
- *
- * The routing predicate collapses "needs_changes" and "requesting_changes"
- * into the same "blueprint" branch — both mean "not approved, go fix it".
- */
-const REVIEW_STATUS_SCHEMA = typeboxSchema(
-	Type.Object(
-		{
-			status: Type.Union([
-				Type.Literal("approved"),
-				Type.Literal("needs_changes"),
-				Type.Literal("requesting_changes"),
-			]),
-		},
-		{ additionalProperties: true },
-	),
-);
+// The code-review stage's output schema is no longer declared here — every
+// code-review stage sources it from the skill's contract `produces.data`
+// (`blockers_count` required), validated by the runtime output loop via
+// `effectiveOutputSchema`. One source of truth, in the skill, not copy-pasted
+// per workflow. Every workflow — build/arch/polish AND vet — routes on the
+// same numeric gate: `gate("blockers_count", { <fix>: gt(0), commit: eq(0) })`.
 
 /**
  * Markdown `## Phase N:` headings in the inherited plan artifact define
@@ -96,6 +73,49 @@ const PHASE_FANOUT: FanoutFn = ({ artifact: primary, cwd }) => {
 	}));
 };
 
+/**
+ * Fan `implement` out over a plan's structured `phases:` frontmatter array — the
+ * machine-readable phase enumeration `blueprint` derives from its `## Phase N:`
+ * headings. Each unit's prompt carries the phase title. Reading the frontmatter
+ * from the artifact file (not `output.data`) keeps the fanout deterministic
+ * w.r.t. its entry artifact on resume — same posture as `PHASE_FANOUT`.
+ *
+ * Derive-check: the array is derived from the body headings, so its length must
+ * equal the `## Phase N:` heading count. A mismatch means the producer's rebuild
+ * step was skipped or the array went stale — throw rather than dispatch a wrong
+ * unit list.
+ */
+const FRONTMATTER_PHASE_FANOUT: FanoutFn = ({ artifact: primary, cwd }) => {
+	if (primary?.handle.kind !== "fs") return [];
+	const path = primary.handle.path;
+	const abs = isAbsolute(path) ? path : join(cwd, path);
+	const content = readFileSync(abs, "utf-8");
+	const { frontmatter } = parseFrontmatter(content);
+	const raw = (frontmatter as Record<string, unknown>).phases;
+	const phases = Array.isArray(raw) ? raw : [];
+	if (phases.length > MAX_PHASES) {
+		throw new Error(
+			`FRONTMATTER_PHASE_FANOUT: plan ${path} declares ${phases.length} phases — exceeds MAX_PHASES (${MAX_PHASES}); split into smaller plans`,
+		);
+	}
+	const headingCount = [...content.matchAll(/^## Phase (\d+):/gm)].length;
+	if (phases.length !== headingCount) {
+		throw new Error(
+			`FRONTMATTER_PHASE_FANOUT: plan ${path} frontmatter phases (${phases.length}) ≠ '## Phase N:' headings (${headingCount}) — the derived array is stale against the body`,
+		);
+	}
+	const promptPath = handleToString(primary.handle);
+	return phases.map((entry, i) => {
+		const phase = (entry ?? {}) as { n?: unknown; title?: unknown };
+		const n = typeof phase.n === "number" ? phase.n : i + 1;
+		const title = typeof phase.title === "string" ? phase.title : "";
+		return {
+			prompt: `${promptPath} Phase ${n}: ${title}`.trimEnd(),
+			label: `phase ${i + 1}/${phases.length}`,
+		};
+	});
+};
+
 // ===========================================================================
 // ship — blueprint → implement → validate → commit
 // ===========================================================================
@@ -107,7 +127,7 @@ const shipWorkflow = defineWorkflow({
 	start: "blueprint",
 	stages: {
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
-		implement: acts({ fanout: PHASE_FANOUT }),
+		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -136,7 +156,7 @@ const buildWorkflow = defineWorkflow({
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
 		implement: acts({ fanout: PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews"), outputSchema: CODE_REVIEW_SCHEMA }),
+		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		revise: produces({ outcome: rpivBucketOutcome("plans"), reads: ["plans", "reviews"] }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -173,7 +193,7 @@ const archWorkflow = defineWorkflow({
 		plan: produces({ outcome: rpivBucketOutcome("plans") }),
 		implement: acts({ fanout: PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews"), outputSchema: CODE_REVIEW_SCHEMA }),
+		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -203,24 +223,19 @@ const vetWorkflow = defineWorkflow({
 		"Examine existing changes for approval; loop a fix cycle if not approved. Best when a diff already exists (yours or a teammate's) and you want a structured review with optional repair. Chain: code-review → (blueprint → implement → validate → loop) → commit.",
 	start: "code-review",
 	stages: {
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews"), outputSchema: REVIEW_STATUS_SCHEMA }),
+		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
 		implement: acts({ fanout: PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
-		// Uses defineRoute (not gate()) because the routing decision is based
-		// on a string status discriminator, not a numeric threshold — gate()
-		// is designed for numeric comparisons (e.g., blockers_count > 0).
-		// The `outputSchema` on the code-review stage guarantees `data.status`
-		// is validated before this predicate runs, so the undefined/null case
-		// is unreachable in practice (the predicate's fallback to "blueprint"
-		// is defensive only).
-		"code-review": defineRoute(["blueprint", "commit"], ({ output }) => {
-			const data = output?.data as Record<string, unknown> | undefined;
-			return data?.status === "approved" ? "commit" : "blueprint";
-		}),
+		// Same numeric gate as build/arch/polish: zero remaining blockers →
+		// commit; any blockers → loop a fix pass through blueprint. The
+		// `blockers_count` field is sourced + validated from the code-review
+		// contract (`produces.data`, required), so a missing field fails
+		// output validation rather than silently routing.
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
 		blueprint: "implement",
 		implement: "validate",
 		// Backward edge: validate → code-review creates the review-fix loop.
@@ -239,7 +254,11 @@ const vetWorkflow = defineWorkflow({
 //          ones before it, then implement/validate/review the lot.
 // ===========================================================================
 
-/** `### Phase N — name` headings define the review's dependency-ordered phases. */
+/**
+ * `### Phase N — name` headings — the source of truth the review's `phases:`
+ * frontmatter array is derived from. Used to verify that derived array, not to
+ * enumerate (enumeration reads the typed `phases:` array).
+ */
 const REVIEW_PHASE_RE = /^### Phase (\d+) — (.+)$/gm;
 
 /** Latest `fs`-handle artifact most recently published under `name` (undefined if none). */
@@ -249,11 +268,13 @@ const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | u
 /** Resolve a workflow-relative path against `cwd`. */
 const resolveCwd = (path: string, cwd: string): string => (isAbsolute(path) ? path : join(cwd, path));
 
-/** Number of `### Phase N —` headings in the latest architecture review (0 if none). */
+/** Number of structured `phases` in the latest architecture review's frontmatter (0 if none). */
 const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
 	const review = latestFsArtifact(state, "architecture-reviews");
 	if (review?.handle.kind !== "fs") return 0;
-	return [...readFileSync(resolveCwd(review.handle.path, cwd), "utf-8").matchAll(REVIEW_PHASE_RE)].length;
+	const { frontmatter } = parseFrontmatter(readFileSync(resolveCwd(review.handle.path, cwd), "utf-8"));
+	const raw = (frontmatter as Record<string, unknown>).phases;
+	return Array.isArray(raw) ? raw.length : 0;
 };
 
 /**
@@ -270,23 +291,42 @@ const latestPlans = (state: Readonly<RunState>, cwd: string): readonly Output[] 
 };
 
 /**
- * Per-review-phase blueprint generator (the `iterate` dual of PHASE_FANOUT).
- * One blueprint pass per review phase, each seeing the plans already produced
- * so it builds on them instead of duplicating. blueprint writes its own
- * natural `.rpiv/artifacts/plans/<slug>_<topic>.md` file — the iterate stage's
- * `plans` collector captures whatever path it announces, so no output-path
- * plumbing is needed (this is exactly the per-phase invocation the
- * architecture-review skill documents as its next step).
+ * Per-review-phase blueprint generator (the `iterate` dual of
+ * FRONTMATTER_PHASE_FANOUT). One blueprint pass per review phase, each seeing the
+ * plans already produced so it builds on them instead of duplicating. Enumerates
+ * over the review's structured `phases:` frontmatter array (derived by
+ * architecture-review from its `### Phase N — name` headings); each unit's prompt
+ * carries the phase title. blueprint writes its own natural
+ * `.rpiv/artifacts/plans/<slug>_<topic>.md` file — the iterate stage's `plans`
+ * collector captures whatever path it announces, so no output-path plumbing is
+ * needed.
+ *
+ * Derive-check (first call): the array is derived from the body headings, so its
+ * length must equal the `### Phase N — name` heading count; a mismatch means the
+ * producer's rebuild step was skipped or the array went stale.
  */
 const REVIEW_PHASE_ITERATE: IterateFn = ({ artifact, state, accumulated, cwd }) => {
 	// Source the review from the named registry — robust to corrective re-entry,
 	// where the rolling primary is the latest code-review doc, not the review.
 	const review = latestFsArtifact(state, "architecture-reviews") ?? artifact;
 	if (review?.handle.kind !== "fs") return null;
-	const phases = [...readFileSync(resolveCwd(review.handle.path, cwd), "utf-8").matchAll(REVIEW_PHASE_RE)];
+	const content = readFileSync(resolveCwd(review.handle.path, cwd), "utf-8");
+	const { frontmatter } = parseFrontmatter(content);
+	const raw = (frontmatter as Record<string, unknown>).phases;
+	const phases = Array.isArray(raw) ? raw : [];
 	const i = accumulated.length;
+	if (i === 0) {
+		const headingCount = [...content.matchAll(REVIEW_PHASE_RE)].length;
+		if (phases.length !== headingCount) {
+			throw new Error(
+				`REVIEW_PHASE_ITERATE: review ${review.handle.path} frontmatter phases (${phases.length}) ≠ '### Phase N —' headings (${headingCount}) — the derived array is stale against the body`,
+			);
+		}
+	}
 	if (i >= phases.length) return null; // every phase planned → terminate
-	const phaseName = phases[i]![2]!.trim();
+	const phase = (phases[i] ?? {}) as { n?: unknown; title?: unknown };
+	const n = typeof phase.n === "number" ? phase.n : i + 1;
+	const title = typeof phase.title === "string" ? phase.title : "";
 
 	const prior = accumulated
 		.flatMap((o) => o.artifacts)
@@ -295,11 +335,11 @@ const REVIEW_PHASE_ITERATE: IterateFn = ({ artifact, state, accumulated, cwd }) 
 	// On a corrective pass the latest code-review is in `reviews`; fold its blockers in.
 	const feedback = latestFsArtifact(state, "reviews");
 
-	let prompt = `${handleToString(review.handle)} Implement Phase ${phases[i]![1]}: ${phaseName}`;
+	let prompt = `${handleToString(review.handle)} Implement Phase ${n}: ${title}`;
 	if (prior.length) prompt += `\nPrior phase plans (read first; build on them, don't duplicate): ${prior.join(", ")}`;
 	if (feedback?.handle.kind === "fs")
 		prompt += `\nAddress the blockers in the latest code review: ${handleToString(feedback.handle)}`;
-	return { prompt, label: `phase ${i + 1}/${phases.length} — ${phaseName}`, id: `phase-${phases[i]![1]}` };
+	return { prompt, label: `phase ${i + 1}/${phases.length} — ${title}`, id: `phase-${n}` };
 };
 
 /**
@@ -353,7 +393,7 @@ const polishWorkflow = defineWorkflow({
 		blueprint: produces({ outcome: rpivBucketOutcome("plans"), iterate: REVIEW_PHASE_ITERATE }),
 		implement: acts({ fanout: PLANS_PHASE_FANOUT }),
 		validate: produces({ outcome: rpivBucketOutcome("validation"), prompt: VALIDATE_PLANS_PROMPT }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews"), outputSchema: CODE_REVIEW_SCHEMA }),
+		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -364,7 +404,7 @@ const polishWorkflow = defineWorkflow({
 		// Backward edge: code-review → blueprint re-plans (implement needs a plan).
 		// The iterate stage re-runs over every review phase; bounded by the
 		// runner's default maxBackwardJumps (2 → up to 3 review iterations).
-		"code-review": gate("blockers_count", { commit: eq(0), blueprint: gt(0) }),
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
 		commit: "stop",
 	},
 });

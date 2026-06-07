@@ -3,6 +3,20 @@ name: revise
 description: Surgically update an existing implementation plan in .rpiv/artifacts/plans/ based on review feedback, mid-implementation discoveries, or new constraints, preserving structure and quality rather than rewriting. Use when the user wants a plan adjusted after code-review feedback, has hit a blocker mid-implement, scope changed, or asks to "revise the plan".
 argument-hint: "[plan-path | --plans <path> --reviews <path>] [feedback]"
 shell-timeout: 10
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: plan
+    data:
+      type: object
+      properties:
+        status:
+          enum: [in-progress, in-review, ready]
+  consumes:
+    reads:
+      plans: {}
+      reviews: {}
 ---
 
 # Revise
@@ -158,6 +172,7 @@ Use the `ask_user_question` tool to confirm before editing. Question: "{Summary 
    - Maintain the distinction between automated vs manual success criteria
    - **Uncheck modified work.** When editing the body of a phase that already carries `- [x]` checkmarks, change `- [x]` back to `- [ ]` for every item whose acceptance is no longer guaranteed by the prior implementation (changed steps, changed success criteria, new sub-steps). Leave checkmarks intact only on items whose existing implementation still satisfies the revised criteria. This is load-bearing: `/skill:implement` trusts checkmarks when resuming a plan, so a stale `- [x]` on a rewritten phase silently skips the new work whenever the next-step `Phase {N}` arg is dropped.
    - If the plan has YAML frontmatter, set `last_updated` to `<iso>` from the Metadata block; set `last_updated_by` to your name. Copy the offset verbatim — do not reformat.
+   - **Rebuild `phases:` if present.** If the frontmatter carries a `phases:` array, rebuild it from the `## Phase N:` headings after your edits — one `{ n, title }` entry per heading, in body order.
 
 3. **Preserve quality standards**:
    - Include specific file paths and line numbers for new content

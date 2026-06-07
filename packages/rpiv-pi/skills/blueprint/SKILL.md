@@ -3,6 +3,34 @@ name: blueprint
 description: Plan complex features by decomposing them into vertical slices (one slice equals one phase) with developer micro-checkpoints between phases, producing an implement-ready phased plan in .rpiv/artifacts/plans/. Use for complex multi-component features touching 6+ files across multiple layers when iterative review between slices is valuable. Optionally consumes a research/solutions artifact; can also run standalone with a free-text feature description for small tasks. Prefer blueprint over plan when mid-flight micro-checkpoints matter, and prefer plan when a straightforward phased breakdown is enough.
 argument-hint: "[research artifact path or feature description]"
 shell-timeout: 10
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: plan
+    data:
+      type: object
+      required: [phases]
+      properties:
+        status:
+          enum: [in-progress, in-review, ready]
+        phase_count:
+          type: integer
+          minimum: 1
+          maximum: 32
+        phases:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            required: [n, title]
+            properties:
+              n: { type: integer, minimum: 1 }
+              title: { type: string }
+  consumes:
+    meta:
+      artifactKind: [research, solutions]
 ---
 
 # Blueprint
@@ -216,7 +244,7 @@ After the design summary is confirmed, decompose the feature into vertical slice
 
    **Artifact template sections** (all required in skeleton):
 
-   - **Frontmatter**: date, author, commit, branch, repository, topic, tags, `status: in-progress`, parent, phase_count, unresolved_phase_count (initialized to phase_count, decrements as each phase's code is approved in Step 6.4), last_updated, last_updated_by
+   - **Frontmatter**: date, author, commit, branch, repository, topic, tags, `status: in-progress`, parent, phase_count, `phases` (derived from the `## Phase N:` headings — see Step 7.2), unresolved_phase_count (initialized to phase_count, decrements as each phase's code is approved in Step 6.4), last_updated, last_updated_by
    - **# {Feature Name} Implementation Plan**
    - **## Overview**: 2-3 sentences — what we're building and the chosen architectural approach. Settled decision, not a discussion.
    - **## Requirements**: Bullet list from ticket, research, or developer input.
@@ -356,6 +384,13 @@ The artifact was created as a skeleton in Step 5 and filled progressively in Ste
    - `phase_count` matches the number of `## Phase N` sections
 
    If any check fails, return to Step 6. Do NOT flip status. (7.1 and 7.2 guard the same invariant — empty content ↔ unresolved counter.)
+
+   Then **rebuild the `phases:` frontmatter array from the `## Phase N:` headings** — one `{ n, title }` entry per section, in body order:
+   ```yaml
+   phases:
+     - { n: 1, title: Schema layer }
+     - { n: 2, title: Runtime wiring }
+   ```
 
 3. **Update frontmatter** via Edit: `status: in-progress` → `status: in-review` (Step 9 flips to `ready` after triage — keeps consumers off an artifact still being edited). Leave `last_updated` / `last_updated_by` as-is.
 

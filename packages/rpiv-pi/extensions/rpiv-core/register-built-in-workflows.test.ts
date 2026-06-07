@@ -11,10 +11,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuiltInWorkflows } from "./register-built-in-workflows.js";
 
+// Alphabetical: the five shipped presets.
 const BUILT_IN_NAMES = ["arch", "build", "polish", "ship", "vet"];
 
 describe("registerBuiltInWorkflows", () => {
-	it("registers the five built-in workflows when rpiv-workflow is present", async () => {
+	it("registers all built-in workflows (five presets) when rpiv-workflow is present", async () => {
 		const { getBuiltIns, flushBuiltInProviders } = await import("@juicesharp/rpiv-workflow/internal");
 		expect(getBuiltIns()).toEqual([]); // setup.ts beforeEach resets the registry
 
