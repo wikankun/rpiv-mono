@@ -136,7 +136,7 @@ Please review what landed and let me know if anything needs to change before res
 
 ## Handle Follow-ups
 
-- **Implement does not own the plan.** Source-file edits happen in implement; plan edits do not. Never patch the plan artifact from inside implement.
+- **Implement owns checkboxes, not plan content.** Check off `#### Automated Verification:` items `- [ ]` → `- [x]` as each phase's checks pass. Everything else is revise's — run `/skill:revise <plan-path>`; never rewrite plan content from inside implement.
 - **For plan-level changes.** Run `/skill:revise <plan-path>` first — it appends a timestamped Follow-up section to the plan and preserves history. Then resume implement at the affected phase.
 - **For session pauses.** Run `/skill:create-handoff` to capture in-flight state, then `/new` and `/skill:resume-handoff` in the next session.
 - **Mismatch handling stays inline.** When code reality diverges from the plan, use the inline `ask_user_question` flow ("Follow the plan / Skip this change / Update the plan") — that is implement's only follow-up surface; everything else escalates to revise or create-handoff.
