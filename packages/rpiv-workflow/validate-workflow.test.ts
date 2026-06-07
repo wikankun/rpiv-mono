@@ -376,6 +376,58 @@ describe("validateWorkflow — route-edge schema check", () => {
 		const issues = validateWorkflow(w);
 		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
 	});
+
+	it("does not warn when the route source is backed only by a contract produces.data", () => {
+		// No stage outputSchema — the field is sourced from the skill's contract
+		// produces.data at runtime (effectiveOutputSchema), so the route still
+		// fires on validated data. Must NOT warn.
+		const contracts: SkillContractMap = new Map([
+			[
+				"code-review",
+				{
+					source: "declared",
+					produces: {
+						kind: "produces",
+						data: { type: "object", properties: { severeIssueCount: { type: "integer" } } },
+					},
+				},
+			],
+		]);
+		const w: Workflow = {
+			name: "contract-backed",
+			start: "code-review",
+			stages: { "code-review": produces(), revise: produces(), commit: acts() },
+			edges: {
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				revise: "commit",
+				commit: "stop",
+			},
+		};
+		const issues = validateWorkflow(w, { skillContracts: contracts });
+		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
+	});
+
+	it("still warns when neither outputSchema nor a contract covers the route source", () => {
+		// A contract exists for a DIFFERENT skill — the routed stage's own skill
+		// has no produces.data, so the warning must still fire.
+		const contracts: SkillContractMap = new Map([
+			["unrelated", { source: "declared", produces: { kind: "produces", data: { type: "object" } } }],
+		]);
+		const w: Workflow = {
+			name: "uncovered",
+			start: "code-review",
+			stages: { "code-review": produces(), revise: produces(), commit: acts() },
+			edges: {
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				revise: "commit",
+				commit: "stop",
+			},
+		};
+		const issues = validateWorkflow(w, { skillContracts: contracts });
+		expect(
+			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
+		).toBe(true);
+	});
 });
 
 describe("validateWorkflow — workflow name", () => {

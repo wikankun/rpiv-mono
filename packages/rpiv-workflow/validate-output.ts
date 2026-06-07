@@ -6,6 +6,7 @@
  */
 
 import type { StageSchema } from "./api.js";
+import { extractJsonSchema, isJsonSchemaObject, type JsonSchemaObject } from "./json-schema.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,6 +20,17 @@ export interface SchemaValidationFailure {
 	/** typeof / "array" / "null" / "undefined" of the offending value. */
 	actual: string;
 	message: string;
+	/**
+	 * The actual offending value at `path`, resolved from the input data.
+	 * `undefined` when the field is absent (e.g. a missing required property).
+	 */
+	value?: unknown;
+	/**
+	 * The values the schema permits at `path` (`enum`, or a single-element list
+	 * for `const`), recovered from the JSON-Schema-as-data when the schema is
+	 * introspectable. `undefined` for non-enum constraints or opaque schemas.
+	 */
+	allowed?: readonly unknown[];
 }
 
 export interface ValidationResult {
@@ -54,9 +66,9 @@ export const MIN_VALIDATION_RETRY_TIMEOUT_MS = 1_000;
 export function validateOutputData(schema: StageSchema, data: unknown): ValidationResult | Promise<ValidationResult> {
 	const result = schema["~standard"].validate(data);
 	if (result instanceof Promise) {
-		return result.then((resolved) => buildResult(resolved, data));
+		return result.then((resolved) => buildResult(resolved, data, schema));
 	}
-	return buildResult(result, data);
+	return buildResult(result, data, schema);
 }
 
 function buildResult(
@@ -67,17 +79,26 @@ function buildResult(
 		}[];
 	},
 	data: unknown,
+	schema: StageSchema,
 ): ValidationResult {
 	if (!result.issues) {
 		return { valid: true, failures: [] };
 	}
+	// Recover the schema AS DATA once (validator-agnostic; `undefined` for opaque
+	// schemas) so each failure can name the values it actually permits.
+	const rootSchema = extractJsonSchema(schema);
 	const failures: SchemaValidationFailure[] = result.issues.map((issue) => {
 		const path = issue.path ? formatStandardPath(issue.path) : ".";
+		const value = resolveInstanceValue(data, path);
+		const node = rootSchema ? resolveSchemaNode(rootSchema, path) : undefined;
+		const allowed = node ? allowedValues(node) : undefined;
 		return {
 			path,
-			expected: "schema",
-			actual: describeType(resolveInstanceValue(data, path)),
+			expected: node ? schemaKeyword(node) : "schema",
+			actual: describeType(value),
 			message: issue.message,
+			value,
+			...(allowed ? { allowed } : {}),
 		};
 	});
 	return { valid: false, failures };
@@ -109,8 +130,84 @@ function resolveInstanceValue(data: unknown, instancePath: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// Failure formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a failure as one actionable line: the field, the constraint it
+ * violated, and — when recoverable — the values the schema allows and the
+ * value the data actually carried. Falls back to the raw validator message
+ * when the schema is opaque (Zod/Valibot without a Converter) or the failure
+ * isn't an enum/const mismatch.
+ *
+ *   status: must be one of "in-progress", "in-review", "ready" — got "done"
+ *   phase_count: must be an integer — got "3"
+ *   status: must have required property (field missing)
+ */
+export function describeFailure(f: SchemaValidationFailure): string {
+	const field = f.path === "." ? "(root)" : f.path.replace(/^\//, "").replace(/\//g, ".");
+	if (f.allowed && f.allowed.length > 0) {
+		const allowed = f.allowed.map((v) => JSON.stringify(v)).join(", ");
+		const got = f.value === undefined ? "(field missing)" : `got ${JSON.stringify(f.value)}`;
+		return `${field}: must be one of ${allowed} — ${got}`;
+	}
+	// Non-enum failure: keep the validator's own message, append the offending
+	// value only when it's a primitive (an object/array dump adds noise, and a
+	// `required` failure resolves to the whole parent object).
+	const got = isPrimitive(f.value) ? ` — got ${JSON.stringify(f.value)}` : "";
+	return `${field}: ${f.message}${got}`;
+}
+
+function isPrimitive(value: unknown): boolean {
+	return value === null || (typeof value !== "object" && typeof value !== "undefined" && typeof value !== "function");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Walk a JSON Schema by an instance path (`/status`, `/phases/0/n`) to the
+ * sub-schema that governs the offending value. Handles the shapes a frontmatter
+ * contract uses — object `properties` and array `items` (single-schema, not
+ * tuple) — and degrades to `undefined` on `$ref`/`anyOf`/`allOf` or any segment
+ * it can't follow, so an unrecoverable node simply yields no enum enrichment.
+ */
+function resolveSchemaNode(root: JsonSchemaObject, path: string): JsonSchemaObject | undefined {
+	if (path === "." || path === "") return root;
+	let node: JsonSchemaObject | undefined = root;
+	for (const seg of path.split("/").filter(Boolean)) {
+		if (!node) return undefined;
+		const props: unknown = node.properties;
+		if (isJsonSchemaObject(props) && isJsonSchemaObject(props[seg])) {
+			node = props[seg];
+			continue;
+		}
+		// Array index → the `items` schema (single-schema form only).
+		if (/^\d+$/.test(seg) && isJsonSchemaObject(node.items)) {
+			node = node.items;
+			continue;
+		}
+		return undefined;
+	}
+	return node;
+}
+
+/** The values a schema node permits: its `enum`, or `[const]` for a const node. */
+function allowedValues(node: JsonSchemaObject): readonly unknown[] | undefined {
+	if (Array.isArray(node.enum)) return node.enum;
+	if ("const" in node) return [node.const];
+	return undefined;
+}
+
+/** A short keyword for the `expected` field — the node's `type`, or `enum`/`const`. */
+function schemaKeyword(node: JsonSchemaObject): string {
+	if (Array.isArray(node.enum)) return "enum";
+	if ("const" in node) return "const";
+	if (typeof node.type === "string") return node.type;
+	if (Array.isArray(node.type)) return node.type.join("|");
+	return "schema";
+}
 
 function describeType(value: unknown): string {
 	if (value === null) return "null";

@@ -61,9 +61,9 @@ export const ERR_VALIDATION_FAILED = (skill: string, failures: string) =>
  * line per failure) so the factory stays single-arg-typed.
  */
 export const MSG_VALIDATION_RETRY_PROMPT = (skill: string, errorLines: string) =>
-	`The artifact you produced for ${skill} doesn't satisfy the expected output schema. ` +
-	"Please update the frontmatter and re-write the artifact at the same path.\n\n" +
-	`Errors:\n${errorLines}`;
+	`The ${skill} artifact's frontmatter doesn't satisfy the expected output schema. ` +
+	"Fix only the fields listed below, then re-write the artifact at the same path (don't move it):\n\n" +
+	`${errorLines}`;
 
 export const MSG_INPUT_VALIDATION_FAILED = (currentSkill: string, prevSkill: string) =>
 	`✗ ${currentSkill} input validation failed — upstream ${prevSkill} produced invalid data`;

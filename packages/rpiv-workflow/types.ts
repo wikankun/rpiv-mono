@@ -133,11 +133,16 @@ export interface RunContext {
 	 * Snapshot of the declared/injected skill-contract registry, taken once in
 	 * `buildRunContext` (mirrors `registeredSkills`). This is the
 	 * declared/injected registry — NOT the harvested-merged
-	 * `LoadedWorkflows.skillContracts` — because the runtime mirror only adds
-	 * value for a declared `consumes.data` lacking a stage `inputSchema`; a
-	 * harvested `consumes.data` is the stage's own `inputSchema` re-derived,
-	 * already covered by `ensureInputValid`. Fail-soft: Phase 7 degrades when
-	 * absent.
+	 * `LoadedWorkflows.skillContracts` — because both runtime uses only add
+	 * value over a declared contract:
+	 *   - `ensureContractInputValid` mirrors a declared `consumes.data` that
+	 *     lacks a stage `inputSchema` (a harvested `consumes.data` is the
+	 *     stage's own `inputSchema` re-derived, already covered by
+	 *     `ensureInputValid`);
+	 *   - `effectiveOutputSchema` (threaded onto `StageSession`) sources a
+	 *     declared `produces.data` as the output schema when the stage carries
+	 *     no `outputSchema` of its own.
+	 * Fail-soft: both degrade (no validation, never throw) when absent.
 	 */
 	skillContracts?: SkillContractMap;
 	/**
@@ -221,6 +226,14 @@ export interface SessionContext {
 
 export interface StageSession extends SessionContext {
 	stage: StageDef;
+	/**
+	 * Declared/injected skill-contract registry, threaded from
+	 * `RunContext.skillContracts` at session construction. Lets output
+	 * validation fall back to the dispatched skill's `produces.data` when the
+	 * stage carries no `outputSchema` of its own. Fail-soft: absent for
+	 * programmatic embedders that opt out of contract registration.
+	 */
+	skillContracts?: SkillContractMap;
 	/** 0-based stage index within this run — for status display + JSONL stage number. */
 	stageIndex: number;
 	/** Pre-stage snapshot value (undefined if the stage's `outcome` has no `snapshot`). */

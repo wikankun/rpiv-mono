@@ -45,7 +45,7 @@ import {
 } from "../messages.js";
 import { finalizeOutput, type Output } from "../output.js";
 import type { RunContext, RunState, WorkflowHostContext } from "../types.js";
-import { DEFAULT_VALIDATION_RETRIES, validateOutputData } from "../validate-output.js";
+import { DEFAULT_VALIDATION_RETRIES, describeFailure, validateOutputData } from "../validate-output.js";
 import { advanceChain } from "./chain-advance.js";
 import { lifecycleCtxFor } from "./runner.js";
 import type { ResolvedStage } from "./stage-lifecycle.js";
@@ -94,7 +94,7 @@ export async function runScript(
 		if (stage.def.kind === "produces" && stage.def.outputSchema) {
 			const validation = await Promise.resolve(validateOutputData(stage.def.outputSchema, output.data));
 			if (!validation.valid) {
-				const failureSummary = validation.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+				const failureSummary = validation.failures.map(describeFailure).join("; ");
 				if (attempt > maxRetries || onInvalid === "halt") {
 					await recordTerminalFailure(curCtx, scriptAuditCtx(run, stage), {
 						status: "failed",

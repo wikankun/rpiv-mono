@@ -244,7 +244,7 @@ describe("sessions — validation retry loop", () => {
 		expect(onFailure).toHaveBeenCalledTimes(1);
 		expect(chain.notifications.some((n) => n.msg === MSG_VALIDATION_EXHAUSTED("test"))).toBe(true);
 		expect(state.termination.error).toMatch(new RegExp(ERR_VALIDATION_FAILED("test", "foo").split(":")[0] ?? ""));
-		expect(state.termination.error).toContain("/foo");
+		expect(state.termination.error).toContain("foo:");
 	});
 
 	it("clamps maxRetries above the ceiling (MAX_VALIDATION_RETRIES)", async () => {
@@ -1163,5 +1163,152 @@ describe("sessions — halt routing", () => {
 		expect(onFailure).toHaveBeenCalledTimes(1);
 		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_FAILED("test"))).toBe(true);
 		expect(state.termination.error).toBe("outcome said no");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Phase-1 spike: output validation sourced from contract `produces.data`
+// when the stage carries no `outputSchema` of its own.
+// ---------------------------------------------------------------------------
+
+describe("sessions — contract-sourced output validation (Phase 1)", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-sessions-contract-"));
+	});
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	// produces.data raw JSON Schema mirroring FOO_EQ_2_SCHEMA, keyed to skill "test".
+	const FOO_EQ_2_CONTRACTS = new Map([
+		[
+			"test",
+			{
+				source: "declared",
+				produces: {
+					kind: "produces",
+					data: {
+						type: "object",
+						properties: { foo: { const: 2 } },
+						required: ["foo"],
+						additionalProperties: true,
+					},
+				},
+			},
+		],
+	]) satisfies StageSession["skillContracts"];
+
+	it("validates output against produces.data when the stage has no outputSchema", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onSuccess = vi.fn(async () => {});
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				skillContracts: FOO_EQ_2_CONTRACTS,
+				// No outputSchema — must fall back to the contract's produces.data.
+				stage: stage({ outcome: scriptedOutcome([okPayload({ foo: 2 })]) }),
+				onSuccess,
+			}),
+		);
+
+		expect(onSuccess).toHaveBeenCalledTimes(1);
+		expect(state.stagesCompleted).toBe(1);
+	});
+
+	it("drives the retry loop off the contract schema — invalid output retries then succeeds", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onSuccess = vi.fn(async () => {});
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				skillContracts: FOO_EQ_2_CONTRACTS,
+				stage: stage({
+					maxRetries: 2,
+					// foo:1 violates the contract → one retry → foo:2 passes.
+					outcome: scriptedOutcome([okPayload({ foo: 1 }), okPayload({ foo: 2 })]),
+				}),
+				onSuccess,
+			}),
+		);
+
+		expect(onSuccess).toHaveBeenCalledTimes(1);
+		expect(chain.notifications.filter((n) => n.msg === MSG_VALIDATION_RETRY("test", 1))).toHaveLength(1);
+		expect(state.stagesCompleted).toBe(1);
+	});
+
+	it("the stage's own outputSchema wins over the contract (precedence)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onFailure = vi.fn();
+
+		// Stage schema demands foo:2; contract would accept anything else. Output
+		// foo:1 must FAIL — proving the stage schema, not the contract, is used.
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				skillContracts: new Map([
+					[
+						"test",
+						{
+							source: "declared",
+							produces: { kind: "produces", data: { type: "object", additionalProperties: true } },
+						},
+					],
+				]) satisfies StageSession["skillContracts"],
+				stage: stage({
+					outputSchema: FOO_EQ_2_SCHEMA,
+					maxRetries: 1,
+					outcome: scriptedOutcome([okPayload({ foo: 1 })]),
+				}),
+				onFailure,
+			}),
+		);
+
+		expect(onFailure).toHaveBeenCalledTimes(1);
+		expect(state.termination.error).toContain("foo:");
+	});
+
+	it("degrades to no validation when neither outputSchema nor contract supplies a schema", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onSuccess = vi.fn(async () => {});
+
+		// No outputSchema, no contracts — output passes through unvalidated.
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				stage: stage({ outcome: scriptedOutcome([okPayload({ anything: "goes" })]) }),
+				onSuccess,
+			}),
+		);
+
+		expect(onSuccess).toHaveBeenCalledTimes(1);
+		expect(state.stagesCompleted).toBe(1);
 	});
 });

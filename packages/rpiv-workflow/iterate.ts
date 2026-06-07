@@ -129,6 +129,7 @@ export async function runIterate(
 		lifecycle: run.lifecycle,
 		runIdentity: runIdentityOf(run),
 		stage: def,
+		skillContracts: run.skillContracts,
 		stageIndex: stageIdx,
 		snapshot,
 		branchOffset: undefined,

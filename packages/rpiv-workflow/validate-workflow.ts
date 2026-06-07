@@ -82,7 +82,7 @@ export function validateWorkflow(
 	const hasUnenumerableEdge = issues.some((i) => /\.targets` metadata/.test(i.message));
 	if (!hasUnenumerableEdge) checkReachability(workflow, issues);
 	checkStageSemantics(workflow, issues);
-	checkPredicateSchemas(workflow, issues);
+	checkPredicateSchemas(workflow, issues, opts?.skillContracts);
 	checkReadsReferences(workflow, issues);
 	checkEdgeSchemaCompat(workflow, issues, opts?.skillContracts);
 
@@ -548,24 +548,39 @@ function checkReadsReferences(w: Workflow, issues: WorkflowValidationIssue[]): v
  * the validation-retry loop never runs and the route may read an undefined
  * field — routing decisions silently default.
  *
+ * A stage carrying no `outputSchema` is still covered when its dispatched
+ * skill declares a contract `produces.data` — output validation sources that
+ * schema at runtime (`effectiveOutputSchema` in extraction.ts), so the route
+ * fires on validated data. Such stages are exempt from this lint.
+ *
  * Routes authored via `defineRoute(targets, fn, { readsData: false })`
  * consult only `state` or `output.meta` and carry no marker — exempt from
  * this lint.
  */
-function checkPredicateSchemas(w: Workflow, issues: WorkflowValidationIssue[]): void {
+function checkPredicateSchemas(
+	w: Workflow,
+	issues: WorkflowValidationIssue[],
+	skillContracts: SkillContractMap | undefined,
+): void {
 	for (const [from, target] of Object.entries(w.edges)) {
 		if (typeof target === "string") continue;
 		if (!marksReadsData(target)) continue;
 		const stage = w.stages[from];
-		if (stage && !stage.outputSchema) {
-			issues.push(
-				warning(
-					w.name,
-					from,
-					`route edge from "${from}" reads output.data but the stage has no outputSchema — routing may fire on un-validated data`,
-				),
-			);
-		}
+		if (!stage || stage.outputSchema) continue;
+		// Contract-sourced output schema covers the stage just as its own
+		// `outputSchema` would — mirror `effectiveOutputSchema`'s fallback.
+		// Skill-name key MUST match that runtime resolution (`def.skill ??
+		// stageName`); `stage.skill ?? from` is the same fallback (`from` is the
+		// stage record key). Keep both in sync or load-lint and runtime diverge.
+		const contractData = skillContracts?.get(stage.skill ?? from)?.produces?.data;
+		if (contractData) continue;
+		issues.push(
+			warning(
+				w.name,
+				from,
+				`route edge from "${from}" reads output.data but the stage has no outputSchema — routing may fire on un-validated data`,
+			),
+		);
 	}
 }
 

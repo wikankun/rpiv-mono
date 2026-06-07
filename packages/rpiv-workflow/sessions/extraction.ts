@@ -19,6 +19,7 @@ import type { StageDef, StageSchema } from "../api.js";
 import { nowIso } from "../audit.js";
 import type { Artifact } from "../handle.js";
 import { assertNever, withTimeout } from "../internal-utils.js";
+import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
 import { buildLifecycleContext, skillStageRef } from "../lifecycle.js";
 import { ERR_SCHEMA_TIMEOUT, MSG_VALIDATION_RETRY, MSG_VALIDATION_RETRY_PROMPT } from "../messages.js";
 import { sideEffectOutcome } from "../outcomes/index.js";
@@ -29,6 +30,7 @@ import type { StageSession, WorkflowHostContext } from "../types.js";
 import {
 	DEFAULT_VALIDATION_RETRIES,
 	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
+	describeFailure,
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
 	MIN_VALIDATION_RETRIES,
@@ -60,7 +62,7 @@ export async function produceAndValidateOutput(
 	const initialOutput = enforceCompletionContract(s.stage, s.skill, first.output);
 	if (initialOutput.kind === "fatal") return initialOutput;
 
-	if (!shouldValidateOutput(s.stage, initialOutput.output)) return initialOutput;
+	if (!shouldValidateOutput(s, initialOutput.output)) return initialOutput;
 
 	return retryUntilValid(ctx, s, { outcome, collectCtx, finalize }, initialOutput.output);
 }
@@ -176,8 +178,29 @@ function enforceCompletionContract(
 	return { kind: "ok", output };
 }
 
-function shouldValidateOutput(stage: StageDef, output: Output): boolean {
-	return !!(stage.outputSchema && output.data !== undefined);
+/**
+ * The schema output is validated against: the stage's own `outputSchema` if it
+ * declares one, otherwise the dispatched skill's contract `produces.data`
+ * (sourced from the declared/injected registry threaded onto the session).
+ *
+ * Degrades exactly like the input-side runtime mirror (`ensureContractInputValid`):
+ * a non-object / unparseable `produces.data` is treated as absent (no schema),
+ * never thrown. Returns `undefined` when neither source supplies a schema.
+ */
+function effectiveOutputSchema(s: StageSession): StageSchema | undefined {
+	if (s.stage.outputSchema) return s.stage.outputSchema;
+	// Skill-name key MUST match `checkPredicateSchemas` in validate-workflow.ts
+	// (`stage.skill ?? from`): `s.skill` is resolved as `def.skill ?? stageName`
+	// at stage-lifecycle.ts, so both paths key the contract map identically. If
+	// one changes, the other must — else a load-time lint and the runtime would
+	// disagree on which contract covers the stage.
+	const producesData = s.skillContracts?.get(s.skill)?.produces?.data;
+	if (!isJsonSchemaObject(producesData)) return undefined;
+	return jsonSchemaToStandard(producesData);
+}
+
+function shouldValidateOutput(s: StageSession, output: Output): boolean {
+	return !!(effectiveOutputSchema(s) && output.data !== undefined);
 }
 
 interface RetryDeps {
@@ -192,7 +215,7 @@ async function retryUntilValid(
 	deps: RetryDeps,
 	initial: Output,
 ): Promise<OutputProduction> {
-	const schema = s.stage.outputSchema!;
+	const schema = effectiveOutputSchema(s)!;
 	const maxRetries = Math.max(
 		MIN_VALIDATION_RETRIES,
 		Math.min(s.stage.maxRetries ?? DEFAULT_VALIDATION_RETRIES, MAX_VALIDATION_RETRIES),
@@ -283,7 +306,7 @@ async function askAgentToFix(
 	timeoutMs: number,
 ): Promise<void> {
 	ctx.ui.notify(MSG_VALIDATION_RETRY(s.skill, attempt), "warning");
-	const errorLines = failures.map((f) => ` • ${f.path} — ${f.message}`).join("\n");
+	const errorLines = failures.map((f) => ` • ${describeFailure(f)}`).join("\n");
 	await withTimeout(
 		handlerFor(s.stage.sessionPolicy).send(ctx, MSG_VALIDATION_RETRY_PROMPT(s.skill, errorLines), s.continueHost),
 		timeoutMs,
@@ -292,6 +315,6 @@ async function askAgentToFix(
 }
 
 function validationExhausted(failures: SchemaValidationFailure[]): OutputProduction {
-	const failureSummary = failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+	const failureSummary = failures.map(describeFailure).join("; ");
 	return { kind: "validation-exhausted", failureSummary };
 }

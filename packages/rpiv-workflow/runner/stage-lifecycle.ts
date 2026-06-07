@@ -38,6 +38,7 @@ import { readBranch } from "../transcript.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";
 import {
 	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
+	describeFailure,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
 	MIN_VALIDATION_RETRY_TIMEOUT_MS,
 	type ValidationResult,
@@ -246,6 +247,7 @@ export async function runStage(
 		lifecycle: run.lifecycle,
 		runIdentity: runIdentityOf(run),
 		stage: stage.def,
+		skillContracts: run.skillContracts,
 		stageIndex: idx,
 		snapshot,
 		continueHost: run.continueHost,
@@ -509,7 +511,7 @@ async function ensureInputValid(stage: ResolvedStage, run: RunContext): Promise<
 
 	if (result.valid) return;
 
-	const failureSummary = result.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+	const failureSummary = result.failures.map(describeFailure).join("; ");
 	throw new StagePreflightError(
 		"halt",
 		stage.skill,
@@ -613,7 +615,7 @@ async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): 
 		);
 	}
 	if (result.valid) return;
-	const failureSummary = result.failures.map((f) => `${f.path}: ${f.message}`).join("; ");
+	const failureSummary = result.failures.map(describeFailure).join("; ");
 	throw new StagePreflightError(
 		"halt",
 		stage.skill,
