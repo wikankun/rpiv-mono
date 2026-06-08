@@ -221,7 +221,18 @@ function fieldConstConflict(key: string, p: JsonSchemaObject, c: JsonSchemaObjec
  * per-field type/enum/const rules are what catch most real producer↔consumer drift.
  */
 export function isSchemaCompatible(producer: JsonSchemaObject, consumer: JsonSchemaObject): SchemaCompatResult {
-	if (producer.type !== "object" || consumer.type !== "object") return { ok: true };
+	if (producer.type !== "object" || consumer.type !== "object") {
+		// Non-object roots: compare root type when both sides declare one.
+		// Scalars like { type: "string" } vs { type: "array" } are provably
+		// incompatible; when either side omits `type`, degrade to ok (unprovable).
+		if (typeof producer.type === "string" && typeof consumer.type === "string" && producer.type !== consumer.type) {
+			return {
+				ok: false,
+				reason: `root type mismatch: producer is "${producer.type}", consumer is "${consumer.type}"`,
+			};
+		}
+		return { ok: true };
+	}
 	const producerProps = (producer.properties as Record<string, JsonSchemaObject> | undefined) ?? {};
 	const consumerProps = (consumer.properties as Record<string, JsonSchemaObject> | undefined) ?? {};
 	const required = Array.isArray(consumer.required) ? (consumer.required as string[]) : [];

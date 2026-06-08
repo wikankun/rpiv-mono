@@ -23,7 +23,13 @@
 import type { Workflow } from "./api.js";
 import { extractJsonSchema, isSchemaCompatible, type SchemaCompatResult } from "./json-schema.js";
 import { isDispatchingStage } from "./load/alias.js";
-import type { ConsumesSpec, ProducesSpec, SkillContract, SkillContractMap } from "./skill-contract.js";
+import type {
+	CompositionComparator,
+	ConsumesSpec,
+	ProducesSpec,
+	SkillContract,
+	SkillContractMap,
+} from "./skill-contract.js";
 
 const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contracts");
 const PROVIDERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-providers");
@@ -31,6 +37,7 @@ const FLUSH_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-flush");
 const FAILURES_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-failures");
 const COLLISIONS_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-collisions");
 const OWNERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-owners");
+const COMPARATORS_KEY = Symbol.for("@juicesharp/rpiv-workflow:composition-comparators");
 
 /** A lazy contributor of skill contracts — run once by `flushSkillContractProviders`. */
 type SkillContractsProvider = () => void | Promise<void>;
@@ -94,6 +101,11 @@ function getOwners(): Map<string, string> {
 
 function getCollisions(): string[] {
 	return lazyGlobalSlot(COLLISIONS_KEY, () => []);
+}
+
+/** channel name → consumer-supplied composition comparator (A2). */
+export function getCompositionComparators(): Map<string, CompositionComparator> {
+	return lazyGlobalSlot(COMPARATORS_KEY, () => new Map<string, CompositionComparator>());
 }
 
 function getFailures(): unknown[] {
@@ -163,6 +175,20 @@ export function registerSkillContractsProvider(provider: SkillContractsProvider)
 }
 
 /**
+ * Register a per-channel composition comparator (A2). The framework invokes the
+ * comparator at all three adjudication points for any consumer that declares
+ * `consumes.reads[channelName]`, but never interprets the `meta` it compares —
+ * the channel's ontology is the consumer's (Decision 1, Decision 7). Per-channel
+ * (not a single global comparator) so different consumers own different channels
+ * without collision. Idempotent on channel name (re-register replaces). Anchored
+ * on a `Symbol.for` slot like the rest of the registry, so it survives Pi's
+ * double module-load.
+ */
+export function registerCompositionComparator(channelName: string, comparator: CompositionComparator): void {
+	getCompositionComparators().set(channelName, comparator);
+}
+
+/**
  * Run all pending providers once, then memoize. Concurrency-safe (callers await
  * the same promise). DELIBERATE divergence from `flushBuiltInProviders`: each
  * provider is wrapped so a throw is RECORDED (into the failures slot, drained by
@@ -226,6 +252,7 @@ export function __resetSkillContracts(): void {
 	getFailures().length = 0;
 	getCollisions().length = 0;
 	getOwners().clear();
+	getCompositionComparators().clear();
 	setFlushLatch(undefined);
 }
 
@@ -314,10 +341,36 @@ export function canCompose(
 	consumerSkill: string,
 	contracts: SkillContractMap = getSkillContracts(),
 ): SchemaCompatResult {
-	const producer = contracts.get(producerSkill)?.produces?.data;
-	const consumer = contracts.get(consumerSkill)?.consumes?.data;
-	if (!producer || !consumer) return { ok: true };
-	return isSchemaCompatible(producer, consumer);
+	const producerContract = contracts.get(producerSkill);
+	const consumerContract = contracts.get(consumerSkill);
+	// Data-channel (Phase 2): a provable data mismatch is decisive.
+	const producerData = producerContract?.produces?.data;
+	const consumerData = consumerContract?.consumes?.data;
+	if (producerData && consumerData) {
+		const dataCompat = isSchemaCompatible(producerData, consumerData);
+		if (!dataCompat.ok) return dataCompat;
+	}
+	// Named-channel (reads) compat (A2): consult per-channel comparators for the
+	// consumer's declared reads channels. Degrades to `{ ok: true }` when no comparator
+	// is registered or the producer has no `produces` spec. Only adjudicates channels
+	// where the consumer has explicitly declared a meta requirement (readSpec.meta
+	// present) — without it there is no kind to compare, and invoking the comparator
+	// for a channel the producer may not publish would be a false-reject risk for
+	// multi-channel consumers like `revise` (reads ["plans","reviews"]).
+	const produces = producerContract?.produces;
+	const consumes = consumerContract?.consumes;
+	if (produces && consumes?.reads) {
+		const comparators = getCompositionComparators();
+		for (const channel of Object.keys(consumes.reads)) {
+			const comparator = comparators.get(channel);
+			if (!comparator) continue;
+			const readSpec = consumes.reads[channel];
+			if (!readSpec?.meta) continue; // no declared kind requirement — degrade
+			const compat = comparator(produces, consumes, channel);
+			if (!compat.ok) return compat;
+		}
+	}
+	return { ok: true };
 }
 
 /**

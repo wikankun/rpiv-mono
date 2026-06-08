@@ -13,7 +13,7 @@ import type { PromptFn, StageDef } from "../api.js";
 import { auditCtxFor, notifyPartialArtifacts, recordTerminalFailure, runIdentityOf } from "../audit.js";
 import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
-import { currentPrimaryArtifact, withTimeout } from "../internal-utils.js";
+import { currentPrimaryArtifact, SchemaTimeoutError, withTimeout } from "../internal-utils.js";
 import { runIterate } from "../iterate.js";
 import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
 import { skillStageRef } from "../lifecycle.js";
@@ -34,6 +34,7 @@ import {
 	STATUS_STAGE,
 } from "../messages.js";
 import { runFanoutSession, runStageSession } from "../sessions/index.js";
+import { getCompositionComparators } from "../skill-contracts.js";
 import { readBranch } from "../transcript.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";
 import {
@@ -577,12 +578,50 @@ const PRE_PROMPT_CHECKS: readonly PreflightCheck[] = [
 async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): Promise<void> {
 	if (stage.def.prompt !== undefined) return;
 	if (stage.def.inputSchema) return; // ensureInputValid owns the stage-schema path
-	// Named-channel consumer: its real input comes from `reads:` (state.named), NOT
-	// the linear predecessor's output.data — validating output.data here would
-	// false-HALT. v1 defers named-channel compat (Decision 3), so degrade. (#9)
-	if (stage.def.reads?.length) return;
+	const contract = run.skillContracts?.get(stage.skill);
+
+	// Named-channel (reads) consumer (A2 runtime lift — mirror of checkEdgeSchemaCompat,
+	// Phase 4). Its real input is state.named (NOT the linear predecessor's output.data),
+	// so adjudicate `produces.meta ↔ consumes.reads[channel].meta` via the per-channel
+	// comparator and return WITHOUT the output.data check below. HALT only on a CLEAN
+	// comparator violation; degrade (continue/return) when: no declared reads contract,
+	// no comparator for the channel, the channel isn't declared, the channel slot isn't
+	// filled, or the producer's contract/identity is absent. NOTE: fanout/iterate/script
+	// stages short-circuit runStage before POST_PROMPT_CHECKS, so this guard never runs
+	// for them by design (e.g. implement is fanout — adjudicated at load + agent-facing).
+	if (stage.def.reads?.length) {
+		const consumes = contract?.consumes;
+		const reads = consumes?.reads;
+		if (!consumes || !reads) return; // legacy reads stage with no declared reads contract — degrade
+		const comparators = getCompositionComparators();
+		for (const channel of stage.def.reads) {
+			const comparator = comparators.get(channel);
+			const readSpec = reads[channel];
+			if (!comparator || !readSpec) continue; // degrade: no comparator / channel not in contract
+			const latest = run.state.named[channel]?.at(-1);
+			const producerSkill = latest?.meta.skill ?? latest?.meta.stage;
+			const producer = producerSkill ? run.skillContracts?.get(producerSkill)?.produces : undefined;
+			if (!producer) continue; // degrade: producer contract/identity absent
+			const compat = comparator(producer, consumes, channel);
+			if (compat.ok) continue;
+			throw new StagePreflightError(
+				"halt",
+				stage.skill,
+				MSG_INPUT_VALIDATION_FAILED(stage.skill, producerSkill ?? "unknown"),
+				ERR_INPUT_VALIDATION_FAILED(
+					stage.skill,
+					producerSkill ?? "unknown",
+					compat.reason ?? "named-channel meta incompatibility",
+				),
+				true,
+			);
+		}
+		return;
+	}
+
+	// Linear consumes.data consumer (Phase 2 — unchanged behaviour).
 	if (run.state.output?.data === undefined) return;
-	const consumesData = run.skillContracts?.get(stage.skill)?.consumes?.data;
+	const consumesData = contract?.consumes?.data;
 	// Untrusted injected contract — degrade (never HALT) on a non-object schema.
 	if (!isJsonSchemaObject(consumesData)) return;
 	const schema = jsonSchemaToStandard(consumesData);
@@ -595,16 +634,17 @@ async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): 
 		result = await withTimeout(
 			Promise.resolve(validateOutputData(schema, run.state.output.data)),
 			timeoutMs,
-			timeoutMsg,
+			new SchemaTimeoutError(timeoutMsg),
 		);
 	} catch (e) {
 		// Timeout is a resource bound — HALT, parity with ensureInputValid. Any
 		// OTHER throw means the keyword engine could not EVALUATE the contract
 		// schema (consumer-authored `$ref` / if-then / unknown keywords) — the
 		// author's defect, NOT a data violation — so DEGRADE rather than kill a
-		// legitimate run. `withTimeout` wraps its message in `new Error(...)`,
-		// so identity-compare on the message string.
-		const isTimeout = e instanceof Error && e.message === timeoutMsg;
+		// legitimate run. `SchemaTimeoutError` is distinguishable from plain
+		// `Error` via `instanceof`, eliminating the fragile string-identity
+		// comparison that would silently degrade if the message format changed.
+		const isTimeout = e instanceof SchemaTimeoutError;
 		if (!isTimeout) return;
 		throw new StagePreflightError(
 			"halt",

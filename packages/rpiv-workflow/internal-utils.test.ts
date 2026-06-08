@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import type { StageDef } from "./api.js";
 import type { Artifact } from "./handle.js";
 import { fs as fsHandle } from "./handle.js";
-import { applyCompletedStage } from "./internal-utils.js";
+import { applyCompletedStage, SchemaTimeoutError, withTimeout } from "./internal-utils.js";
 import type { Output } from "./output.js";
 import type { RunState } from "./types.js";
 
@@ -171,5 +171,37 @@ describe("applyCompletedStage", () => {
 		// output and stagesCompleted are NOT changed by the reducer
 		expect(state.output).not.toBe(output);
 		expect(state.stagesCompleted).toBe(5);
+	});
+});
+
+describe("SchemaTimeoutError", () => {
+	it("is distinguishable from plain Error via instanceof", () => {
+		const err = new SchemaTimeoutError("test");
+		expect(err).toBeInstanceOf(Error);
+		expect(err).toBeInstanceOf(SchemaTimeoutError);
+		expect(err.message).toBe("test");
+
+		const plain = new Error("test");
+		expect(plain).not.toBeInstanceOf(SchemaTimeoutError);
+	});
+
+	it("withTimeout throws SchemaTimeoutError when message is a SchemaTimeoutError instance", async () => {
+		const never = new Promise<never>(() => {});
+		const err = await withTimeout(never, 1, new SchemaTimeoutError("boom")).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(SchemaTimeoutError);
+		expect((err as Error).message).toBe("boom");
+	});
+
+	it("withTimeout throws plain Error when message is a string (backward-compatible)", async () => {
+		const never = new Promise<never>(() => {});
+		const err = await withTimeout(never, 1, "timeout string").catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(Error);
+		expect(err).not.toBeInstanceOf(SchemaTimeoutError);
+		expect((err as Error).message).toBe("timeout string");
+	});
+
+	it("withTimeout resolves when the promise settles before timeout", async () => {
+		const result = await withTimeout(Promise.resolve(42), 1000, "should not fire");
+		expect(result).toBe(42);
 	});
 });

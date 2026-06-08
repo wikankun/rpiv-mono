@@ -7,4 +7,8 @@
 
 export { registerBuiltIns, registerBuiltInsProvider } from "./built-ins.js";
 export { registerLifecycle } from "./lifecycle.js";
-export { registerSkillContracts, registerSkillContractsProvider } from "./skill-contracts.js";
+export {
+	registerCompositionComparator,
+	registerSkillContracts,
+	registerSkillContractsProvider,
+} from "./skill-contracts.js";

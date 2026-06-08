@@ -21,7 +21,7 @@
  * Every channel is optional — a pure chat side-effect declares none.
  */
 
-import type { JsonSchemaObject } from "./json-schema.js";
+import type { JsonSchemaObject, SchemaCompatResult } from "./json-schema.js";
 
 /**
  * Where a contract came from, in descending authority. `declared` = the skill's
@@ -81,3 +81,20 @@ export interface SkillContract {
 
 /** Registry shape: resolved post-alias skill name → contract. */
 export type SkillContractMap = ReadonlyMap<string, SkillContract>;
+
+/**
+ * A consumer-supplied adjudicator for one named channel's `meta` compatibility.
+ * The framework INVOKES it but never reads inside `meta` — the channel's
+ * ontology lives entirely with the consumer (Decision 7). Registered per channel
+ * via `registerCompositionComparator(channelName, comparator)` and consulted by
+ * the three adjudication points (`canCompose`/`legalNextSkills`,
+ * `checkEdgeSchemaCompat`, `ensureContractInputValid`) for any consumer
+ * declaring `consumes.reads[channelName]`. Conservative by contract: return
+ * `{ ok: true }` whenever there is nothing to compare (absent meta on either
+ * side) so a missing tag degrades, never HALTs.
+ */
+export type CompositionComparator = (
+	produces: ProducesSpec,
+	consumes: ConsumesSpec,
+	channelName: string,
+) => SchemaCompatResult;

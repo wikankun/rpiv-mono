@@ -312,9 +312,28 @@ describe("isSchemaCompatible", () => {
 		expect(isSchemaCompatible(producer, consumer)).toEqual({ ok: true });
 	});
 
-	it("returns ok:true for non-object roots", () => {
-		expect(isSchemaCompatible({ type: "string" }, { type: "number" })).toEqual({ ok: true });
-		expect(isSchemaCompatible({ type: "array" }, { type: "object" })).toEqual({ ok: true });
+	it("flags root type mismatch for non-object roots", () => {
+		const result = isSchemaCompatible({ type: "string" }, { type: "number" });
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toContain("root type mismatch");
+		}
+
+		const result2 = isSchemaCompatible({ type: "array" }, { type: "object" });
+		expect(result2.ok).toBe(false);
+		if (!result2.ok) {
+			expect(result2.reason).toContain("root type mismatch");
+		}
+	});
+
+	it("passes matching non-object root types", () => {
+		expect(isSchemaCompatible({ type: "string" }, { type: "string" })).toEqual({ ok: true });
+		expect(isSchemaCompatible({ type: "array" }, { type: "array" })).toEqual({ ok: true });
+	});
+
+	it("degrades to ok when one side lacks a root type", () => {
+		expect(isSchemaCompatible({}, { type: "string" })).toEqual({ ok: true });
+		expect(isSchemaCompatible({ type: "string" }, {})).toEqual({ ok: true });
 	});
 
 	it("returns ok:true when neither schema has properties", () => {

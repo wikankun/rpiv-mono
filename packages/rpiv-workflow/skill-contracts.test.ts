@@ -2,16 +2,18 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, produces as producesRaw, type StageDef } from "./api.js";
 import { noopCollector } from "./outcomes/index.js";
-import type { SkillContract } from "./skill-contract.js";
+import type { CompositionComparator, SkillContract, SkillContractMap } from "./skill-contract.js";
 import {
 	__resetSkillContracts,
 	canCompose,
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getCompositionComparators,
 	getSkillContracts,
 	harvestStageContracts,
 	legalNextSkills,
+	registerCompositionComparator,
 	registerSkillContracts,
 	registerSkillContractsProvider,
 } from "./skill-contracts.js";
@@ -387,6 +389,61 @@ describe("skill-contracts", () => {
 			]);
 			const next = legalNextSkills("research", map);
 			expect(next).toContain("design");
+		});
+	});
+
+	describe("canCompose — reads-channel (meta) promotion (A2)", () => {
+		const kindComparator: CompositionComparator = (produces, consumes, ch) => {
+			const want = (consumes.reads?.[ch]?.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			const got = (produces.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			return !want || !got || want === got ? { ok: true } : { ok: false, reason: "artifactKind mismatch" };
+		};
+		const contracts: SkillContractMap = new Map([
+			["blueprint", { source: "declared", produces: { kind: "produces", meta: { artifactKind: "plan" } } }],
+			["revise", { source: "declared", produces: { kind: "produces", meta: { artifactKind: "plan" } } }],
+			["design", { source: "declared", produces: { kind: "produces", meta: { artifactKind: "design" } } }],
+			["implement", { source: "declared", consumes: { reads: { plans: { meta: { artifactKind: "plan" } } } } }],
+		]);
+
+		it("positively adjudicates a matching reads edge via the registered comparator", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(canCompose("blueprint", "implement", contracts).ok).toBe(true);
+		});
+		it('multi-publisher: revise also composes into implement (both publish plan to "plans")', () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(canCompose("revise", "implement", contracts).ok).toBe(true);
+		});
+		it("rejects a reads edge whose producer kind is disjoint", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(canCompose("design", "implement", contracts).ok).toBe(false);
+		});
+		it("degrades (ok) when no comparator is registered", () => {
+			expect(canCompose("design", "implement", contracts).ok).toBe(true);
+		});
+	});
+
+	describe("composition comparators (A2 registry)", () => {
+		const plansComparator: CompositionComparator = () => ({ ok: true });
+
+		it("registers a comparator under its channel name", () => {
+			registerCompositionComparator("plans", plansComparator);
+			expect(getCompositionComparators().get("plans")).toBe(plansComparator);
+		});
+
+		it("is idempotent on channel name (re-register replaces)", () => {
+			const first: CompositionComparator = () => ({ ok: true });
+			const second: CompositionComparator = () => ({ ok: false, reason: "x" });
+			registerCompositionComparator("plans", first);
+			registerCompositionComparator("plans", second);
+			expect(getCompositionComparators().get("plans")).toBe(second);
+			expect(getCompositionComparators().size).toBe(1);
+		});
+
+		it("__resetSkillContracts clears the comparator slot", () => {
+			registerCompositionComparator("plans", plansComparator);
+			expect(getCompositionComparators().size).toBe(1);
+			__resetSkillContracts();
+			expect(getCompositionComparators().size).toBe(0);
 		});
 	});
 });

@@ -113,6 +113,7 @@ export {
 	getSkillContracts,
 	harvestStageContracts,
 	legalNextSkills,
+	registerCompositionComparator,
 	registerSkillContracts,
 	registerSkillContractsProvider,
 } from "./skill-contracts.js";

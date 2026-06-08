@@ -27,6 +27,7 @@ import {
 import { extractJsonSchema, isSchemaCompatible } from "./json-schema.js";
 import type { ConfigLayer } from "./layers.js";
 import type { SkillContractMap } from "./skill-contract.js";
+import { getCompositionComparators } from "./skill-contracts.js";
 import {
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
@@ -598,6 +599,7 @@ function checkEdgeSchemaCompat(
 	issues: WorkflowValidationIssue[],
 	skillContracts: SkillContractMap | undefined,
 ): void {
+	const comparators = getCompositionComparators();
 	for (const [from, target] of Object.entries(w.edges)) {
 		if (typeof target !== "string" || target === STOP) continue; // degrade on predicate/STOP edges
 		const fromStage = w.stages[from];
@@ -605,12 +607,43 @@ function checkEdgeSchemaCompat(
 		if (!fromStage || !toStage) continue; // unknown stages already reported by edge-target checks
 		const producerSkill = fromStage.skill ?? from;
 		const consumerSkill = toStage.skill ?? target;
-		const producer = skillContracts?.get(producerSkill)?.produces?.data ?? extractJsonSchema(fromStage.outputSchema);
-		const consumer = skillContracts?.get(consumerSkill)?.consumes?.data ?? extractJsonSchema(toStage.inputSchema);
-		if (!producer || !consumer) continue; // degrade: opaque/absent schema — nothing to compare
-		const compat = isSchemaCompatible(producer, consumer);
-		if (!compat.ok) {
-			issues.push(warning(w.name, from, `edge "${from}" → "${target}": schema incompatibility — ${compat.reason}`));
+		const producerContract = skillContracts?.get(producerSkill);
+		const consumerContract = skillContracts?.get(consumerSkill);
+
+		// Data-channel compat (Phase 2 — unchanged behaviour; no longer `continue`s so
+		// the reads-branch below can also run on this edge).
+		const producer = producerContract?.produces?.data ?? extractJsonSchema(fromStage.outputSchema);
+		const consumer = consumerContract?.consumes?.data ?? extractJsonSchema(toStage.inputSchema);
+		if (producer && consumer) {
+			const compat = isSchemaCompatible(producer, consumer);
+			if (!compat.ok) {
+				issues.push(
+					warning(w.name, from, `edge "${from}" → "${target}": schema incompatibility — ${compat.reason}`),
+				);
+			}
+		}
+
+		// Named-channel (reads) compat (A2): when the predecessor publishes a channel
+		// the consumer reads, invoke the consumer-supplied per-channel comparator on
+		// `produces.meta ↔ consumes.reads[channel].meta`. WARNs (never errors) on a clean
+		// mismatch; degrades (skips) on absent contract/comparator, or a channel this
+		// predecessor doesn't publish. Mirrors the runtime lift (Phase 5) — lockstep.
+		const reads = consumerContract?.consumes?.reads;
+		if (comparators.size && producerContract?.produces && reads) {
+			const channel = fromStage.outcome?.name ?? from;
+			const comparator = comparators.get(channel);
+			if (reads[channel] && comparator) {
+				const compat = comparator(producerContract.produces, consumerContract.consumes!, channel);
+				if (!compat.ok) {
+					issues.push(
+						warning(
+							w.name,
+							from,
+							`edge "${from}" → "${target}": channel "${channel}" incompatibility — ${compat.reason}`,
+						),
+					);
+				}
+			}
 		}
 	}
 }

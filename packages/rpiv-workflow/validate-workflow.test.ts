@@ -6,7 +6,7 @@
  */
 
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	type ActsScriptFn,
 	acts,
@@ -24,7 +24,8 @@ import {
 } from "./api.js";
 import { noopCollector } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
-import type { SkillContractMap } from "./skill-contract.js";
+import type { CompositionComparator, SkillContractMap } from "./skill-contract.js";
+import { __resetSkillContracts, registerCompositionComparator } from "./skill-contracts.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 import { validateWorkflow } from "./validate-workflow.js";
 
@@ -427,6 +428,53 @@ describe("validateWorkflow — route-edge schema check", () => {
 		expect(
 			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
 		).toBe(true);
+	});
+});
+
+describe("validateWorkflow — reads-channel (meta) compatibility (A2)", () => {
+	afterEach(() => __resetSkillContracts());
+
+	const kindComparator: CompositionComparator = (produces, consumes, ch) => {
+		const want = (consumes.reads?.[ch]?.meta as { artifactKind?: string } | undefined)?.artifactKind;
+		const got = (produces.meta as { artifactKind?: string } | undefined)?.artifactKind;
+		return !want || !got || want === got ? { ok: true } : { ok: false, reason: "artifactKind mismatch" };
+	};
+
+	const wf: Workflow = {
+		name: "reads-compat",
+		start: "blueprint",
+		stages: {
+			blueprint: produces({ outcome: { collector: noopCollector, name: "plans" } }),
+			implement: acts({ reads: ["plans"] }),
+		},
+		edges: { blueprint: "implement", implement: "stop" },
+	};
+	const contractsWith = (producerKind: string, consumerKind: string): SkillContractMap =>
+		new Map([
+			["blueprint", { source: "declared", produces: { kind: "produces", meta: { artifactKind: producerKind } } }],
+			[
+				"implement",
+				{ source: "declared", consumes: { reads: { plans: { meta: { artifactKind: consumerKind } } } } },
+			],
+		]);
+
+	it("warns when the producer's artifactKind is disjoint from the channel's required kind", () => {
+		registerCompositionComparator("plans", kindComparator);
+		const issues = validateWorkflow(wf, { skillContracts: contractsWith("design", "plan") });
+		expect(issues.some((i) => i.severity === "warning" && /channel "plans" incompatibility/.test(i.message))).toBe(
+			true,
+		);
+	});
+
+	it("does NOT warn when kinds match", () => {
+		registerCompositionComparator("plans", kindComparator);
+		const issues = validateWorkflow(wf, { skillContracts: contractsWith("plan", "plan") });
+		expect(issues.filter((i) => /channel "plans"/.test(i.message))).toEqual([]);
+	});
+
+	it("degrades (no warning) when no comparator is registered for the channel", () => {
+		const issues = validateWorkflow(wf, { skillContracts: contractsWith("design", "plan") });
+		expect(issues.filter((i) => /channel "plans"/.test(i.message))).toEqual([]);
 	});
 });
 

@@ -42,15 +42,25 @@ export function resolvePublishName(def: StageDef, stageName: string): string {
 	return def.outcome?.name ?? stageName;
 }
 
+/** Thrown by `withTimeout` when the caller passes a `SchemaTimeoutError`
+ *  instance as the message. Lets consumers distinguish timeout errors from
+ *  inner-promise rejections via `instanceof` instead of string-identity
+ *  comparison. */
+export class SchemaTimeoutError extends Error {}
+
 /**
  * Race a promise against `ms`. The inner promise is NOT cancelled — Pi's
  * `ctx.waitForIdle()` has no abort signal today; the dangling promise becomes
  * inert when the next stage's `newSession` replaces the ctx.
+ *
+ * When `message` is a string, a plain `Error` is thrown on timeout
+ * (backward-compatible). When `message` is an `Error` (e.g.
+ * `SchemaTimeoutError`), it is thrown directly so `instanceof` checks work.
  */
-export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string | Error): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(message)), ms);
+		timer = setTimeout(() => reject(typeof message === "string" ? new Error(message) : message), ms);
 	});
 	try {
 		return await Promise.race([promise, timeout]);

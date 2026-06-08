@@ -11,7 +11,8 @@ import { fs as fsHandle } from "./handle.js";
 import type { OutputSpec } from "./output.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
-import { registerSkillContracts } from "./skill-contracts.js";
+import type { CompositionComparator } from "./skill-contract.js";
+import { registerCompositionComparator, registerSkillContracts } from "./skill-contracts.js";
 import {
 	addNameToIndex,
 	appendRoutingDecision,
@@ -1647,6 +1648,77 @@ describe("runWorkflow", () => {
 
 			expect(result.success).toBe(true);
 			expect(result.stagesCompleted).toBe(2);
+		});
+
+		describe("named-channel (reads) compatibility (A2 lift)", () => {
+			const kindComparator: CompositionComparator = (produces, consumes, ch) => {
+				const want = (consumes.reads?.[ch]?.meta as { artifactKind?: string } | undefined)?.artifactKind;
+				const got = (produces.meta as { artifactKind?: string } | undefined)?.artifactKind;
+				return !want || !got || want === got ? { ok: true } : { ok: false, reason: "artifactKind mismatch" };
+			};
+			const plansOutcome = { ...transcriptArtifactMdOutcome, name: "plans" };
+			const registerKinds = (producerKind: string, consumerKind: string) =>
+				registerSkillContracts([
+					[
+						"research",
+						{ source: "declared", produces: { kind: "produces", meta: { artifactKind: producerKind } } },
+					],
+					[
+						"revise",
+						{ source: "declared", consumes: { reads: { plans: { meta: { artifactKind: consumerKind } } } } },
+					],
+				]);
+			const readsWf = () =>
+				wf("two", ["research", "revise"], { research: { outcome: plansOutcome }, revise: { reads: ["plans"] } });
+
+			it("HALTs a non-fanout reads consumer when the producer's channel kind is disjoint", async () => {
+				writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nstatus: ready\n---\n");
+				registerCompositionComparator("plans", kindComparator);
+				registerKinds("design", "plan"); // producer emits design; consumer requires plan
+				const chain = createMockSessionChain({
+					cwd: tmpDir,
+					steps: [{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] }],
+				});
+				const result = await runWorkflow(chain.ctx, { workflow: readsWf(), input: "x" });
+				expect(result.success).toBe(false);
+				expect(result.stagesCompleted).toBe(1);
+				expect(result.error).toMatch(/input validation failed/i);
+				const { stages } = readState(tmpDir);
+				expect(stages[1]).toMatchObject({ skill: "revise", status: "failed" });
+			});
+
+			it("proceeds when the producer's channel kind matches the consumer's required kind", async () => {
+				writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nstatus: ready\n---\n");
+				writeArtifact(tmpDir, ".rpiv/artifacts/plans/p.md", "---\nstatus: ready\n---\n");
+				registerCompositionComparator("plans", kindComparator);
+				registerKinds("plan", "plan");
+				const chain = createMockSessionChain({
+					cwd: tmpDir,
+					steps: [
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/plans/p.md")] },
+					],
+				});
+				const result = await runWorkflow(chain.ctx, { workflow: readsWf(), input: "x" });
+				expect(result.success).toBe(true);
+				expect(result.stagesCompleted).toBe(2);
+			});
+
+			it("degrades (no halt) when no comparator is registered for the channel", async () => {
+				writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nstatus: ready\n---\n");
+				writeArtifact(tmpDir, ".rpiv/artifacts/plans/p.md", "---\nstatus: ready\n---\n");
+				registerKinds("design", "plan"); // disjoint, but no comparator registered → degrade
+				const chain = createMockSessionChain({
+					cwd: tmpDir,
+					steps: [
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/plans/p.md")] },
+					],
+				});
+				const result = await runWorkflow(chain.ctx, { workflow: readsWf(), input: "x" });
+				expect(result.success).toBe(true);
+				expect(result.stagesCompleted).toBe(2);
+			});
 		});
 	});
 
