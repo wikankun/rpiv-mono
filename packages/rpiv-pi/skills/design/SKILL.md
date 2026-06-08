@@ -14,6 +14,11 @@ contract:
         status:
           enum: [in-progress, in-review, ready]
   consumes:
+    data:
+      type: object
+      properties:
+        status:
+          const: ready
     meta:
       artifactKind: [research, solutions]
 ---

@@ -13,9 +13,35 @@
 
 import { readFileSync } from "node:fs";
 import { loadSkillsFromDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { ConsumesSpec, ProducesSpec, SkillContract } from "@juicesharp/rpiv-workflow/registration";
+import type {
+	ConsumesSpec,
+	ProducesSpec,
+	SchemaCompatResult,
+	SkillContract,
+} from "@juicesharp/rpiv-workflow/registration";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";
 import { isModuleNotFound } from "./utils.js";
+
+const JSON_SCHEMA_ROOT_KEYWORDS = new Set([
+	"type",
+	"properties",
+	"items",
+	"enum",
+	"const",
+	"anyOf",
+	"allOf",
+	"oneOf",
+	"$ref",
+	"not",
+	"required",
+	"additionalProperties",
+	"definitions",
+	"$defs",
+]);
+
+function hasSchemaKeyword(obj: Record<string, unknown>): boolean {
+	return Object.keys(obj).some((k) => JSON_SCHEMA_ROOT_KEYWORDS.has(k));
+}
 
 /**
  * Map a raw frontmatter `contract:` object to a declared SkillContract. Domain
@@ -26,7 +52,7 @@ import { isModuleNotFound } from "./utils.js";
  * blindly cast) so a block with a non-object `data`/`reads`/`meta` (or, for
  * produces, a missing required `kind`) can't yield a structurally-invalid spec.
  */
-function normalizeContract(raw: Record<string, unknown>): SkillContract {
+export function normalizeContract(raw: Record<string, unknown>): SkillContract {
 	const contract: SkillContract = { source: "declared" };
 	if (raw.consumes && typeof raw.consumes === "object") {
 		const rawConsumes = raw.consumes as Record<string, unknown>;
@@ -51,9 +77,15 @@ function normalizeContract(raw: Record<string, unknown>): SkillContract {
 		const produces: ProducesSpec = {
 			kind: typeof rawProduces.kind === "string" ? rawProduces.kind : "produces",
 		};
-		// Only carry a `data` schema when it's a plain object (reject a non-object).
+		// Only carry a `data` schema when it's a plain object with at least one
+		// recognized JSON Schema structural keyword. Objects with no structural
+		// keywords (e.g. { foo: 1 }) are silently dropped — they would bypass
+		// both load-time lint and runtime validation as unparseable schemas.
 		if (rawProduces.data && typeof rawProduces.data === "object") {
-			produces.data = rawProduces.data as ProducesSpec["data"];
+			const data = rawProduces.data as Record<string, unknown>;
+			if (hasSchemaKeyword(data)) {
+				produces.data = data as ProducesSpec["data"];
+			}
 		}
 		if (rawProduces.meta && typeof rawProduces.meta === "object") {
 			produces.meta = rawProduces.meta as Record<string, unknown>;
@@ -61,6 +93,31 @@ function normalizeContract(raw: Record<string, unknown>): SkillContract {
 		contract.produces = produces;
 	}
 	return contract;
+}
+
+/**
+ * Composition comparator for an artifactKind-tagged named channel (A2). Stateless
+ * structural compare: the producer's emitted `produces.meta.artifactKind` must
+ * equal the kind the consumer declares it requires on `consumes.reads[channel].meta`.
+ * Degrades to `{ ok: true }` when EITHER side omits the tag — the framework stays
+ * ontology-blind and a missing kind never HALTs (Decision 1, Decision 7). Channel-
+ * generic via `channelName`, so it can adjudicate any artifactKind channel a future
+ * consumer registers it for; rpiv-pi wires it to "plans" today.
+ */
+export function artifactKindComparator(
+	produces: ProducesSpec,
+	consumes: ConsumesSpec,
+	channelName: string,
+): SchemaCompatResult {
+	const want = (consumes.reads?.[channelName]?.meta as { artifactKind?: unknown } | undefined)?.artifactKind;
+	const got = (produces.meta as { artifactKind?: unknown } | undefined)?.artifactKind;
+	if (typeof want !== "string" || typeof got !== "string") return { ok: true };
+	return want === got
+		? { ok: true }
+		: {
+				ok: false,
+				reason: `channel "${channelName}": producer emits artifactKind "${got}", consumer requires "${want}"`,
+			};
 }
 
 /**
@@ -98,9 +155,10 @@ export function buildSkillContractsFromFrontmatter(skillsDir: string): Array<[st
  */
 export async function registerSkillContractsSource(): Promise<void> {
 	try {
-		const { registerSkillContractsProvider, registerSkillContracts } = await import(
+		const { registerCompositionComparator, registerSkillContracts, registerSkillContractsProvider } = await import(
 			"@juicesharp/rpiv-workflow/startup"
 		);
+		registerCompositionComparator("plans", artifactKindComparator);
 		registerSkillContractsProvider(() => {
 			// Reuse the existing PACKAGE_ROOT/skills constant rather than re-deriving
 			// the path via an ad-hoc import.meta.url walk.

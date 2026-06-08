@@ -2,6 +2,11 @@
 name: frontend-design
 description: "Inject tailored visual design guidance for frontend work. Scope: web frontends (HTML/CSS/JS, React, Vue, Svelte, Astro, etc.). Aesthetic principles generalize to native/TUI but examples assume web. Use when the user asks to build a page, full layout, or new application, or explicitly wants design direction. SKIP for single-component requests in codebases with an established style system. The skill auto-adapts: empty scan → 2-question micro-interview; established system → scan-only injection; otherwise full 7-dimension checkpoint with skip logic."
 argument-hint: "[--headless]"
+contract:
+  produces:
+    kind: side-effect
+    meta:
+      effect: design-guidelines-injection
 ---
 
 # Frontend Design

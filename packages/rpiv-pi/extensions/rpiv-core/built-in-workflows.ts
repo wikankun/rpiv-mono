@@ -89,12 +89,23 @@ interface PhaseRecord {
  */
 const planPhaseRecords = (content: string, who: string, path: string): readonly PhaseRecord[] => {
 	const { frontmatter } = parseFrontmatter(content);
-	const raw = (frontmatter as Record<string, unknown>).phases;
+	const fm = frontmatter as Record<string, unknown>;
+	const raw = fm.phases;
 	const phases = Array.isArray(raw) ? raw : [];
 	const headingCount = [...content.matchAll(PLAN_PHASE_RE)].length;
 	if (phases.length !== headingCount) {
 		throw new Error(
 			`${who}: plan ${path} frontmatter phases (${phases.length}) ≠ '## Phase N:' headings (${headingCount}) — the derived array is stale against the body`,
+		);
+	}
+	// Phase 6 (Decision 5): the REQUIRED scalar `phase_count` must equal the derived
+	// phase count — it drives the fanout unit count. Fire only when the file declares
+	// plan-ness (has phases OR a phase_count) so a genuinely empty / non-plan file
+	// still degrades to [] (the existing "neither phases nor headings" path); a plan
+	// that declares phases but omits phase_count THROWS (the field is contract-required).
+	if ((phases.length > 0 || fm.phase_count !== undefined) && fm.phase_count !== phases.length) {
+		throw new Error(
+			`${who}: plan ${path} frontmatter phase_count (${String(fm.phase_count)}) ≠ phases length (${phases.length}) — rebuild phase_count from the '## Phase N:' headings`,
 		);
 	}
 	return phases.map((entry, index) => {
@@ -109,24 +120,34 @@ const planPhaseRecords = (content: string, who: string, path: string): readonly 
 	});
 };
 
+/** Latest `fs`-handle artifact most recently published under `name` (undefined if none). */
+const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | undefined =>
+	state.named[name]?.at(-1)?.artifacts.find((a) => a.handle.kind === "fs");
+
+/** Resolve a workflow-relative path against `cwd`. */
+const resolveCwd = (path: string, cwd: string): string => (isAbsolute(path) ? path : join(cwd, path));
+
 /**
- * Fan `implement` out over a single plan's structured `phases:` frontmatter
- * array. Each unit's prompt carries the phase title. Used by every workflow
- * whose `implement` inherits one plan (ship/build/arch/vet); polish's
- * accumulating multi-plan variant is `PLANS_PHASE_FANOUT`.
+ * Fan `implement` out over the structured `phases:` frontmatter array of the
+ * latest plan published to the named `"plans"` channel. Sourcing from the named
+ * channel (not the rolling primary) makes the stage's `reads: ["plans"]`
+ * declaration semantically honest and is forward-compatible with the Phase C
+ * `fanoutOver({ source: "plans" })` builder (design 2026-06-05_18-05-45). Used by
+ * every workflow whose `implement` inherits one plan (ship/build/arch/vet);
+ * polish's accumulating multi-plan variant is `PLANS_PHASE_FANOUT`.
  */
-const FRONTMATTER_PHASE_FANOUT: FanoutFn = ({ artifact: primary, cwd }) => {
-	if (primary?.handle.kind !== "fs") return [];
-	const path = primary.handle.path;
-	const abs = isAbsolute(path) ? path : join(cwd, path);
-	const content = readFileSync(abs, "utf-8");
+const FRONTMATTER_PHASE_FANOUT: FanoutFn = ({ state, cwd }) => {
+	const plan = latestFsArtifact(state, "plans");
+	if (plan?.handle.kind !== "fs") return [];
+	const path = plan.handle.path;
+	const content = readFileSync(resolveCwd(path, cwd), "utf-8");
 	const records = planPhaseRecords(content, "FRONTMATTER_PHASE_FANOUT", path);
 	if (records.length > MAX_PHASES) {
 		throw new Error(
 			`FRONTMATTER_PHASE_FANOUT: plan ${path} declares ${records.length} phases — exceeds MAX_PHASES (${MAX_PHASES}); split into smaller plans`,
 		);
 	}
-	const promptPath = handleToString(primary.handle);
+	const promptPath = handleToString(plan.handle);
 	return records.map((r) => ({
 		prompt: `${promptPath} Phase ${r.n}: ${r.title}`.trimEnd(),
 		label: `phase ${r.index + 1}/${r.total}`,
@@ -144,7 +165,7 @@ const shipWorkflow = defineWorkflow({
 	start: "blueprint",
 	stages: {
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT }),
+		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -171,7 +192,7 @@ const buildWorkflow = defineWorkflow({
 	stages: {
 		research: produces({ outcome: rpivBucketOutcome("research") }),
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT }),
+		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		revise: produces({ outcome: rpivBucketOutcome("plans"), reads: ["plans", "reviews"] }),
@@ -208,7 +229,7 @@ const archWorkflow = defineWorkflow({
 		research: produces({ outcome: rpivBucketOutcome("research") }),
 		design: produces({ outcome: rpivBucketOutcome("designs") }),
 		plan: produces({ outcome: rpivBucketOutcome("plans") }),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT }),
+		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		commit: acts({ outcome: gitCommitOutcome }),
@@ -242,7 +263,7 @@ const vetWorkflow = defineWorkflow({
 	stages: {
 		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT }),
+		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ outcome: rpivBucketOutcome("validation") }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -277,13 +298,6 @@ const vetWorkflow = defineWorkflow({
  * enumerate (enumeration reads the typed `phases:` array).
  */
 const REVIEW_PHASE_RE = /^### Phase (\d+) — (.+)$/gm;
-
-/** Latest `fs`-handle artifact most recently published under `name` (undefined if none). */
-const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | undefined =>
-	state.named[name]?.at(-1)?.artifacts.find((a) => a.handle.kind === "fs");
-
-/** Resolve a workflow-relative path against `cwd`. */
-const resolveCwd = (path: string, cwd: string): string => (isAbsolute(path) ? path : join(cwd, path));
 
 /** Number of structured `phases` in the latest architecture review's frontmatter (0 if none). */
 const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
@@ -447,7 +461,7 @@ const polishWorkflow = defineWorkflow({
 	stages: {
 		"architecture-review": produces({ outcome: rpivBucketOutcome("architecture-reviews") }),
 		blueprint: produces({ outcome: rpivBucketOutcome("plans"), iterate: REVIEW_PHASE_ITERATE }),
-		implement: acts({ fanout: PLANS_PHASE_FANOUT }),
+		implement: acts({ fanout: PLANS_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ outcome: rpivBucketOutcome("validation"), prompt: VALIDATE_PLANS_PROMPT }),
 		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
 		commit: acts({ outcome: gitCommitOutcome }),

@@ -10,7 +10,9 @@ contract:
       effect: code-mutation
   consumes:
     reads:
-      plans: {}
+      plans:
+        meta:
+          artifactKind: plan
 ---
 
 # Implement

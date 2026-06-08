@@ -645,7 +645,7 @@ describe("polish workflow", () => {
 		};
 		// Each plan carries the `phases:` array the implement fanout enumerates.
 		const plan = (phase = 1) =>
-			`---\ntopic: t\nphases:\n  - { n: ${phase}, title: do the thing }\n---\n## Phase ${phase}: do the thing\nbody\n`;
+			`---\ntopic: t\nphase_count: 1\nphases:\n  - { n: ${phase}, title: do the thing }\n---\n## Phase ${phase}: do the thing\nbody\n`;
 		// The review carries a structured `phases:` array (derived from its
 		// `### Phase N — name` headings) — what the iterate enumerates over.
 		const review2 =
@@ -911,13 +911,19 @@ describe("ship workflow", () => {
 			writeFileSync(join(tmpDir, rel), body);
 		};
 		const runFanout = (rel: string) =>
-			fanout()({ cwd: tmpDir, artifact: { handle: fsHandle(rel) }, state: {} as RunState });
+			fanout()({
+				cwd: tmpDir,
+				artifact: undefined,
+				state: {
+					named: { plans: [{ artifacts: [{ handle: fsHandle(rel) }], data: undefined, kind: "", meta: {} }] },
+				} as unknown as RunState,
+			});
 
 		it("reads phases from frontmatter and dispatches one title-enriched unit per phase", async () => {
 			const rel = ".rpiv/artifacts/plans/p.md";
 			writePlan(
 				rel,
-				`---\nstatus: ready\nphases:\n  - { n: 1, title: Schema layer }\n  - { n: 2, title: Runtime wiring }\n---\n# Plan\n## Phase 1: Schema layer\n## Phase 2: Runtime wiring\n`,
+				`---\nstatus: ready\nphase_count: 2\nphases:\n  - { n: 1, title: Schema layer }\n  - { n: 2, title: Runtime wiring }\n---\n# Plan\n## Phase 1: Schema layer\n## Phase 2: Runtime wiring\n`,
 			);
 			const units = await runFanout(rel);
 			expect(units.map((u) => u.prompt)).toEqual([`${rel} Phase 1: Schema layer`, `${rel} Phase 2: Runtime wiring`]);
@@ -930,15 +936,37 @@ describe("ship workflow", () => {
 				rel,
 				`---\nphases:\n  - { n: 1, title: Only one }\n---\n## Phase 1: a\n## Phase 2: b\n## Phase 3: c\n`,
 			);
-			expect(() => fanout()({ cwd: tmpDir, artifact: { handle: fsHandle(rel) }, state: {} as RunState })).toThrow(
-				/frontmatter phases \(1\) ≠ '## Phase N:' headings \(3\)/,
-			);
+			expect(() => runFanout(rel)).toThrow(/frontmatter phases \(1\) ≠ '## Phase N:' headings \(3\)/);
 		});
 
 		it("returns no units for a plan with neither structured phases nor body headings", async () => {
 			const rel = ".rpiv/artifacts/plans/empty.md";
 			writePlan(rel, `---\nstatus: ready\n---\n# Plan with no phases\n`);
 			expect(await runFanout(rel)).toEqual([]);
+		});
+
+		it('returns [] when no plan is published to the named "plans" channel', async () => {
+			const units = await fanout()({
+				cwd: tmpDir,
+				artifact: undefined,
+				state: { named: {} } as unknown as RunState,
+			});
+			expect(units).toEqual([]);
+		});
+
+		it("throws when phase_count disagrees with the derived phases length", () => {
+			const rel = ".rpiv/artifacts/plans/pc-mismatch.md";
+			writePlan(
+				rel,
+				`---\nstatus: ready\nphase_count: 3\nphases:\n  - { n: 1, title: A }\n  - { n: 2, title: B }\n---\n## Phase 1: A\n## Phase 2: B\n`,
+			);
+			expect(() => runFanout(rel)).toThrow(/phase_count \(3\) ≠ phases length \(2\)/);
+		});
+
+		it("throws when a phased plan omits the required phase_count", () => {
+			const rel = ".rpiv/artifacts/plans/pc-absent.md";
+			writePlan(rel, `---\nstatus: ready\nphases:\n  - { n: 1, title: A }\n---\n## Phase 1: A\n`);
+			expect(() => runFanout(rel)).toThrow(/phase_count \(undefined\) ≠ phases length \(1\)/);
 		});
 	});
 
@@ -960,7 +988,7 @@ describe("ship workflow", () => {
 		it("drives blueprint → implement (fanned from the derived phases) → validate → commit", async () => {
 			write(
 				".rpiv/artifacts/plans/plan.md",
-				`---\nstatus: ready\nphases:\n  - { n: 1, title: Schema layer }\n  - { n: 2, title: Runtime wiring }\n---\n# Plan\n## Phase 1: Schema layer\n## Phase 2: Runtime wiring\n`,
+				`---\nstatus: ready\nphase_count: 2\nphases:\n  - { n: 1, title: Schema layer }\n  - { n: 2, title: Runtime wiring }\n---\n# Plan\n## Phase 1: Schema layer\n## Phase 2: Runtime wiring\n`,
 			);
 			write(".rpiv/artifacts/validation/val.md", "");
 
@@ -985,6 +1013,29 @@ describe("ship workflow", () => {
 				"/skill:implement .rpiv/artifacts/plans/plan.md Phase 2: Runtime wiring",
 			]);
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// implement reads wiring (Phase 3) — every implement stage declares
+// reads: ["plans"] and validates clean with contracts threaded in.
+// ---------------------------------------------------------------------------
+
+describe("implement reads wiring (Phase 3)", () => {
+	it('every implement stage declares reads: ["plans"]', () => {
+		for (const wf of builtInWorkflows) {
+			expect(wf.stages.implement?.reads, `${wf.name}.implement`).toEqual(["plans"]);
+		}
+	});
+
+	it('all five built-in workflows validate clean with reads:["plans"] (contracts threaded in)', () => {
+		for (const name of ["ship", "build", "arch", "vet", "polish"]) {
+			const issues = validateWorkflow(findWorkflow(name), { skillContracts: DECLARED_CONTRACTS });
+			expect(
+				issues.filter((i) => i.severity === "error"),
+				name,
+			).toEqual([]);
+		}
 	});
 });
 
@@ -1101,5 +1152,45 @@ describe("polish — REVIEW_PHASE_ITERATE (frontmatter-driven)", () => {
 		write(rel, `---\nstatus: ready\n---\n# No phases\n`);
 		const { artifact, state } = stateFor(rel);
 		expect(await iterate()({ cwd: tmpDir, artifact, state, accumulated: [], index: 0 })).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// contract ownership drift guards — no built-in workflow stage re-declares
+// a schema its skill's contract owns, and routed fields are owned by their producer.
+// ---------------------------------------------------------------------------
+
+describe("contract ownership drift guards", () => {
+	it("no built-in workflow stage re-declares a schema its skill's contract owns", () => {
+		for (const wf of builtInWorkflows) {
+			for (const [stageName, stage] of Object.entries(wf.stages)) {
+				const skill = stage.skill ?? stageName;
+				const contract = DECLARED_CONTRACTS.get(skill);
+				if (contract?.produces?.data) {
+					expect(
+						stage.outputSchema,
+						`${wf.name}.${stageName} re-declares outputSchema the ${skill} contract owns`,
+					).toBeUndefined();
+				}
+				if (contract?.consumes?.data) {
+					expect(
+						stage.inputSchema,
+						`${wf.name}.${stageName} re-declares inputSchema the ${skill} contract owns`,
+					).toBeUndefined();
+				}
+			}
+		}
+	});
+
+	it("the gate-routed field (blockers_count) is owned by the code-review contract's produces.data", () => {
+		// Built-in workflows route only on `blockers_count` (gate("blockers_count", …)); gate()
+		// captures the field in a closure (not introspectable), so assert the known routed
+		// field is a required produces.data property of its producer. Complements [I6], which
+		// validates it is sourced + output-validated at runtime.
+		const data = DECLARED_CONTRACTS.get("code-review")?.produces?.data as
+			| { required?: string[]; properties?: Record<string, unknown> }
+			| undefined;
+		expect(data?.properties?.blockers_count).toBeDefined();
+		expect(data?.required).toContain("blockers_count");
 	});
 });

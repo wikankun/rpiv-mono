@@ -10,7 +10,7 @@ contract:
       artifactKind: architecture-review
     data:
       type: object
-      required: [phases]
+      required: [phases, layer_count]
       properties:
         status:
           enum: [in-progress, ready]

@@ -5,11 +5,17 @@
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ConsumesSpec, ProducesSpec } from "@juicesharp/rpiv-workflow/registration";
 import { harvestStageContracts } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { builtInWorkflows } from "./built-in-workflows.js";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";
-import { buildSkillContractsFromFrontmatter } from "./skill-contracts-source.js";
+import {
+	artifactKindComparator,
+	buildSkillContractsFromFrontmatter,
+	normalizeContract,
+	registerSkillContractsSource,
+} from "./skill-contracts-source.js";
 
 /** Create a temp dir with skill subdirs; caller must rmSync when done. */
 function makeSkillsDir(baseDir: string, skills: Record<string, string /* SKILL.md content */>): string {
@@ -172,14 +178,36 @@ Body here`,
 	});
 });
 
+describe("normalizeContract produces.data keyword guard", () => {
+	it("drops produces.data lacking any recognized JSON Schema keyword", () => {
+		// A frontmatter typo like { data: { foo: 1 } } should be silently dropped,
+		// matching the parser's degrade-on-malformed posture.
+		const contract = normalizeContract({
+			produces: { kind: "produces", data: { foo: 1 } },
+		});
+		expect(contract.produces?.data).toBeUndefined();
+	});
+
+	it("keeps produces.data with a recognized JSON Schema keyword", () => {
+		const contract = normalizeContract({
+			produces: {
+				kind: "produces",
+				data: { type: "object", properties: { topic: { type: "string" } } },
+			},
+		});
+		expect(contract.produces?.data).toBeDefined();
+		expect((contract.produces!.data as Record<string, unknown>).type).toBe("object");
+	});
+});
+
 describe("bundled skill contracts (Phase 2 annotation)", () => {
 	// The 12 pipeline skills carry a contract: block. This is the count the /wf
 	// banner reports as "N declared" — a drift guard if a block is added,
 	// dropped, or fails to parse (a malformed block is silently skipped).
 	const declared = new Map(buildSkillContractsFromFrontmatter(BUNDLED_SKILLS_DIR));
 
-	it("declares a contract for the 12 pipeline skills", () => {
-		expect(declared.size).toBe(12);
+	it("declares a contract for the 19 pipeline + orthogonal skills", () => {
+		expect(declared.size).toBe(19);
 		for (const name of [
 			"discover",
 			"research",
@@ -193,6 +221,13 @@ describe("bundled skill contracts (Phase 2 annotation)", () => {
 			"revise",
 			"implement",
 			"commit",
+			"annotate-guidance",
+			"annotate-inline",
+			"changelog",
+			"create-handoff",
+			"resume-handoff",
+			"frontend-design",
+			"migrate-to-guidance",
 		]) {
 			expect(declared.has(name)).toBe(true);
 		}
@@ -214,26 +249,130 @@ describe("bundled skill contracts (Phase 2 annotation)", () => {
 		expect(data?.properties?.phases).toBeDefined();
 	});
 
+	it("documents the declared-but-not-harvested orthogonal set", () => {
+		// These skills declare a contract but don't appear in any built-in workflow.
+		// The orthogonal set: 7 new + discover + explore + commit = 10 skills.
+		const harvested = harvestStageContracts(builtInWorkflows);
+		const notHarvested: string[] = [];
+		for (const [name] of declared) {
+			if (!harvested.has(name)) notHarvested.push(name);
+		}
+		expect(notHarvested.sort()).toEqual(
+			[
+				"annotate-guidance",
+				"annotate-inline",
+				"changelog",
+				"commit",
+				"create-handoff",
+				"discover",
+				"explore",
+				"frontend-design",
+				"migrate-to-guidance",
+				"resume-handoff",
+			].sort(),
+		);
+	});
+
 	it("every declared kind matches the harvested kind for the five built-in workflows", () => {
 		// Harvest derives each dispatched skill's kind from how the built-ins use
 		// it (produces() → "produces", acts() → "side-effect"). A declared kind
 		// that disagrees would make the rendered graph lie — catch it here.
+		// Side-effect skills legitimately declare `produces.kind: "side-effect"` in
+		// their contract (for graph rendering), but `harvestStageContracts` doesn't
+		// create a `produces` for stages without outputSchema — so the harvested
+		// contract has no `produces` at all. Skip the comparison for this case.
 		const harvested = harvestStageContracts(builtInWorkflows);
 		expect(harvested.size).toBeGreaterThan(0);
 		for (const [skill, h] of harvested) {
 			const d = declared.get(skill);
 			expect(d, `skill "${skill}" is dispatched by a built-in but declares no contract`).toBeDefined();
-			expect(d?.produces?.kind, `kind drift for "${skill}"`).toBe(h.produces?.kind);
+			const declaredKind = d?.produces?.kind;
+			const harvestedKind = h.produces?.kind;
+			if (declaredKind === "side-effect" && harvestedKind === undefined) continue;
+			expect(declaredKind, `kind drift for "${skill}"`).toBe(harvestedKind);
 		}
 	});
 
-	it("side-effect skills (implement, commit) declare no produces.data", () => {
+	it("implement declares the required artifactKind on its reads.plans channel", () => {
+		const reads = declared.get("implement")?.consumes?.reads as
+			| { plans?: { meta?: { artifactKind?: string } } }
+			| undefined;
+		expect(reads?.plans?.meta?.artifactKind).toBe("plan");
+	});
+
+	it("design, plan, and blueprint require a status:ready upstream via consumes.data", () => {
+		for (const skill of ["design", "plan", "blueprint"]) {
+			const data = declared.get(skill)?.consumes?.data as
+				| { properties?: { status?: { const?: string } } }
+				| undefined;
+			expect(data?.properties?.status?.const, skill).toBe("ready");
+		}
+	});
+
+	it("registerSkillContractsSource registers the plans composition comparator eagerly", async () => {
+		const { getCompositionComparators } = await import("@juicesharp/rpiv-workflow/internal");
+		await registerSkillContractsSource();
+		expect(getCompositionComparators().has("plans")).toBe(true);
+	});
+
+	it("plan's inline template (no templates/ dir) writes its required produces.data fields", () => {
+		const required = (declared.get("plan")?.produces?.data as { required?: string[] }).required!;
+		const body = readFileSync(join(BUNDLED_SKILLS_DIR, "plan", "SKILL.md"), "utf-8");
+		// Scan for ---…--- frontmatter regions (robust to the ```! executable block
+		// at SKILL.md:46 that shifts naive fence-pair parity, and to nested fences
+		// inside the ```markdown template). The artifact template's frontmatter is
+		// uniquely identified by having both phases: and phase_count:.
+		const fronts = [...body.matchAll(/---\n([\s\S]*?)\n---/g)].map((m) => m[1]!);
+		const template = fronts.find((b) => /\bphases:/.test(b) && /\bphase_count:/.test(b));
+		expect(template, "plan: no inline template block with phases + phase_count").toBeDefined();
+		for (const field of required) {
+			expect(template!, `plan template missing ${field}`).toMatch(new RegExp(`(^|\\n)\\s*${field}:`));
+		}
+	});
+
+	it("architecture-review template carries the required layer_count field", () => {
+		const required = (declared.get("architecture-review")?.produces?.data as { required?: string[] }).required!;
+		expect(required).toContain("layer_count");
+		const dir = join(BUNDLED_SKILLS_DIR, "architecture-review", "templates");
+		const text = readdirSync(dir)
+			.filter((f) => f.endsWith(".md"))
+			.map((f) => readFileSync(join(dir, f), "utf-8"))
+			.join("\n");
+		expect(text, "architecture-review template missing layer_count").toMatch(/(^|\n)layer_count:/);
+	});
+
+	it("every produces.data.required field is a declared property (contract self-coherence)", () => {
+		let checked = 0;
+		for (const [skill, contract] of declared) {
+			const data = contract.produces?.data as
+				| { required?: string[]; properties?: Record<string, unknown> }
+				| undefined;
+			if (!data?.required?.length) continue;
+			for (const field of data.required) {
+				checked++;
+				expect(data.properties?.[field], `${skill}: required "${field}" is not a declared property`).toBeDefined();
+			}
+		}
+		expect(checked).toBeGreaterThan(0);
+	});
+
+	it("side-effect skills declare no produces.data", () => {
 		// kind: side-effect means the skill describes itself via meta/reads, not
 		// an adjudicated data channel (parent §1: side-effects fill meta, not data).
-		expect(declared.get("implement")?.produces?.kind).toBe("side-effect");
-		expect(declared.get("implement")?.produces?.data).toBeUndefined();
-		expect(declared.get("commit")?.produces?.kind).toBe("side-effect");
-		expect(declared.get("commit")?.produces?.data).toBeUndefined();
+		const sideEffectSkills = [
+			"implement",
+			"commit",
+			"annotate-guidance",
+			"annotate-inline",
+			"changelog",
+			"resume-handoff",
+			"frontend-design",
+			"migrate-to-guidance",
+		];
+		for (const name of sideEffectSkills) {
+			expect(declared.get(name)?.produces?.kind, `${name}: kind`).toBe("side-effect");
+			expect(declared.get(name)?.produces?.data, `${name}: produces.data`).toBeUndefined();
+		}
 	});
 
 	// §4 coherence — the drift that bit us at RUNTIME (a validate artifact wrote
@@ -280,6 +419,29 @@ describe("bundled skill contracts (Phase 2 annotation)", () => {
 		}
 		// Guard the guard — if this drops to 0 the check silently passes forever.
 		expect(templatesChecked).toBeGreaterThan(0);
+	});
+});
+
+describe("artifactKindComparator (A2 plans comparator)", () => {
+	const produces = (artifactKind?: string): ProducesSpec => ({
+		kind: "produces",
+		...(artifactKind ? { meta: { artifactKind } } : {}),
+	});
+	const consumes = (artifactKind?: string): ConsumesSpec => ({
+		reads: { plans: artifactKind ? { meta: { artifactKind } } : {} },
+	});
+
+	it("ok when producer kind matches the consumer's required kind", () => {
+		expect(artifactKindComparator(produces("plan"), consumes("plan"), "plans")).toEqual({ ok: true });
+	});
+	it("fails with a channel-named reason when kinds are disjoint", () => {
+		const r = artifactKindComparator(produces("design"), consumes("plan"), "plans");
+		expect(r.ok).toBe(false);
+		expect(r.reason).toContain("plans");
+	});
+	it("degrades (ok) when either side omits the kind", () => {
+		expect(artifactKindComparator(produces(), consumes("plan"), "plans")).toEqual({ ok: true });
+		expect(artifactKindComparator(produces("plan"), consumes(), "plans")).toEqual({ ok: true });
 	});
 });
 

@@ -3,6 +3,14 @@ name: annotate-inline
 description: Generate CLAUDE.md files placed inline next to source code across a project, documenting architecture and patterns for AI assistants. Use when the user wants to onboard Claude to a codebase via inline CLAUDE.md files, generate per-directory guidance, document architecture in-place, or asks to "annotate inline". Prefer this over annotate-guidance when CLAUDE.md should live alongside the code rather than in a shadow tree.
 argument-hint: [target-directory]
 allowed-tools: Agent, Read, Write, Glob, Grep
+contract:
+  produces:
+    kind: side-effect
+    meta:
+      effect: inline-annotation
+  consumes:
+    meta:
+      world: source-tree
 ---
 
 # Annotate Inline

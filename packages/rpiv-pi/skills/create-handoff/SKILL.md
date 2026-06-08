@@ -4,6 +4,26 @@ description: Create a context-preserving handoff document for session transition
 argument-hint: [description]
 allowed-tools: Read, Write, Bash(git *), Glob, Grep
 shell-timeout: 10
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: handoff
+    data:
+      type: object
+      required:
+        - topic
+        - status
+      properties:
+        topic:
+          type: string
+        status:
+          enum:
+            - complete
+        commit:
+          type: string
+        branch:
+          type: string
 ---
 
 # Create Handoff

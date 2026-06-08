@@ -4,6 +4,14 @@ description: Regenerate the [Unreleased] section of every affected CHANGELOG.md 
 argument-hint: [--since <ref>]
 allowed-tools: Bash(git *), Read, Edit
 shell-timeout: 10
+contract:
+  produces:
+    kind: side-effect
+    meta:
+      effect: changelog-edit
+  consumes:
+    meta:
+      world: git-history
 ---
 
 # Generate CHANGELOG entries

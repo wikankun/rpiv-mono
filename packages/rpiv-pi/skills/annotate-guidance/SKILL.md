@@ -3,6 +3,14 @@ name: annotate-guidance
 description: Generate architecture.md guidance files under .rpiv/guidance/ that document a project's architecture and patterns for AI assistants, written to a shadow tree alongside the source. Use when the user wants to onboard Claude, Cursor, or an AI agent to a codebase via the guidance system, document architecture, or asks to "annotate guidance". Prefer this over annotate-inline when the project uses the .rpiv/guidance/ shadow tree instead of inline CLAUDE.md files.
 argument-hint: [target-directory]
 allowed-tools: Agent, Read, Write, Glob, Grep
+contract:
+  produces:
+    kind: side-effect
+    meta:
+      effect: guidance-generation
+  consumes:
+    meta:
+      world: source-tree
 ---
 
 # Annotate Guidance

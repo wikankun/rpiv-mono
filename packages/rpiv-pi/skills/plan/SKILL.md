@@ -10,7 +10,7 @@ contract:
       artifactKind: plan
     data:
       type: object
-      required: [phases]
+      required: [phases, phase_count]
       properties:
         status:
           enum: [in-progress, in-review, ready]
@@ -29,6 +29,11 @@ contract:
               n: { type: integer, minimum: 1 }
               title: { type: string }
   consumes:
+    data:
+      type: object
+      properties:
+        status:
+          const: ready
     meta:
       artifactKind: [design]
 ---
