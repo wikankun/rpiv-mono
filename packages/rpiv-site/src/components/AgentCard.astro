@@ -4,12 +4,17 @@ import { siteDescription } from "../lib/agents";
 
 interface Props {
 	agent: AgentEntry;
+	/** Tools shared by every agent in this tier — rendered once at the tier
+	    label, so the card shows only what it adds on top of that baseline. */
+	sharedTools?: string[];
 }
 
-const { agent } = Astro.props;
+const { agent, sharedTools = [] } = Astro.props;
 const desc = siteDescription(agent);
 const dispatched = agent.copy?.dispatched_by?.length ?? 0;
+const labelTool = (t: string): string => t.replace(/^ext:[^/]+\//, "");
 const tools = agent.data.tools?.split(",").map((t) => t.trim()).filter(Boolean) ?? [];
+const extras = tools.filter((t) => !sharedTools.includes(t));
 ---
 
 <article class="card agent">
@@ -22,10 +27,10 @@ const tools = agent.data.tools?.split(",").map((t) => t.trim()).filter(Boolean) 
 
 	<p class="agent__desc">{desc}</p>
 
-	{tools.length > 0 && (
-		<ul class="agent__tools" aria-label="tool allowlist">
-			{tools.map((tool) => (
-				<li class="chip chip--sage">{tool}</li>
+	{extras.length > 0 && (
+		<ul class="agent__tools" aria-label="tools beyond the tier baseline">
+			{extras.map((tool) => (
+				<li class="chip chip--ochre agent__tool">+{labelTool(tool)}</li>
 			))}
 		</ul>
 	)}
