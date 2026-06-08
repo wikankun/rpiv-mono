@@ -1,32 +1,32 @@
 ---
 const STEPS = [
 	{
-		title: "Headless guard",
-		body: "If Pi is non-interactive, /rpiv-setup notifies and returns. No settings read, no install fires.",
+		title: "Runs only when it's safe",
+		body: "In a headless or automated session it notifies and exits — nothing is read, nothing is installed.",
 	},
 	{
-		title: "Detect missing + legacy",
-		body: "Scans ~/.pi/agent/settings.json. Returns missing siblings (regex per registry entry) and legacy entries to prune. Fail-soft on file missing or JSON invalid.",
+		title: "Works out what's needed",
+		body: "Reads your Pi settings and figures out which sibling extensions are missing and which stale entries should go. If settings can't be read, it backs off instead of guessing.",
 	},
 	{
-		title: "Nothing-to-do short-circuit",
-		body: "Both lists empty → notify “All rpiv-pi sibling dependencies already installed.” and return.",
+		title: "Stops if there's nothing to do",
+		body: "Already installed and clean? It says so and returns — no prompt, no changes.",
 	},
 	{
-		title: "Single confirm",
-		body: "Preview block: install-section + remove-section, each rendered only when non-empty. “Proceed?” once. Cancel returns silently.",
+		title: "Asks once",
+		body: "Shows a single preview of exactly what it will install and what it will remove, then asks to proceed. Cancel leaves everything untouched.",
 	},
 	{
-		title: "Prune phase",
-		body: "Rewrites settings.json with the legacy entries removed. Fail-soft on write error.",
+		title: "Prunes the stale entries",
+		body: "Removes the outdated entries from your settings. A write error is reported, never fatal.",
 	},
 	{
-		title: "Install phase",
-		body: "Serial loop, no parallelism. Each pi install <pkg> bounded by 120s SIGTERM + 5s SIGKILL. Windows uses cmd.exe shim because pi.exec runs shell:false (cannot launch the pi.cmd shim from npm install -g).",
+		title: "Installs one at a time",
+		body: "Each missing sibling installs on its own, with a time limit so one slow or stuck install can't stall the rest.",
 	},
 	{
-		title: "Report",
-		body: "✓ Installed: … / ✗ Failed: … (errors truncated to 300 chars). “Restart your Pi session…” appended only if any succeeded.",
+		title: "Tells you what changed",
+		body: "Lists what installed and what failed, and asks you to restart your Pi session only when something actually changed.",
 	},
 ];
 ---
@@ -34,7 +34,7 @@ const STEPS = [
 <section id="setup" aria-labelledby="setup-title">
 	<div class="container setup">
 		<p class="kicker">§ setup · /rpiv-setup</p>
-		<h2 id="setup-title">Scan, confirm, install. Serial, bounded, fail-soft.</h2>
+		<h2 id="setup-title">Scan, confirm, install — in a single prompt.</h2>
 
 		<ol class="trace">
 			{STEPS.map((step, i) => (
