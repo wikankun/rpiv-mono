@@ -26,31 +26,35 @@ const dotX = (i: number, n: number) => (n <= 1 ? MR.x0 : MR.x0 + (i * (MR.x1 - M
 
 const GROUPS = [
 	{ key: "fresh", label: "Starting fresh", hint: "from a one-line brief", items: fresh },
-	{ key: "diff", label: "You already have a diff", hint: "yours or a teammate’s", items: diff },
+	{ key: "diff", label: "You already have a diff", hint: "yours or a teammate's", items: diff },
 ] as const;
 ---
 
 <section id="catalog">
 	<div class="container">
-		<p class="kicker">§ the five flows · pick one</p>
-		<h2>Five ways to ship.</h2>
+		<p class="kicker cat__kicker">§ the five flows · pick one</p>
+		<h2 class="cat__title">Five ways to ship.</h2>
 		<p class="cat__lede">
 			Two questions choose your flow: how big is the change, and do you already
 			have a diff? They run shortest to deepest, left to right.
 		</p>
 
-		{GROUPS.map((group) => (
-			<div class="cat__group">
+		{GROUPS.map((group, gi) => (
+			<div class="cat__group" style={`--cat-gi: ${gi}`}>
 				<header class="cat__groupHead">
 					<h3 class="mono cat__groupName">{group.label}</h3>
 					<span class="cat__groupHint">{group.hint}</span>
 				</header>
 
 				<div class="cat__cards" role="list">
-					{group.items.map((w) => {
+					{group.items.map((w, ci) => {
 						const n = w.stages.length;
 						return (
-							<article class:list={["cat-card", w.showcase && "cat-card--featured"]} role="listitem">
+							<article
+								class:list={["cat-card", w.showcase && "cat-card--featured"]}
+								role="listitem"
+								style={`--cat-ci: ${ci}; --cat-gi: ${gi}`}
+							>
 								<header class="cat-card__head">
 									<span class:list={["chip", w.showcase ? "chip--ochre" : "chip--sage"]}>/wf {w.name}</span>
 									<span class="cat-card__count mono">{w.stageCount} stages</span>
@@ -59,8 +63,10 @@ const GROUPS = [
 								<p class="cat-card__when">{w.when}</p>
 
 								<svg viewBox={`0 0 ${MR.vw} ${MR.vh}`} class="cat-card__rail" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+									{/* ghost rail — subtle depth behind the main line, echoing the Hero */}
 									<g fill="none" stroke="var(--sage-deep)" stroke-linecap="round">
-										<path d={`M${MR.x0},${MR.y} L${MR.x1},${MR.y}`} stroke-width="0.9" opacity="0.6" />
+										<path d={`M${MR.x0 + 8},${MR.y + 4} L${MR.x1 - 8},${MR.y + 4}`} stroke-width="0.5" opacity="0.2" />
+										<path d={`M${MR.x0},${MR.y} L${MR.x1},${MR.y}`} stroke-width="1" opacity="0.65" />
 									</g>
 									{w.stages.slice(0, -1).map((_, i) => {
 										const mx = (dotX(i, n) + dotX(i + 1, n)) / 2;
@@ -73,6 +79,7 @@ const GROUPS = [
 										return (
 											<g fill="none" stroke="var(--ochre)" stroke-linecap="round" opacity="0.6">
 												<path d={`M${fx},${MR.y - 6} Q${mid},${MR.y - 15} ${tx},${MR.y - 6}`} stroke-width="0.9" />
+												<path d={`M${fx},${MR.y - 4} Q${mid},${MR.y - 12} ${tx},${MR.y - 4}`} stroke-width="0.4" opacity="0.3" />
 												<path d={`M${tx + 4},${MR.y - 9} L${tx},${MR.y - 6} L${tx + 4},${MR.y - 3}`} stroke-width="0.8" />
 											</g>
 										);
@@ -81,9 +88,14 @@ const GROUPS = [
 										const x = dotX(i, n);
 										return (
 											<g>
-												{s.fanout && <circle cx={x} cy={MR.y} r="7" fill="none" stroke="var(--sage)" stroke-width="0.6" opacity="0.3" stroke-dasharray="2 2" />}
-												<circle cx={x} cy={MR.y} r="4.5" fill="var(--ink)" stroke="var(--sage)" stroke-width="1" />
-												<circle cx={x} cy={MR.y} r="4.5" fill="var(--sage)" opacity="0.18" />
+												{s.fanout && (
+													<g fill="none" stroke="var(--sage)" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 2">
+														<circle cx={x - 2.5} cy={MR.y - 2.5} r="8" />
+														<circle cx={x + 2.5} cy={MR.y + 2.5} r="8" />
+													</g>
+												)}
+												<circle cx={x} cy={MR.y} r="5" fill="var(--ink)" stroke="var(--sage)" stroke-width="1" />
+												<circle cx={x} cy={MR.y} r="5" fill="var(--sage)" opacity="0.16" />
 											</g>
 										);
 									})}
@@ -118,7 +130,73 @@ const GROUPS = [
 	</div>
 </section>
 
+<script>
+	const section = document.getElementById("catalog");
+	if (section) {
+		const observer = new IntersectionObserver(
+			(entries) => {
+				for (const entry of entries) {
+					if (entry.isIntersecting) {
+						section.classList.add("cat--visible");
+						observer.disconnect();
+					}
+				}
+			},
+			{ threshold: 0.1 },
+		);
+		observer.observe(section);
+	}
+</script>
+
 <style>
+	/* ── Scroll-triggered entrance ──
+	   Elements start hidden. An IntersectionObserver adds .cat--visible to the
+	   <section> when it enters the viewport, which kicks off the staggered
+	   catalog-rise animation. Uses the system tokens (--ease-ink, --dur-ink) so
+	   motion stays on-vocabulary. --cat-gi and --cat-ci are set via inline style
+	   on each element. */
+	@keyframes catalog-rise {
+		from { opacity: 0; transform: translateY(8px); }
+		to   { opacity: 1; transform: translateY(0);   }
+	}
+
+	.cat__kicker,
+	.cat__title,
+	.cat__lede,
+	.cat__groupHead,
+	.cat-card,
+	.cat__foot {
+		opacity: 0;
+	}
+
+	:global(.cat--visible) .cat__kicker,
+	:global(.cat--visible) .cat__title,
+	:global(.cat--visible) .cat__lede,
+	:global(.cat--visible) .cat__groupHead,
+	:global(.cat--visible) .cat-card,
+	:global(.cat--visible) .cat__foot {
+		animation: catalog-rise var(--dur-ink) var(--ease-ink) forwards;
+	}
+
+	:global(.cat--visible) .cat__kicker  { animation-delay: 0ms; }
+	:global(.cat--visible) .cat__title   { animation-delay: 80ms; }
+	:global(.cat--visible) .cat__lede    { animation-delay: 160ms; }
+	:global(.cat--visible) .cat__groupHead { animation-delay: calc(280ms + var(--cat-gi, 0) * 400ms); }
+	:global(.cat--visible) .cat-card     { animation-delay: calc(360ms + var(--cat-gi, 0) * 400ms + var(--cat-ci, 0) * 80ms); }
+	:global(.cat--visible) .cat__foot    { animation-delay: 1000ms; }
+
+	@media (prefers-reduced-motion: reduce) {
+		.cat__kicker,
+		.cat__title,
+		.cat__lede,
+		.cat__groupHead,
+		.cat-card,
+		.cat__foot {
+			opacity: 1;
+			animation: none;
+		}
+	}
+
 	.cat__lede {
 		font-family: var(--font-serif);
 		max-width: 58ch;
@@ -129,12 +207,13 @@ const GROUPS = [
 		text-wrap: pretty;
 	}
 
-	.cat__group { margin-bottom: var(--space-7); }
+	.cat__group { margin-bottom: var(--space-8); }
+	.cat__group:last-of-type { margin-bottom: 0; }
 	.cat__groupHead {
 		display: flex;
 		align-items: baseline;
 		gap: var(--space-3);
-		margin-bottom: var(--space-4);
+		margin-bottom: var(--space-5);
 		padding-bottom: var(--space-2);
 		border-bottom: 1px solid var(--rule-strong);
 	}
@@ -147,13 +226,13 @@ const GROUPS = [
 		font-family: var(--font-serif);
 		font-style: italic;
 		font-size: var(--type-small);
-		color: var(--text-distant);
+		color: var(--text-quiet);
 	}
 
 	.cat__cards {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-		gap: var(--space-4);
+		gap: var(--space-5);
 	}
 
 	.cat-card {
@@ -229,7 +308,7 @@ const GROUPS = [
 	.cat__foot {
 		font-size: var(--type-small);
 		color: var(--text-quiet);
-		margin: var(--space-6) 0 0;
+		margin: var(--space-7) 0 0;
 	}
 	.cat__foot code { color: var(--washi-soft); }
 	.cat__footArrow { color: var(--ochre); }
