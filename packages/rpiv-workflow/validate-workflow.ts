@@ -31,10 +31,11 @@ import {
 	type Workflow,
 } from "./api.js";
 import { resolvePublishName, resolveSkill } from "./internal-utils.js";
-import { extractJsonSchema, isSchemaCompatible } from "./json-schema.js";
+import { extractJsonSchema } from "./json-schema.js";
 import type { ConfigLayer } from "./layers.js";
+import { isSchemaCompatible } from "./schema-compat.js";
 import type { ProducesSpec, SkillContractMap } from "./skill-contract.js";
-import { getCompositionComparators } from "./skill-contracts.js";
+import { getCompositionComparators } from "./skill-contracts/index.js";
 import {
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,

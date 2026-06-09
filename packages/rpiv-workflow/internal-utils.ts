@@ -52,6 +52,29 @@ export function resolveSkill(def: StageDef, stageName: string): string {
 	return def.skill ?? stageName;
 }
 
+/**
+ * Create a lazily-initialised global-slot getter anchored on a `Symbol.for` key.
+ * The returned function reads from `globalThis` on every call, initialising the
+ * slot on first access. The indirection through `globalThis` (rather than
+ * module-local state) ensures a single shared slot even when Pi loads this
+ * module more than once (e.g. once for the extension entry, once via a
+ * sibling's cross-package import).
+ *
+ * Usage: `const getRegistry = globalSlot(KEY, () => new Map());`
+ * Then: `getRegistry()` returns the lazily-created Map.
+ */
+export function globalSlot<T>(key: symbol, init: () => T): () => T {
+	return () => {
+		const g = globalThis as Record<symbol, unknown>;
+		let value = g[key] as T | undefined;
+		if (value === undefined) {
+			value = init();
+			g[key] = value;
+		}
+		return value;
+	};
+}
+
 /** Thrown by `withTimeout` when the caller passes a `SchemaTimeoutError`
  *  instance as the message. Lets consumers distinguish timeout errors from
  *  inner-promise rejections via `instanceof` instead of string-identity
@@ -121,4 +144,32 @@ export function applyCompletedStage(state: RunState, def: StageDef, stageName: s
  */
 export function resolveUnderCwd(cwd: string, p: string): string {
 	return isAbsolute(p) ? p : join(cwd, p);
+}
+
+/**
+ * Structural (key-order-independent) deep equality. Used by the
+ * cross-owner collision check in `skill-contracts.ts` (later
+ * `skill-contracts/registry.ts`) so two semantically-identical contracts
+ * built by different code paths (or with different YAML key order) don't
+ * read as divergent — `JSON.stringify` is insertion-order dependent and
+ * would raise a spurious collision warning. Contracts are plain JSON data
+ * (no functions/symbols/Dates), so a recursive value compare is sufficient
+ * and total.
+ */
+export function deepEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+	const aArr = Array.isArray(a);
+	const bArr = Array.isArray(b);
+	if (aArr !== bArr) return false;
+	if (aArr && bArr) {
+		if (a.length !== b.length) return false;
+		return a.every((x, i) => deepEqual(x, b[i]));
+	}
+	const aObj = a as Record<string, unknown>;
+	const bObj = b as Record<string, unknown>;
+	const aKeys = Object.keys(aObj);
+	const bKeys = Object.keys(bObj);
+	if (aKeys.length !== bKeys.length) return false;
+	return aKeys.every((k) => Object.hasOwn(bObj, k) && deepEqual(aObj[k], bObj[k]));
 }

@@ -25,7 +25,7 @@ import {
 import { noopCollector } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
 import type { CompositionComparator, SkillContractMap } from "./skill-contract.js";
-import { __resetSkillContracts, registerCompositionComparator } from "./skill-contracts.js";
+import { __resetSkillContracts, registerCompositionComparator } from "./skill-contracts/index.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 import { validateWorkflow } from "./validate-workflow.js";
 

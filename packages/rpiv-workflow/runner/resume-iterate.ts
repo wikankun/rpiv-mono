@@ -21,6 +21,7 @@
 
 import type { IterateUnit, StageDef } from "../api.js";
 import { auditCtxFor, iterateRowStage, recordTerminalFailure } from "../audit.js";
+import { resolveSkill } from "../internal-utils.js";
 import type { IterateDeps } from "../iterate.js";
 import { runIterate } from "../iterate.js";
 import { skillStageRef } from "../lifecycle.js";
@@ -49,7 +50,7 @@ export async function resumeIterateStage(
 	deps: IterateDeps,
 ): Promise<void> {
 	const def = run.workflow.stages[parent]!; // caller verified parent is an iterate stage
-	const skill = def.skill ?? parent; // mirror resolveStage; aliased nodes tag rows with the skill body
+	const skill = resolveSkill(def, parent); // mirror resolveStage; aliased nodes tag rows with the skill body
 
 	// Pre-pull the next unit ONCE to branch: drift-guard + already-complete no-op.
 	const next = await pullNextUnit(def, point, run);

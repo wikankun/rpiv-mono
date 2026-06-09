@@ -12,7 +12,7 @@ import type { OutputSpec } from "./output.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
 import type { CompositionComparator } from "./skill-contract.js";
-import { registerCompositionComparator, registerSkillContracts } from "./skill-contracts.js";
+import { registerCompositionComparator, registerSkillContracts } from "./skill-contracts/index.js";
 import {
 	addNameToIndex,
 	appendRoutingDecision,
@@ -1686,6 +1686,50 @@ describe("runWorkflow", () => {
 						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/plans/p.md")] },
 					],
 				});
+				const result = await runWorkflow(chain.ctx, { workflow: readsWf(), input: "x" });
+				expect(result.success).toBe(true);
+				expect(result.stagesCompleted).toBe(2);
+			});
+
+			// Regression for the reads-guard gap in `ensureContractInputValid`: a
+			// `reads:` stage that ALSO declares `consumes.data` must NOT validate the
+			// rolling primary (`output.data`) against that contract — its input comes
+			// from `state.named`, not the primary. The named read here is SATISFIED
+			// (research publishes "plans"), so the run reaches POST_PROMPT_CHECKS;
+			// without the guard, ensureContractInputValid would validate research's
+			// {status:"ready"} against revise's `requiredField`-requiring schema and
+			// HALT. The guard skips it, so the run completes.
+			it("skips consumes.data validation for a reads: stage even when the named read is satisfied", async () => {
+				writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md", "---\nstatus: ready\n---\n");
+				writeArtifact(tmpDir, ".rpiv/artifacts/plans/p.md", "---\nstatus: ready\n---\n");
+				registerSkillContracts([
+					["research", { source: "declared", produces: { kind: "produces", meta: { artifactKind: "plan" } } }],
+					[
+						"revise",
+						{
+							source: "declared",
+							consumes: {
+								reads: { plans: {} },
+								// A linear contract that the rolling primary {status:"ready"} does NOT satisfy —
+								// would HALT if (incorrectly) adjudicated against the primary.
+								data: {
+									type: "object",
+									properties: { requiredField: { type: "string" } },
+									required: ["requiredField"],
+								},
+							},
+						},
+					],
+				]);
+				const chain = createMockSessionChain({
+					cwd: tmpDir,
+					steps: [
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+						{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/plans/p.md")] },
+					],
+				});
+				// Without the reads guard this HALTS (success=false) on a consumes.data
+				// mismatch; the guard lets the run complete.
 				const result = await runWorkflow(chain.ctx, { workflow: readsWf(), input: "x" });
 				expect(result.success).toBe(true);
 				expect(result.stagesCompleted).toBe(2);

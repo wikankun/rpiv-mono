@@ -13,18 +13,14 @@ import type { PromptFn, StageDef } from "../api.js";
 import { auditCtxFor, notifyPartialArtifacts, recordTerminalFailure, runIdentityOf } from "../audit.js";
 import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
-import { currentPrimaryArtifact, resolveSkill, SchemaTimeoutError, withTimeout } from "../internal-utils.js";
+import { currentPrimaryArtifact, resolveSkill } from "../internal-utils.js";
 import { runIterate } from "../iterate.js";
-import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
 import { skillStageRef } from "../lifecycle.js";
 import {
-	ERR_INPUT_VALIDATION_FAILED,
 	ERR_ITERATIONS_EXHAUSTED,
 	ERR_MISSING_ARTIFACT,
 	ERR_MISSING_NAMED_READ,
-	ERR_SCHEMA_TIMEOUT,
 	ERR_SKILL_NOT_REGISTERED,
-	MSG_INPUT_VALIDATION_FAILED,
 	MSG_ITERATIONS_EXHAUSTED,
 	MSG_MISSING_ARTIFACT,
 	MSG_MISSING_NAMED_READ,
@@ -36,15 +32,8 @@ import {
 import { runFanoutSession, runStageSession } from "../sessions/index.js";
 import { readBranch } from "../transcript.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";
-import {
-	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
-	describeFailure,
-	MAX_VALIDATION_RETRY_TIMEOUT_MS,
-	MIN_VALIDATION_RETRY_TIMEOUT_MS,
-	type ValidationResult,
-	validateOutputData,
-} from "../validate-output.js";
 import { advanceChain } from "./chain-advance.js";
+import { ensureContractInputValid, ensureInputValid } from "./input-validation.js";
 import { lifecycleCtxFor } from "./runner.js";
 import { runScript } from "./script-stage.js";
 
@@ -482,59 +471,6 @@ function computeBranchOffset(curCtx: WorkflowHostContext, def: StageDef): number
 	return readBranch(curCtx).length;
 }
 
-async function ensureInputValid(stage: ResolvedStage, run: RunContext): Promise<void> {
-	if (!stage.def.inputSchema || run.state.output?.data === undefined) return;
-	const timeoutMs = clampValidateTimeoutMs(stage.def.validateTimeoutMs);
-	const prevSkill = run.state.output.meta.stage || "unknown";
-
-	let result: ValidationResult;
-	try {
-		result = await withTimeout(
-			Promise.resolve(validateOutputData(stage.def.inputSchema, run.state.output.data)),
-			timeoutMs,
-			ERR_SCHEMA_TIMEOUT("inputSchema", timeoutMs),
-		);
-	} catch (e) {
-		// Async schema rejected, or schema timed out. Same fatal-extraction
-		// posture as the outputSchema seam — surface as a halt-class
-		// StagePreflightError so the row attribution and notify message
-		// match every other preflight failure.
-		const reason = e instanceof Error ? e.message : String(e);
-		throw new StagePreflightError(
-			"halt",
-			stage.skill,
-			MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-			ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, reason),
-			true,
-		);
-	}
-
-	if (result.valid) return;
-
-	const failureSummary = result.failures.map(describeFailure).join("; ");
-	throw new StagePreflightError(
-		"halt",
-		stage.skill,
-		MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-		ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, failureSummary),
-		true,
-	);
-}
-
-/**
- * Mirror of the clamp in extraction.ts:retryUntilValid. Same defense-in-depth
- * posture: validateWorkflow rejects out-of-range values at load, but
- * programmatic callers that embed runWorkflow can bypass it; clamping here
- * means a misconfigured stage degrades to the spec-default behavior instead
- * of firing a 100 ms timeout before a real I/O probe gets a chance to settle.
- */
-function clampValidateTimeoutMs(raw: number | undefined): number {
-	return Math.max(
-		MIN_VALIDATION_RETRY_TIMEOUT_MS,
-		Math.min(raw ?? DEFAULT_VALIDATION_RETRY_TIMEOUT_MS, MAX_VALIDATION_RETRY_TIMEOUT_MS),
-	);
-}
-
 export async function captureStageSnapshot(def: StageDef, idx: number, run: RunContext): Promise<unknown> {
 	const snapshot = def.outcome?.collector.snapshot;
 	if (!snapshot) return undefined;
@@ -557,70 +493,6 @@ const PRE_PROMPT_CHECKS: readonly PreflightCheck[] = [
 	{ name: "enforceSessionInvariants", kind: "invariant", run: enforceSessionInvariants },
 	{ name: "ensureSkillRegistered", kind: "halt", run: ensureSkillRegistered },
 ];
-
-/**
- * Runtime mirror of `checkEdgeSchemaCompat` for the LINEAR `data` channel. When
- * the consumer declares `consumes.data` but the stage has no `inputSchema`,
- * validate upstream `output.data` against the contract schema — the gap
- * `ensureInputValid` leaves. A clean failure HALTS (load-time only warns, being
- * schema-vs-schema). Degrades (returns) when `consumes.data` is not a plain-object
- * schema or the keyword engine throws (author defect), and when there's no
- * registry/contract/`consumes.data`, an `inputSchema`, a raw `prompt`, or upstream
- * data.
- *
- * NAMED-channel (`reads:`) validity is a complete LOAD-TIME guarantee
- * (`checkReadsChannelCompat`), not checked here — a reads-only stage degrades
- * through the data-path below.
- */
-async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): Promise<void> {
-	if (stage.def.prompt !== undefined) return;
-	if (stage.def.inputSchema) return; // ensureInputValid owns the stage-schema path
-	const contract = run.skillContracts?.get(stage.skill);
-
-	if (run.state.output?.data === undefined) return;
-	const consumesData = contract?.consumes?.data;
-	// Untrusted injected contract — degrade (never HALT) on a non-object schema.
-	if (!isJsonSchemaObject(consumesData)) return;
-	const schema = jsonSchemaToStandard(consumesData);
-	const timeoutMs = clampValidateTimeoutMs(stage.def.validateTimeoutMs);
-	const prevSkill = run.state.output.meta.stage || "unknown";
-	const timeoutMsg = ERR_SCHEMA_TIMEOUT("inputSchema", timeoutMs);
-
-	let result: ValidationResult;
-	try {
-		result = await withTimeout(
-			Promise.resolve(validateOutputData(schema, run.state.output.data)),
-			timeoutMs,
-			new SchemaTimeoutError(timeoutMsg),
-		);
-	} catch (e) {
-		// Timeout is a resource bound — HALT, parity with ensureInputValid. Any
-		// OTHER throw means the keyword engine could not EVALUATE the contract
-		// schema (consumer-authored `$ref` / if-then / unknown keywords) — the
-		// author's defect, NOT a data violation — so DEGRADE rather than kill a
-		// legitimate run. `SchemaTimeoutError` is distinguishable from plain
-		// `Error` via `instanceof`, eliminating the fragile string-identity
-		// comparison that would silently degrade if the message format changed.
-		const isTimeout = e instanceof SchemaTimeoutError;
-		if (!isTimeout) return;
-		throw new StagePreflightError(
-			"halt",
-			stage.skill,
-			MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-			ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, e.message),
-			true,
-		);
-	}
-	if (result.valid) return;
-	const failureSummary = result.failures.map(describeFailure).join("; ");
-	throw new StagePreflightError(
-		"halt",
-		stage.skill,
-		MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-		ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, failureSummary),
-		true,
-	);
-}
 
 const POST_PROMPT_CHECKS: readonly PreflightCheck[] = [
 	{ name: "ensureInputValid", kind: "halt", run: ensureInputValid },

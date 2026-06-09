@@ -48,7 +48,7 @@ import {
 	STATUS_KEY,
 } from "../messages.js";
 import { runFanoutSession, runStageSession } from "../sessions/index.js";
-import { getSkillContracts } from "../skill-contracts.js";
+import { getSkillContracts } from "../skill-contracts/index.js";
 import { type ClaimResult, claimName, generateRunId, writeHeader } from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";

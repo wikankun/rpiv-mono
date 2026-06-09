@@ -9,6 +9,7 @@
  */
 
 import { auditCtxFor, nowIso, recordTerminalFailure } from "../audit.js";
+import { resolveSkill } from "../internal-utils.js";
 import { skillStageRef } from "../lifecycle.js";
 import {
 	ERR_BACKWARD_JUMP_EXHAUSTED,
@@ -45,7 +46,7 @@ export async function advanceChain(
 		return;
 	}
 
-	const fromRef = skillStageRef(currentName, idx + 1, run.workflow.stages[currentName]?.skill ?? currentName);
+	const fromRef = skillStageRef(currentName, idx + 1, resolveSkill(run.workflow.stages[currentName]!, currentName));
 
 	if (result.kind === "stop") {
 		await run.lifecycle.fire(curCtx, "onRoute", fromRef, "stop", lifecycleCtxFor(run));

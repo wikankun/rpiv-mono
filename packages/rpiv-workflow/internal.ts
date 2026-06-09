@@ -30,4 +30,5 @@ export {
 	flushSkillContractProviders,
 	getCompositionComparators,
 	getSkillContracts,
-} from "./skill-contracts.js";
+	harvestStageContracts,
+} from "./skill-contracts/index.js";

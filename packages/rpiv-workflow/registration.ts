@@ -55,9 +55,10 @@ export type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "
 // Only the contract data types are public — they're referenced by kept public
 // signatures (`JsonSchemaCapable` ← `typeboxSchema`, `JsonSchemaObject` ←
 // `ConsumesSpec`/`ProducesSpec.data`, `SchemaCompatResult` ← `canCompose`). The
-// low-level json-schema FUNCTIONS stay package-private (no consumer needs them);
-// internal callers import them from `./json-schema.js` directly.
-export type { JsonSchemaCapable, JsonSchemaObject, SchemaCompatResult } from "./json-schema.js";
+// low-level json-schema and schema-compat FUNCTIONS stay package-private (no
+// consumer needs them); internal callers import them from their source modules
+// directly.
+export type { JsonSchemaCapable, JsonSchemaObject } from "./json-schema.js";
 export { type LifecycleContext, type LifecycleListeners, registerLifecycle, type StageRef } from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { aliasSkills, loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
@@ -105,20 +106,19 @@ export type {
 	ConsumesSpec,
 	ContractSource,
 	ProducesSpec,
+	SchemaCompatResult,
 	SkillContract,
 	SkillContractMap,
 } from "./skill-contract.js";
 export {
 	canCompose,
-	getSkillContracts,
-	harvestStageContracts,
 	legalNextSkills,
 	type OutcomeDeriverFn,
 	registerCompositionComparator,
 	registerOutcomeDeriver,
 	registerSkillContracts,
 	registerSkillContractsProvider,
-} from "./skill-contracts.js";
+} from "./skill-contracts/index.js";
 export {
 	listArtifacts,
 	listRuns,

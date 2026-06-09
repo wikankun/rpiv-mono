@@ -5,8 +5,8 @@
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { harvestStageContracts } from "@juicesharp/rpiv-workflow/internal";
 import type { ConsumesSpec, ProducesSpec } from "@juicesharp/rpiv-workflow/registration";
-import { harvestStageContracts } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { builtInWorkflows } from "./built-in-workflows.js";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";

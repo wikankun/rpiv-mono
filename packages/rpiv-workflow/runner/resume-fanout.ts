@@ -27,7 +27,7 @@ import type { FanoutUnit, StageDef } from "../api.js";
 import { auditCtxFor, recordTerminalFailure } from "../audit.js";
 import type { FanoutDeps } from "../fanout.js";
 import { runFanout } from "../fanout.js";
-import { currentPrimaryArtifact } from "../internal-utils.js";
+import { currentPrimaryArtifact, resolveSkill } from "../internal-utils.js";
 import { skillStageRef } from "../lifecycle.js";
 import { ERR_RESUME_FANOUT_MISMATCH, MSG_RESUME_FANOUT_MISMATCH } from "../messages.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";
@@ -52,7 +52,7 @@ export async function resumeFanoutStage(
 	deps: FanoutDeps,
 ): Promise<void> {
 	const def = run.workflow.stages[parent]!; // caller verified parent is a fanout stage
-	const skill = def.skill ?? parent; // mirror resolveStage; aliased nodes tag rows with the skill body
+	const skill = resolveSkill(def, parent); // mirror resolveStage; aliased nodes tag rows with the skill body
 	const units = await recomputeUnits(def, run);
 
 	if (fanoutPrefixDrifted(parent, completedDecorated, units)) {

@@ -12,4 +12,4 @@ export {
 	registerOutcomeDeriver,
 	registerSkillContracts,
 	registerSkillContractsProvider,
-} from "./skill-contracts.js";
+} from "./skill-contracts/index.js";

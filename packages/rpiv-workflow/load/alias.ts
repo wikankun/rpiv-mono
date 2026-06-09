@@ -2,7 +2,7 @@
  * Declarative skill-name remapping, applied once at load time.
  *
  * `aliasSkills(w, aliases)` rewrites every dispatching stage whose effective
- * skill (`stage.skill ?? stageName`) has an alias entry, materialising the
+ * skill (resolved via `resolveSkill(stage, stageName)`) has an alias entry, materialising the
  * `skill` field on stages that relied on the stage-key default. Because the
  * remap happens in the loader — before validation and before the runner ever
  * sees the workflow — `/wf` preview, JSONL audit, and the runtime
@@ -21,6 +21,7 @@
  */
 
 import type { StageDef, Workflow } from "../api.js";
+import { resolveSkill } from "../internal-utils.js";
 import type { LayerOutcome, LoadAccumulator } from "./merge.js";
 
 /**
@@ -40,7 +41,7 @@ export function aliasSkills(w: Workflow, aliases: Record<string, string>): Workf
 	const stages: typeof w.stages = {};
 	for (const [name, stage] of Object.entries(w.stages)) {
 		const dispatches = isDispatchingStage(stage); // only /skill: stages
-		const effective = stage.skill ?? name;
+		const effective = resolveSkill(stage, name);
 		const target = aliases[effective];
 		if (dispatches && target && target !== effective) {
 			stages[name] = { ...stage, skill: target }; // materialise implicit skill
@@ -88,7 +89,7 @@ export function applySkillAliases(
 	const dispatchedBefore = new Set<string>();
 	for (const w of acc.workflowMap.values()) {
 		for (const [stageName, stage] of Object.entries(w.stages)) {
-			if (isDispatchingStage(stage)) dispatchedBefore.add(stage.skill ?? stageName);
+			if (isDispatchingStage(stage)) dispatchedBefore.add(resolveSkill(stage, stageName));
 		}
 	}
 	for (const [name, w] of acc.workflowMap) acc.workflowMap.set(name, aliasSkills(w, merged));

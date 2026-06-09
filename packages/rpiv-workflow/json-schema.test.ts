@@ -9,10 +9,11 @@ import {
 	extractJsonSchema,
 	hasJsonSchema,
 	isJsonSchemaObject,
-	isSchemaCompatible,
 	jsonSchemaConverter,
 	jsonSchemaToStandard,
+	validateToJsonSchemaIssues,
 } from "./json-schema.js";
+import { isSchemaCompatible } from "./schema-compat.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -200,6 +201,41 @@ describe("extractJsonSchema", () => {
 // ---------------------------------------------------------------------------
 // Integration: typeboxSchema round-trips through extractJsonSchema
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// validateToJsonSchemaIssues — shared validation helper
+// ---------------------------------------------------------------------------
+
+describe("validateToJsonSchemaIssues", () => {
+	it("returns { value } for valid data against a JSON Schema object", () => {
+		const schema = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
+		const result = validateToJsonSchemaIssues(schema, { name: "Alice" });
+		expect("value" in result).toBe(true);
+	});
+
+	it("returns { issues } for invalid data with message and path", () => {
+		const schema = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
+		const result = validateToJsonSchemaIssues(schema, { name: 42 });
+		expect("issues" in result).toBe(true);
+		if ("issues" in result && result.issues) {
+			expect(result.issues.length).toBeGreaterThan(0);
+			expect(result.issues[0].message).toBeTruthy();
+		}
+	});
+
+	it("returns { issues } with path for nested validation failures", () => {
+		const schema = {
+			type: "object",
+			properties: { address: { type: "object", properties: { zip: { type: "number" } }, required: ["zip"] } },
+			required: ["address"],
+		};
+		const result = validateToJsonSchemaIssues(schema, { address: { zip: "not-a-number" } });
+		expect("issues" in result).toBe(true);
+		if ("issues" in result && result.issues) {
+			expect(result.issues.some((i) => i.path && i.path.length > 0)).toBe(true);
+		}
+	});
+});
 
 describe("typeboxSchema <-> extractJsonSchema round-trip", () => {
 	it("a TypeBox schema round-trips: extractJsonSchema produces a JSON Schema object that validates the same values", async () => {

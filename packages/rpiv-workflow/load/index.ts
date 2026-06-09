@@ -63,7 +63,7 @@ import {
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
 	getOutcomeDerivers,
-} from "../skill-contracts.js";
+} from "../skill-contracts/index.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
 import { applySkillAliases } from "./alias.js";
 import { type LoadAccumulator, loadLayer } from "./merge.js";

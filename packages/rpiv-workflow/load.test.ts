@@ -22,7 +22,7 @@ import {
 	getSkillContracts,
 	registerSkillContracts,
 	registerSkillContractsProvider,
-} from "./skill-contracts.js";
+} from "./skill-contracts/index.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 
 /** Strip symbol keys from an object tree for deep-equal comparison. */

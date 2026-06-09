@@ -189,11 +189,10 @@ function enforceCompletionContract(
  */
 function effectiveOutputSchema(s: StageSession): StageSchema | undefined {
 	if (s.stage.outputSchema) return s.stage.outputSchema;
-	// Skill-name key MUST match `checkPredicateSchemas` in validate-workflow.ts
-	// (`stage.skill ?? from`): `s.skill` is resolved as `def.skill ?? stageName`
-	// at stage-lifecycle.ts, so both paths key the contract map identically. If
-	// one changes, the other must — else a load-time lint and the runtime would
-	// disagree on which contract covers the stage.
+	// `s.skill` is resolved via `resolveSkill(def, stageName)` in `resolveStage`
+	// (stage-lifecycle.ts), matching the contract map key used by
+	// `validate-workflow.ts` and `harvestStageContracts`. The single helper
+	// ensures load-time lint and runtime agree on which contract covers the stage.
 	const producesData = s.skillContracts?.get(s.skill)?.produces?.data;
 	if (!isJsonSchemaObject(producesData)) return undefined;
 	return jsonSchemaToStandard(producesData);

@@ -18,9 +18,13 @@ import { describe, expect, it } from "vitest";
 import type { StageDef } from "./api.js";
 import type { Artifact } from "./handle.js";
 import { fs as fsHandle } from "./handle.js";
-import { applyCompletedStage, SchemaTimeoutError, withTimeout } from "./internal-utils.js";
+import { applyCompletedStage, globalSlot, resolveSkill, SchemaTimeoutError, withTimeout } from "./internal-utils.js";
 import type { Output } from "./output.js";
 import type { RunState } from "./types.js";
+
+// NOTE: test/setup.ts runs beforeEach and clears globalThis Symbol.for slots via
+// __resetSkillContracts. globalSlot tests below use dedicated Symbol.for keys
+// (prefixed test:) and clean up after themselves to avoid cross-pollution.
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -203,5 +207,84 @@ describe("SchemaTimeoutError", () => {
 	it("withTimeout resolves when the promise settles before timeout", async () => {
 		const result = await withTimeout(Promise.resolve(42), 1000, "should not fire");
 		expect(result).toBe(42);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveSkill
+// ---------------------------------------------------------------------------
+
+describe("resolveSkill", () => {
+	it("returns stage name when def has no skill", () => {
+		const def = { kind: "produces", sessionPolicy: "fresh" } as StageDef;
+		expect(resolveSkill(def, "blueprint")).toBe("blueprint");
+	});
+
+	it("returns skill when def has explicit skill", () => {
+		const def = { kind: "produces", sessionPolicy: "fresh", skill: "custom-skill" } as StageDef;
+		expect(resolveSkill(def, "blueprint")).toBe("custom-skill");
+	});
+
+	it("returns skill even when it equals the stage name", () => {
+		const def = { kind: "side-effect", sessionPolicy: "fresh", skill: "blueprint" } as StageDef;
+		expect(resolveSkill(def, "blueprint")).toBe("blueprint");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// globalSlot
+// ---------------------------------------------------------------------------
+
+describe("globalSlot", () => {
+	it("initialises lazily on first access", () => {
+		const key = Symbol.for("test:globalSlot-lazy-init");
+		delete (globalThis as Record<symbol, unknown>)[key];
+		let initCount = 0;
+		const getSlot = globalSlot(key, () => {
+			initCount++;
+			return new Map<string, number>();
+		});
+		expect(initCount).toBe(0);
+		const map = getSlot();
+		expect(initCount).toBe(1);
+		expect(map).toBeInstanceOf(Map);
+	});
+
+	it("returns the same value on subsequent accesses", () => {
+		const key = Symbol.for("test:globalSlot-same-value");
+		delete (globalThis as Record<symbol, unknown>)[key];
+		const getSlot = globalSlot(key, () => new Set<string>());
+		const first = getSlot();
+		const second = getSlot();
+		expect(first).toBe(second);
+	});
+
+	it("different keys get independent slots", () => {
+		const keyA = Symbol.for("test:globalSlot-indep-a");
+		const keyB = Symbol.for("test:globalSlot-indep-b");
+		delete (globalThis as Record<symbol, unknown>)[keyA];
+		delete (globalThis as Record<symbol, unknown>)[keyB];
+		const getA = globalSlot(keyA, () => [] as string[]);
+		const getB = globalSlot(keyB, () => new Map());
+		expect(getA()).not.toBe(getB());
+		expect(Array.isArray(getA())).toBe(true);
+		expect(getB()).toBeInstanceOf(Map);
+	});
+
+	it("reset clears slot so next access re-initialises", () => {
+		const key = Symbol.for("test:globalSlot-reset");
+		delete (globalThis as Record<symbol, unknown>)[key];
+		let initCount = 0;
+		const getSlot = globalSlot(key, () => {
+			initCount++;
+			return { count: initCount };
+		});
+		const first = getSlot();
+		expect(initCount).toBe(1);
+		// Simulate what __resetSkillContracts does
+		delete (globalThis as Record<symbol, unknown>)[key];
+		const afterReset = getSlot();
+		expect(initCount).toBe(2);
+		expect(afterReset).not.toBe(first);
 	});
 });

@@ -21,7 +21,19 @@
  * Every channel is optional — a pure chat side-effect declares none.
  */
 
-import type { JsonSchemaObject, SchemaCompatResult } from "./json-schema.js";
+import type { JsonSchemaObject } from "./json-schema.js";
+
+/**
+ * Result of a conservative structural compatibility check between a producer's
+ * output schema and a consumer's input schema. Co-located with
+ * `CompositionComparator` (which returns this type) so the contract vocabulary
+ * is self-contained — consumers don't need to reach into `json-schema.ts` or
+ * `schema-compat.ts` for the result type.
+ */
+export interface SchemaCompatResult {
+	ok: boolean;
+	reason?: string;
+}
 
 /**
  * Where a contract came from, in descending authority. `declared` = the skill's
