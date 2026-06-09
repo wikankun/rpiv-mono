@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-telemetry` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.19.0] - 2026-06-09
 
 ## [1.18.2] - 2026-06-04
 

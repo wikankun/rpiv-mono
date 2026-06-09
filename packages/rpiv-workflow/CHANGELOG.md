@@ -1,6 +1,6 @@
 # @juicesharp/rpiv-workflow
 
-## [Unreleased]
+## [1.19.0] - 2026-06-09
 
 ### Added
 - Control-flow as data — `fanoutOver(spec)` / `iterateOver(spec)` wrap a `FanoutFn`/`IterateFn` with a declarative `.spec` (`source` channel, `unit` selector `{ by, pattern }`, `max`, and `kind`/`dependsOnPrior`), attached structurally like `defineRoute`'s `.targets` so the runner still calls the function while introspectors read the pattern. `fanoutSpecOf`/`iterateSpecOf` read a stage's spec (`undefined` for a raw/opaque fn); `describeFlow(workflow)` projects each stage's control-flow mode (`single`/`fanout`/`iterate` + spec) and edge mode (`linear`/`route`/`terminal` + targets) from attached metadata alone. The framework ships no conventions — the `run` detector and the `unit.by` vocabulary stay consumer-owned; a raw `FanoutFn`/`IterateFn` keeps working and reads as opaque.

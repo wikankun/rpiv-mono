@@ -5,7 +5,7 @@ All notable changes to `@juicesharp/rpiv-pi` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.19.0] - 2026-06-09
 
 ### Added
 - Pipeline skills (`code-review`, `commit`, `design`, `discover`, `explore`, `implement`, `plan`, `research`, `validate`, and the annotate/handoff/frontend skills) now declare `produces`/`consumes` contracts in their frontmatter, so workflows can derive routing and validate stage-to-stage compatibility automatically.
