@@ -74,7 +74,7 @@ A stage's **outcome** (`OutputSpec`) turns a worker's messy real-world effect in
 3. **parse.** The optional parser turns the gathered artifacts into `{ kind, data }`.
 4. **finalize.** The runner stamps `meta` (stage, number, timestamp, run id) and seals the `Output`.
 
-The built-in `gitCommitOutcome` is the clearest example: its collector snapshots `HEAD`, checks after the stage whether `HEAD` moved, and its parser emits `{ baselineSha, headSha }`. The framework **measures the effect** rather than trusting a claim. A `produces` stage that delivers zero artifacts fails its completion contract here.
+The built-in `gitCommitOutcome` is the clearest example: its collector snapshots `HEAD`, checks after the stage whether `HEAD` moved, and its parser emits the commit it found (`{ sha, prevSha, subject, filesChanged }`). The framework **measures the effect** rather than trusting a claim. A `produces` stage that delivers zero artifacts fails its completion contract here.
 
 The parsed `data` is what predicates branch on and what schemas validate downstream.
 

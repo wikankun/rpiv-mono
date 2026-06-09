@@ -30,7 +30,7 @@ Inside your current session, when you're ready to pause:
 
 **Output**: a handoff document under `.rpiv/artifacts/handoffs/<slug>.md`.
 
-`create-handoff` has `disable-model-invocation: true`, meaning it only fires on the explicit `/skill:create-handoff` slash command. The pipeline skills won't trigger it on your behalf. Pausing is always a deliberate decision.
+`create-handoff` sits outside the pipeline chain — no pipeline skill hands off to it as a next step. You reach for it deliberately: invoke `/skill:create-handoff` yourself, or let the agent surface it when the session is getting large or you ask to wrap up. Pausing is a decision you make, not a step the chain takes on its own.
 
 ## Resume from a handoff
 
