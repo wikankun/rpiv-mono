@@ -14,3 +14,5 @@ export {
 	resumeWorkflow,
 	runWorkflow,
 } from "./runner.js";
+
+export { StagePreflightError } from "./stage-lifecycle.js";

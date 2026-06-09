@@ -38,9 +38,33 @@ const FAILURES_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-failur
 const COLLISIONS_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-collisions");
 const OWNERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:skill-contract-owners");
 const COMPARATORS_KEY = Symbol.for("@juicesharp/rpiv-workflow:composition-comparators");
+const DERIVERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:outcome-derivers");
 
 /** A lazy contributor of skill contracts — run once by `flushSkillContractProviders`. */
 type SkillContractsProvider = () => void | Promise<void>;
+
+/**
+ * A callback that derives `OutputSpec` outcomes for `produces` stages from the
+ * skill contract registry. Registered by a consumer (e.g. rpiv-pi) that owns
+ * the ontology (the `artifactKind → bucket` normalization table). The loader
+ * invokes drained derivers after `buildEffectiveContracts` and before the
+ * validation loop, so derived outcomes satisfy the `produces`-without-`outcome`
+ * guard at `validate-workflow.ts:241-245`.
+ *
+ * Implementations mutate `stage.outcome` in place on stages that lack an
+ * explicit outcome. The framework stays ontology-blind — it never reads
+ * `meta.artifactKind` itself.
+ *
+ * `onIssue` lets the deriver report warnings (e.g. user-defined workflow with
+ * missing artifactKind). The callback maps directly to `acc.issues.push(...)`;
+ * the deriver only populates `message` and `severity` — the loader sets `kind`
+ * and `layer`.
+ */
+export type OutcomeDeriverFn = (
+	workflows: Iterable<Workflow>,
+	skillContracts: SkillContractMap,
+	onIssue: (message: string, severity: "error" | "warning") => void,
+) => void;
 
 type Global = Record<symbol, unknown>;
 
@@ -110,6 +134,10 @@ export function getCompositionComparators(): Map<string, CompositionComparator> 
 
 function getFailures(): unknown[] {
 	return lazyGlobalSlot(FAILURES_KEY, () => []);
+}
+
+function getDerivers(): OutcomeDeriverFn[] {
+	return lazyGlobalSlot(DERIVERS_KEY, () => []);
 }
 
 /** The memoised flush latch — a Promise once flushed, `undefined` before first flush / after reset. */
@@ -236,9 +264,41 @@ export function drainSkillContractCollisions(): string[] {
 	return getCollisions().splice(0);
 }
 
-/** Read-only view of the registry — consumed by `load/index.ts` + `buildRunContext`. */
+/**
+ * Register an outcome deriver — a callback that auto-wires `OutputSpec`
+ * outcomes onto `produces` stages from the skill contract registry. The
+ * loader drains and invokes all registered derivers after
+ * `buildEffectiveContracts` and before the validation loop. Register before
+ * the first `/wf load`.
+ *
+ * rpiv-pi uses this to derive `rpivBucketOutcome(bucket)` from
+ * `produces.meta.artifactKind` via its `BUCKET_BY_KIND` normalization table,
+ * keeping the framework ontology-blind.
+ */
+export function registerOutcomeDeriver(deriver: OutcomeDeriverFn): void {
+	getDerivers().push(deriver);
+}
+
+/**
+ * Peek at registered outcome derivers (non-draining). `loadWorkflows` calls
+ * this on every load after `buildEffectiveContracts` and invokes each deriver
+ * with the merged workflow map and effective skill contracts. Derivers must
+ * re-run on every load because their effects (mutating `stage.outcome`) live
+ * on per-load workflow objects — fresh objects from cache re-imports carry no
+ * outcome. The deriver is idempotent (`if (stage.outcome) continue`), so
+ * re-running on already-derived stages is safe. Internal — not on the public
+ * barrel.
+ */
+export function getOutcomeDerivers(): OutcomeDeriverFn[] {
+	return getDerivers();
+}
+
+/**
+ * Read-only snapshot of the registry — consumed by `load/index.ts` + `buildRunContext`.
+ * Returns a defensive copy so callers cannot mutate the shared global registry.
+ */
 export function getSkillContracts(): SkillContractMap {
-	return getRegistry();
+	return new Map(getRegistry());
 }
 
 /**
@@ -253,6 +313,7 @@ export function __resetSkillContracts(): void {
 	getCollisions().length = 0;
 	getOwners().clear();
 	getCompositionComparators().clear();
+	getDerivers().length = 0;
 	setFlushLatch(undefined);
 }
 

@@ -78,7 +78,8 @@
 		".": "./index.ts",
 		"./startup": "./startup.ts",
 		"./registration": "./registration.ts",
-		"./internal": "./internal.ts"
+		"./runner": "./runner/index.ts",
+	"./internal": "./internal.ts"
 	},
 	"pi": {
 		"extensions": [

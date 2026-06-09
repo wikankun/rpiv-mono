@@ -19,6 +19,7 @@ import type {
 	SchemaCompatResult,
 	SkillContract,
 } from "@juicesharp/rpiv-workflow/registration";
+import { registerOutcomeDerivation } from "./outcome-derivation.js";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";
 import { isModuleNotFound } from "./utils.js";
 
@@ -62,7 +63,7 @@ export function normalizeContract(raw: Record<string, unknown>): SkillContract {
 		if (rawConsumes.data && typeof rawConsumes.data === "object") {
 			consumes.data = rawConsumes.data as ConsumesSpec["data"];
 		}
-		if (rawConsumes.reads && typeof rawConsumes.reads === "object") {
+		if (rawConsumes.reads && typeof rawConsumes.reads === "object" && !Array.isArray(rawConsumes.reads)) {
 			consumes.reads = rawConsumes.reads as ConsumesSpec["reads"];
 		}
 		if (rawConsumes.meta && typeof rawConsumes.meta === "object") {
@@ -166,6 +167,9 @@ export async function registerSkillContractsSource(): Promise<void> {
 			// (#12) and a divergent override from another extension is surfaced (#4).
 			registerSkillContracts(buildSkillContractsFromFrontmatter(BUNDLED_SKILLS_DIR), "rpiv-pi");
 		});
+		// B2: register the contract-derived outcome resolver so `produces` stages
+		// auto-wire `rpivBucketOutcome(bucket)` from `artifactKind` at load time.
+		await registerOutcomeDerivation();
 	} catch (err) {
 		if (isModuleNotFound(err)) return; // sibling absent — /rpiv-setup prompts the user
 		throw err;

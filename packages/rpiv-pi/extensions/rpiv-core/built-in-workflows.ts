@@ -34,7 +34,7 @@ import {
 	type RunState,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow/registration";
-import { rpivBucketOutcome } from "./artifact-collector.js";
+import { StagePreflightError } from "@juicesharp/rpiv-workflow/runner";
 
 // The code-review stage's output schema is no longer declared here — every
 // code-review stage sources it from the skill's contract `produces.data`
@@ -94,8 +94,12 @@ const planPhaseRecords = (content: string, who: string, path: string): readonly 
 	const phases = Array.isArray(raw) ? raw : [];
 	const headingCount = [...content.matchAll(PLAN_PHASE_RE)].length;
 	if (phases.length !== headingCount) {
-		throw new Error(
+		throw new StagePreflightError(
+			"halt",
+			who,
+			`${who}: plan ${path} has mismatched phases`,
 			`${who}: plan ${path} frontmatter phases (${phases.length}) ≠ '## Phase N:' headings (${headingCount}) — the derived array is stale against the body`,
+			true,
 		);
 	}
 	// Phase 6 (Decision 5): the REQUIRED scalar `phase_count` must equal the derived
@@ -104,8 +108,12 @@ const planPhaseRecords = (content: string, who: string, path: string): readonly 
 	// still degrades to [] (the existing "neither phases nor headings" path); a plan
 	// that declares phases but omits phase_count THROWS (the field is contract-required).
 	if ((phases.length > 0 || fm.phase_count !== undefined) && fm.phase_count !== phases.length) {
-		throw new Error(
+		throw new StagePreflightError(
+			"halt",
+			who,
+			`${who}: plan ${path} has invalid phase_count`,
 			`${who}: plan ${path} frontmatter phase_count (${String(fm.phase_count)}) ≠ phases length (${phases.length}) — rebuild phase_count from the '## Phase N:' headings`,
+			true,
 		);
 	}
 	return phases.map((entry, index) => {
@@ -140,11 +148,26 @@ const FRONTMATTER_PHASE_FANOUT: FanoutFn = ({ state, cwd }) => {
 	const plan = latestFsArtifact(state, "plans");
 	if (plan?.handle.kind !== "fs") return [];
 	const path = plan.handle.path;
-	const content = readFileSync(resolveCwd(path, cwd), "utf-8");
+	let content: string;
+	try {
+		content = readFileSync(resolveCwd(path, cwd), "utf-8");
+	} catch (err) {
+		throw new StagePreflightError(
+			"halt",
+			"FRONTMATTER_PHASE_FANOUT",
+			`FRONTMATTER_PHASE_FANOUT: plan file not found`,
+			`FRONTMATTER_PHASE_FANOUT: could not read ${path} — ${err instanceof Error ? err.message : String(err)}`,
+			true,
+		);
+	}
 	const records = planPhaseRecords(content, "FRONTMATTER_PHASE_FANOUT", path);
 	if (records.length > MAX_PHASES) {
-		throw new Error(
+		throw new StagePreflightError(
+			"halt",
+			"FRONTMATTER_PHASE_FANOUT",
+			`FRONTMATTER_PHASE_FANOUT: plan ${path} exceeds phase limit`,
 			`FRONTMATTER_PHASE_FANOUT: plan ${path} declares ${records.length} phases — exceeds MAX_PHASES (${MAX_PHASES}); split into smaller plans`,
+			true,
 		);
 	}
 	const promptPath = handleToString(plan.handle);
@@ -164,9 +187,9 @@ const shipWorkflow = defineWorkflow({
 		"Fast path with no research or review. Best when the change is small and the approach is obvious. Chain: blueprint → implement → validate → commit.",
 	start: "blueprint",
 	stages: {
-		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
+		blueprint: produces(),
 		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
-		validate: produces({ outcome: rpivBucketOutcome("validation") }),
+		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -190,12 +213,12 @@ const buildWorkflow = defineWorkflow({
 		"Research-backed feature work with a review loop. Best for medium changes where you want a second pass before committing. Chain: research → blueprint → implement → validate → code-review → (revise loop) → commit.",
 	start: "research",
 	stages: {
-		research: produces({ outcome: rpivBucketOutcome("research") }),
-		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
+		research: produces(),
+		blueprint: produces(),
 		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
-		validate: produces({ outcome: rpivBucketOutcome("validation") }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
-		revise: produces({ outcome: rpivBucketOutcome("plans"), reads: ["plans", "reviews"] }),
+		validate: produces(),
+		"code-review": produces(),
+		revise: produces({ reads: ["plans", "reviews"] }),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -226,12 +249,12 @@ const archWorkflow = defineWorkflow({
 		"Design-led pipeline for complex changes touching many files or layers. Best when the approach itself needs to be worked out before planning. Chain: research → design → plan → implement → validate → code-review → (design loop) → commit.",
 	start: "research",
 	stages: {
-		research: produces({ outcome: rpivBucketOutcome("research") }),
-		design: produces({ outcome: rpivBucketOutcome("designs") }),
-		plan: produces({ outcome: rpivBucketOutcome("plans") }),
+		research: produces(),
+		design: produces(),
+		plan: produces(),
 		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
-		validate: produces({ outcome: rpivBucketOutcome("validation") }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
+		validate: produces(),
+		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -261,10 +284,10 @@ const vetWorkflow = defineWorkflow({
 		"Examine existing changes for approval; loop a fix cycle if not approved. Best when a diff already exists (yours or a teammate's) and you want a structured review with optional repair. Chain: code-review → (blueprint → implement → validate → loop) → commit.",
 	start: "code-review",
 	stages: {
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
-		blueprint: produces({ outcome: rpivBucketOutcome("plans") }),
+		"code-review": produces(),
+		blueprint: produces(),
 		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
-		validate: produces({ outcome: rpivBucketOutcome("validation") }),
+		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {
@@ -363,8 +386,12 @@ const REVIEW_PHASE_ITERATE: IterateFn = ({ artifact, state, accumulated, cwd }) 
 	if (i === 0) {
 		const headingCount = [...content.matchAll(REVIEW_PHASE_RE)].length;
 		if (phases.length !== headingCount) {
-			throw new Error(
+			throw new StagePreflightError(
+				"halt",
+				"REVIEW_PHASE_ITERATE",
+				`REVIEW_PHASE_ITERATE: review ${reviewPath} has mismatched phases`,
 				`REVIEW_PHASE_ITERATE: review ${reviewPath} frontmatter phases (${phases.length}) ≠ '### Phase N —' headings (${headingCount}) — the derived array is stale against the body`,
+				true,
 			);
 		}
 		const indexByN = new Map(phases.map((e, idx) => [phaseNum(e, idx), idx]));
@@ -372,12 +399,20 @@ const REVIEW_PHASE_ITERATE: IterateFn = ({ artifact, state, accumulated, cwd }) 
 			for (const d of phaseDeps(e)) {
 				const di = indexByN.get(d);
 				if (di === undefined)
-					throw new Error(
+					throw new StagePreflightError(
+						"halt",
+						"REVIEW_PHASE_ITERATE",
+						`REVIEW_PHASE_ITERATE: review ${reviewPath} has invalid depends_on`,
 						`REVIEW_PHASE_ITERATE: review ${reviewPath} phase ${phaseNum(e, idx)} depends_on ${d}, which is not a declared phase`,
+						true,
 					);
 				if (di >= idx)
-					throw new Error(
+					throw new StagePreflightError(
+						"halt",
+						"REVIEW_PHASE_ITERATE",
+						`REVIEW_PHASE_ITERATE: review ${reviewPath} has cyclic dependency`,
 						`REVIEW_PHASE_ITERATE: review ${reviewPath} phase ${phaseNum(e, idx)} depends_on ${d}, which is not an earlier phase (self/forward/cyclic dependency)`,
+						true,
 					);
 			}
 		});
@@ -433,7 +468,13 @@ const PLANS_PHASE_FANOUT: FanoutFn = ({ state, cwd }) => {
 		}
 	}
 	if (units.length > MAX_PHASES) {
-		throw new Error(`PLANS_PHASE_FANOUT: ${units.length} phases exceeds MAX_PHASES (${MAX_PHASES})`);
+		throw new StagePreflightError(
+			"halt",
+			"PLANS_PHASE_FANOUT",
+			`PLANS_PHASE_FANOUT: phase limit exceeded`,
+			`PLANS_PHASE_FANOUT: ${units.length} phases exceeds MAX_PHASES (${MAX_PHASES})`,
+			true,
+		);
 	}
 	return units;
 };
@@ -459,11 +500,11 @@ const polishWorkflow = defineWorkflow({
 		"Architecture-review-driven polish: review → per-phase blueprint (sequential, accumulating) → implement → validate → code-review → commit. Best when a large architecture review can't be planned in one pass and each phase's plan must build on the ones before it.",
 	start: "architecture-review",
 	stages: {
-		"architecture-review": produces({ outcome: rpivBucketOutcome("architecture-reviews") }),
-		blueprint: produces({ outcome: rpivBucketOutcome("plans"), iterate: REVIEW_PHASE_ITERATE }),
+		"architecture-review": produces(),
+		blueprint: produces({ iterate: REVIEW_PHASE_ITERATE }),
 		implement: acts({ fanout: PLANS_PHASE_FANOUT, reads: ["plans"] }),
-		validate: produces({ outcome: rpivBucketOutcome("validation"), prompt: VALIDATE_PLANS_PROMPT }),
-		"code-review": produces({ outcome: rpivBucketOutcome("reviews") }),
+		validate: produces({ prompt: VALIDATE_PLANS_PROMPT }),
+		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
 	edges: {

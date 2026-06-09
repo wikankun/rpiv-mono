@@ -602,7 +602,15 @@ async function ensureContractInputValid(stage: ResolvedStage, run: RunContext): 
 			const producerSkill = latest?.meta.skill ?? latest?.meta.stage;
 			const producer = producerSkill ? run.skillContracts?.get(producerSkill)?.produces : undefined;
 			if (!producer) continue; // degrade: producer contract/identity absent
-			const compat = comparator(producer, consumes, channel);
+			let compat: { ok: boolean; reason?: string };
+			try {
+				compat = comparator(producer, consumes, channel);
+			} catch {
+				// Comparator threw — author's defect (bad schema traversal, etc.),
+				// NOT a data violation. Degrade (skip channel) rather than kill
+				// the run, matching the data-path's degrade-on-throw policy at :647.
+				continue;
+			}
 			if (compat.ok) continue;
 			throw new StagePreflightError(
 				"halt",

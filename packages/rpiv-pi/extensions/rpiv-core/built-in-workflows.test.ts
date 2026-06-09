@@ -47,6 +47,7 @@ import { fs as fsHandle } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rpivArtifactMdOutcome } from "./artifact-collector.js";
 import { builtInWorkflows } from "./built-in-workflows.js";
+import { deriveOutcomes } from "./outcome-derivation.js";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";
 import { buildSkillContractsFromFrontmatter } from "./skill-contracts-source.js";
 
@@ -56,6 +57,35 @@ import { buildSkillContractsFromFrontmatter } from "./skill-contracts-source.js"
 // from the contract — so the same contracts must be supplied here, or the
 // contract-backed routing lint (checkPredicateSchemas) fires a false warning.
 const DECLARED_CONTRACTS = new Map(buildSkillContractsFromFrontmatter(BUNDLED_SKILLS_DIR));
+
+/**
+ * Prepare a workflow for validation by deriving contract-sourced outcomes onto
+ * a mutable copy. The built-in workflows no longer carry explicit outcomes
+ * (B2: contract-derived outcomes). The deriver must run before validateWorkflow
+ * checks the `produces-without-outcome` guard.
+ */
+const deriveAndValidate = (
+	wf: Workflow,
+	opts?: { skillContracts?: Map<string, import("@juicesharp/rpiv-workflow/registration").SkillContract> },
+) => {
+	return validateWorkflow(withDerivedOutcomes(wf, opts?.skillContracts), opts);
+};
+
+/**
+ * Create a mutable copy of a workflow with contract-derived outcomes. Used by
+ * tests that bypass the loader (passing workflows directly to `runWorkflow`).
+ */
+const withDerivedOutcomes = (
+	wf: Workflow,
+	skillContracts?: Map<string, import("@juicesharp/rpiv-workflow/registration").SkillContract>,
+): Workflow => {
+	const mutable: Workflow = { ...wf, stages: { ...wf.stages } };
+	for (const [name, stage] of Object.entries(wf.stages)) {
+		(mutable.stages as Record<string, typeof stage>)[name] = { ...stage };
+	}
+	deriveOutcomes([mutable], skillContracts ?? DECLARED_CONTRACTS, () => {});
+	return mutable;
+};
 
 const findWorkflow = (name: string): Workflow => {
 	const w = builtInWorkflows.find((x) => x.name === name);
@@ -152,7 +182,7 @@ describe("[I6] code-review routing field is sourced + validated from the contrac
 
 	it("every built-in workflow validates without errors or warnings (with contracts threaded in)", () => {
 		for (const wf of builtInWorkflows) {
-			const issues = validateWorkflow(wf, { skillContracts: DECLARED_CONTRACTS });
+			const issues = deriveAndValidate(wf, { skillContracts: DECLARED_CONTRACTS });
 			expect(
 				issues.filter((i) => i.severity === "error"),
 				`${wf.name} errors`,
@@ -602,11 +632,11 @@ describe("[Q4] vet workflow", () => {
 describe("polish workflow", () => {
 	describe("structural validation", () => {
 		it("validates with zero errors", () => {
-			expect(validateWorkflow(findWorkflow("polish")).filter((i) => i.severity === "error")).toEqual([]);
+			expect(deriveAndValidate(findWorkflow("polish")).filter((i) => i.severity === "error")).toEqual([]);
 		});
 
 		it("all stages are reachable from start", () => {
-			const issues = validateWorkflow(findWorkflow("polish"));
+			const issues = deriveAndValidate(findWorkflow("polish"));
 			expect(
 				issues.filter((i) => /unreachable/.test(i.message)),
 				"polish has unreachable stages",
@@ -675,7 +705,10 @@ describe("polish workflow", () => {
 				],
 			});
 
-			const result = await runWorkflow(chain.ctx, { workflow: findWorkflow("polish"), input: "x" });
+			const result = await runWorkflow(chain.ctx, {
+				workflow: withDerivedOutcomes(findWorkflow("polish")),
+				input: "x",
+			});
 
 			expect(result.success).toBe(true);
 			// arch-review + blueprint×2 + implement×2 + validate + code-review + commit
@@ -716,7 +749,10 @@ describe("polish workflow", () => {
 				],
 			});
 
-			const result = await runWorkflow(chain.ctx, { workflow: findWorkflow("polish"), input: "x" });
+			const result = await runWorkflow(chain.ctx, {
+				workflow: withDerivedOutcomes(findWorkflow("polish")),
+				input: "x",
+			});
 
 			expect(result.success).toBe(true);
 			// The single validate session is handed ALL accumulated plans — not just
@@ -755,7 +791,10 @@ describe("polish workflow", () => {
 				],
 			});
 
-			const result = await runWorkflow(chain.ctx, { workflow: findWorkflow("polish"), input: "x" });
+			const result = await runWorkflow(chain.ctx, {
+				workflow: withDerivedOutcomes(findWorkflow("polish")),
+				input: "x",
+			});
 
 			expect(result.success).toBe(false);
 			expect(result.error).toMatch(/backward-jump limit exceeded/i);
@@ -886,7 +925,7 @@ describe("ship workflow", () => {
 	});
 
 	it("validates without errors or warnings (contracts threaded in)", () => {
-		const issues = validateWorkflow(findWorkflow("ship"), { skillContracts: DECLARED_CONTRACTS });
+		const issues = deriveAndValidate(findWorkflow("ship"), { skillContracts: DECLARED_CONTRACTS });
 		expect(issues.filter((i) => i.severity === "error")).toEqual([]);
 		expect(issues.filter((i) => i.severity === "warning")).toEqual([]);
 	});
@@ -1003,7 +1042,10 @@ describe("ship workflow", () => {
 				],
 			});
 
-			const result = await runWorkflow(chain.ctx, { workflow: findWorkflow("ship"), input: "add a feature" });
+			const result = await runWorkflow(chain.ctx, {
+				workflow: withDerivedOutcomes(findWorkflow("ship")),
+				input: "add a feature",
+			});
 
 			expect(result.success).toBe(true);
 			// blueprint + implement×2 (one per derived phase) + validate + commit
@@ -1030,7 +1072,7 @@ describe("implement reads wiring (Phase 3)", () => {
 
 	it('all five built-in workflows validate clean with reads:["plans"] (contracts threaded in)', () => {
 		for (const name of ["ship", "build", "arch", "vet", "polish"]) {
-			const issues = validateWorkflow(findWorkflow(name), { skillContracts: DECLARED_CONTRACTS });
+			const issues = deriveAndValidate(findWorkflow(name), { skillContracts: DECLARED_CONTRACTS });
 			expect(
 				issues.filter((i) => i.severity === "error"),
 				name,

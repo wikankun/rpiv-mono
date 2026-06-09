@@ -62,6 +62,7 @@ import {
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getOutcomeDerivers,
 } from "../skill-contracts.js";
 import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
 import { applySkillAliases } from "./alias.js";
@@ -206,6 +207,25 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	// (Phase 6) sees it. Returns a NEW map (harvested gap-fill first, declared overriding
 	// per skill) — never mutates the shared global registry.
 	const skillContracts = buildEffectiveContracts([...acc.workflowMap.values()]);
+
+	// Invoke registered outcome derivers (e.g. rpiv-pi's BUCKET_BY_KIND resolver)
+	// so `produces` stages that don't declare an explicit `outcome` get one wired
+	// from the contract registry before validation checks
+	// `produces-without-outcome` at validate-workflow.ts:241-245.
+	for (const deriver of getOutcomeDerivers()) {
+		try {
+			deriver(acc.workflowMap.values(), skillContracts, (message, severity) => {
+				acc.issues.push({ kind: "load", layer: "built-in", severity, message });
+			});
+		} catch (err) {
+			acc.issues.push({
+				kind: "load",
+				layer: "built-in",
+				severity: "error",
+				message: `outcome deriver failed: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
+	}
 
 	// Validate every merged workflow once. Validation runs even on built-in so
 	// that a future built-in regression surfaces in the same channel as user
