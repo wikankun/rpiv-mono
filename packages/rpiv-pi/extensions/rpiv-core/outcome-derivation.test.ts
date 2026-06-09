@@ -69,7 +69,7 @@ describe("BUCKET_BY_KIND", () => {
 
 	it("preserves convergence: same artifactKind → same bucket", () => {
 		// 4 skills share "plan" → "plans"
-		expect(BUCKET_BY_KIND["plan"]).toBe("plans");
+		expect(BUCKET_BY_KIND.plan).toBe("plans");
 	});
 });
 

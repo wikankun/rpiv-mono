@@ -68,11 +68,11 @@ describe("models-config", () => {
 				model: "anthropic:claude-sonnet-4-20250514",
 			});
 			expect(config.stages).toBeDefined();
-			expect(config.stages!["research"]).toEqual({
+			expect(config.stages!.research).toEqual({
 				thinking: "xhigh",
 				model: "anthropic:claude-sonnet-4-20250514", // cascaded from defaults
 			});
-			expect(config.stages!["plan"]).toEqual({
+			expect(config.stages!.plan).toEqual({
 				model: "anthropic:claude-sonnet-4-20250514",
 			});
 		});
@@ -109,7 +109,7 @@ describe("models-config", () => {
 			);
 
 			const config = loadModelsConfig();
-			expect(config.stages!["research"]).toEqual({
+			expect(config.stages!.research).toEqual({
 				model: "anthropic:claude-sonnet-4-20250514",
 				thinking: "xhigh",
 			});
