@@ -129,9 +129,11 @@ An edge can be a string, `"stop"`, or a **predicate edge** that routes on the st
 
 `gate(field, routes)` reads a field from the stage's output `data`; `gt`, `eq`, and friends are **predicates**. Point an edge backward (`revise` to `implement`) to make a **loop**, bounded by the runner's `maxBackwardJumps` guard so it can never spin forever. Hand-rolled routing goes through `defineRoute(targets, fn)` so the targets stay enumerable for validation.
 
-## Parallelism: fanout and iterate
+## Fanout and iterate: splitting a stage
 
-Mark a stage `fanout` and the runner explodes it into one worker per unit (for example, one Pi session per `## Phase N:` heading the inherited plan declares), each isolated. `iterate` does the same in sequence. You author one stage; the runner manages the spread and the join.
+Mark a stage `fanout` and the runner splits it into one unit per slice (for example, one unit per `## Phase N:` heading the inherited plan declares), each in its own isolated session, blind to the others. `iterate` is the accumulating counterpart: units are pulled one at a time, each able to see the prior result. You author one stage; the runner handles the spread and the join.
+
+Both run **sequentially** under Pi's single-active-session model, so fanout buys per-unit *isolation and structure*, not wall-clock speed. Its units are independent, though, so they are concurrency-ready: a host that ran sessions in parallel would parallelize them with no change to the workflow. For real concurrency today, run one process per workflow.
 
 ## Sessions: fresh or continue
 

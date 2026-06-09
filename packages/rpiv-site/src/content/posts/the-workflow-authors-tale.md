@@ -132,7 +132,9 @@ In words: the review stage writes a number, `blockers_count`. Greater than zero,
 
 ## When one worker isn't enough, and when it isn't an AI
 
-Your plan has five phases. You don't want them one after another. You want them in parallel. So you mark `implement` as a **fanout**. The framework reads the plan, finds its phases, and explodes that one stage into five workers, each handed its own slice, each in its own session. Its sibling **iterate** does the same in sequence when order matters. You wrote one stage; the framework ran five; you never managed a thread or a join.
+Your plan has five phases, each a self-contained slice of work. So you mark `implement` as a **fanout**. The framework reads the plan, finds its phases, and splits that one stage into five **independent units**, each handed its own slice in its own clean session, blind to the others. Its sibling **iterate** is the accumulating version, for when each step needs to see the last. You wrote one stage; the framework spread it into five and joined the results; you never managed the split or the join.
+
+One honest note: under Pi's single-session model the units run one after another, so fanout buys you *isolation and structure*, not raw speed. The units are independent, though, so the day the host runs sessions side by side, they parallelize with nothing to change in your workflow.
 
 And sometimes you don't want a thinker at all. You want a *doer* that runs the same way every time. For that, a stage carries a **`run`** function instead of dispatching a skill. This is a **script stage**, authored with `produces.script` or `acts.script`, and it skips the AI entirely. It is just your TypeScript:
 
@@ -190,7 +192,7 @@ There are really two moments of enforcement, and it is worth knowing which is wh
 
 Step back one last time, and look at what you built, and what you *didn't*.
 
-You wrote a graph of names. You never wrote how to research, design, build, or review. You never wired a file path, managed a parallel queue, or wrote a join. You declared what each worker promises, taught the framework one comparator for your domain, and pointed some edges backward to make a loop.
+You wrote a graph of names. You never wrote how to research, design, build, or review. You never wired a file path, managed a work queue, or wrote a join. You declared what each worker promises, taught the framework one comparator for your domain, and pointed some edges backward to make a loop.
 
 And the workflow you got knows how to *live in your world*. It can be **woken** by a webhook or a cron tick. It can **reach out** through script stages to databases and APIs. It can **observe reality** through snapshot-and-collect instead of trusting claims, and **parse** that reality into clean typed data. It can **narrate itself** to anything that is listening. And through every one of those doors (the data a script pulls in, the output an outcome parses, the artifact handed down a channel) the same spine holds: measured, shaped against a contract, checked.
 
