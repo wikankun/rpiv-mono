@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- New `pr-triage` built-in workflow — read-only triage for incoming GitHub PRs. The `pr-triage` skill fetches the PR thread, assesses the diff against repo standards, and writes a triage artifact with a recommended disposition; a script-stage security gate halts the run on BLOCK (`security_flag ≥ 2`) before any checkout. Chain: `pr-triage → security-gate → stop`. Adds the `triage` outcome bucket and brings the built-in workflow count from five to six.
+
+### Fixed
+- `rpiv-core` no longer fails to load with `Cannot find module '@juicesharp/rpiv-config'` (or `@juicesharp/rpiv-workflow/registration`) when those packages aren't resolvable from `rpiv-pi`'s install location — e.g. peers not nested under `rpiv-pi` combined with an install-scope split. Root cause is module resolution, not jiti's `exports`/`.ts` handling (jiti 2.7.0 resolves `.ts` subpath exports fine). Two fixes: `@juicesharp/rpiv-config` moves from `peerDependencies` to `dependencies` so npm always installs it alongside `rpiv-pi` regardless of peer settings or scope; and the `@juicesharp/rpiv-workflow/registration` value-import is deferred off the entry path (via the `outcome-derivation` chain) so a missing or non-co-located optional sibling degrades gracefully instead of crashing extension load. The absent-sibling guard now also recognizes jiti's `MODULE_NOT_FOUND` (Pi loads extensions via jiti) in addition to Node's `ERR_MODULE_NOT_FOUND`, so a genuinely-absent sibling stays a silent no-op rather than a noisy `[rpiv-core] failed to register` log. (#66)
+
 ## [1.19.0] - 2026-06-09
 
 ### Added
