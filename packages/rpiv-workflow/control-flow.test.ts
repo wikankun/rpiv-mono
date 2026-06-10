@@ -1,84 +1,59 @@
 /**
- * Unit tests for control-flow-as-data: the `fanoutOver`/`iterateOver` builders
- * attach an introspectable `.spec` to the SAME executable the runner consumes
- * (the `defineRoute`/`.targets` pattern), and `describeFlow` projects a
- * workflow's structure from that attached metadata alone — no probing.
+ * Unit tests for control flow as data: the `fanout()`/`iterate()`/`assess()`
+ * constructors build the `LoopDef` a stage carries on its single `loop` field
+ * (validated at construction), `loopSpecOf` projects the pure-data facet, and
+ * `describeFlow` projects a workflow's structure from that attached metadata
+ * alone — no probing.
  */
 
 import { describe, expect, it } from "vitest";
-import { acts, defineWorkflow, type FanoutFn, gate, produces } from "./api.js";
-import { describeFlow, fanoutOver, fanoutSpecOf, iterateOver, iterateSpecOf } from "./control-flow.js";
+import { acts, defineWorkflow, gate, produces } from "./api.js";
+import { assess, DEFAULT_ASSESS_MAX, describeFlow, fanout, iterate, loopSpecOf } from "./control-flow.js";
+import { type Judge, judge } from "./judge.js";
 import { eq, gt } from "./predicates.js";
 
-const fanoutStub = fanoutOver({
-	source: "plans",
-	unit: { by: "frontmatter-array", pattern: "phases" },
-	max: 32,
-	run: () => [{ prompt: "x", label: "1/1" }],
-});
-
-const iterateStub = iterateOver({
-	source: "architecture-reviews",
-	unit: { by: "markdown-heading", pattern: "### Phase {n}" },
-	max: 8,
-	run: () => null,
-});
-
-describe("fanoutOver / iterateOver", () => {
-	it("attaches a fanout spec while staying the executable FanoutFn", async () => {
-		expect(fanoutStub.spec).toEqual({
-			kind: "fanout",
-			source: "plans",
-			unit: { by: "frontmatter-array", pattern: "phases" },
-			max: 32,
-		});
-		// still callable by the runner — the wrapped fn IS the detector
-		expect(fanoutStub({ cwd: "/tmp", artifact: undefined, state: {} as never })).toEqual([
-			{ prompt: "x", label: "1/1" },
-		]);
-	});
-
-	it("attaches an iterate spec with dependsOnPrior fixed true", () => {
-		expect(iterateStub.spec).toEqual({
-			kind: "iterate",
-			dependsOnPrior: true,
-			source: "architecture-reviews",
-			unit: { by: "markdown-heading", pattern: "### Phase {n}" },
-			max: 8,
-		});
-	});
-});
-
-describe("fanoutSpecOf / iterateSpecOf", () => {
-	it("reads a spec off a specced fn", () => {
-		expect(fanoutSpecOf(fanoutStub)?.source).toBe("plans");
-		expect(iterateSpecOf(iterateStub)?.dependsOnPrior).toBe(true);
-	});
-
-	it("returns undefined for a raw (opaque) fn or undefined", () => {
-		const raw: FanoutFn = () => [];
-		expect(fanoutSpecOf(raw)).toBeUndefined();
-		expect(fanoutSpecOf(undefined)).toBeUndefined();
-		expect(iterateSpecOf(undefined)).toBeUndefined();
-	});
-});
+const verdictOutcome = { name: "verdict" } as Judge["outcome"];
 
 describe("describeFlow", () => {
+	const fanoutLoop = fanout({
+		source: "plans",
+		unit: { by: "frontmatter-array", pattern: "phases" },
+		max: 32,
+		units: () => [{ prompt: "x", label: "1/1" }],
+	});
+	const iterateLoop = iterate({
+		source: "architecture-reviews",
+		unit: { by: "markdown-heading", pattern: "### Phase {n}" },
+		max: 8,
+		next: () => null,
+	});
+	const assessLoop = assess({
+		judge: judge({ skill: "grade-breakdown", outcome: verdictOutcome }),
+		done: () => true,
+		feedForward: () => "again",
+		max: 5,
+	});
+
 	const wf = defineWorkflow({
 		name: "t",
 		description: "d",
 		start: "research",
 		stages: {
 			research: produces(),
-			implement: acts({ fanout: fanoutStub, reads: ["plans"] }),
-			blueprint: produces({ iterate: iterateStub }),
+			implement: acts({ loop: fanoutLoop, reads: ["plans"] }),
+			blueprint: produces({
+				loop: iterateLoop,
+				outcome: { name: "plans", collector: { snapshot: false } } as never,
+			}),
+			breakdown: produces({ loop: assessLoop, outcome: { name: "tasks", collector: { snapshot: false } } as never }),
 			"code-review": produces(),
 			commit: acts(),
 		},
 		edges: {
 			research: "implement",
 			implement: "blueprint",
-			blueprint: "code-review",
+			blueprint: "breakdown",
+			breakdown: "code-review",
 			"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
 			commit: "stop",
 		},
@@ -87,10 +62,11 @@ describe("describeFlow", () => {
 	const shapes = describeFlow(wf);
 	const byStage = Object.fromEntries(shapes.map((s) => [s.stage, s]));
 
-	it("reports control-flow mode per stage from attached specs", () => {
+	it("reports control-flow mode per stage from the attached loop (assess included)", () => {
 		expect(byStage.research?.control.mode).toBe("single");
-		expect(byStage.implement?.control).toEqual({ mode: "fanout", spec: fanoutStub.spec });
-		expect(byStage.blueprint?.control).toEqual({ mode: "iterate", spec: iterateStub.spec });
+		expect(byStage.implement?.control).toEqual({ mode: "fanout", spec: loopSpecOf(fanoutLoop) });
+		expect(byStage.blueprint?.control).toEqual({ mode: "iterate", spec: loopSpecOf(iterateLoop) });
+		expect(byStage.breakdown?.control).toEqual({ mode: "assess", spec: loopSpecOf(assessLoop) });
 	});
 
 	it("reports edge shape: linear, route (via .targets), terminal", () => {
@@ -98,5 +74,129 @@ describe("describeFlow", () => {
 		expect(byStage["code-review"]?.edge.mode).toBe("route");
 		expect(byStage["code-review"]?.edge.targets).toEqual(["blueprint", "commit"]);
 		expect(byStage.commit?.edge).toEqual({ mode: "terminal" });
+	});
+});
+
+describe("fanout() / iterate() / assess() constructors", () => {
+	it("fanout() fills kind defaults (onCap halt, result entry)", () => {
+		const loop = fanout({ units: () => [{ prompt: "x", label: "1/1" }] });
+		expect(loop.kind).toBe("fanout");
+		expect(loop.onCap).toBe("halt");
+		expect(loop.result).toBe("entry");
+		expect(loop.max).toBeUndefined();
+	});
+
+	it("iterate() fills kind defaults (onCap halt, result last)", () => {
+		const loop = iterate({ next: () => null });
+		expect(loop.kind).toBe("iterate");
+		expect(loop.onCap).toBe("halt");
+		expect(loop.result).toBe("last");
+	});
+
+	it("assess() fills kind defaults (onCap advance, result last, max → 8)", () => {
+		const loop = assess({
+			judge: judge({ skill: "grade", outcome: verdictOutcome }),
+			done: (v) => (v.data as { done?: boolean }).done === true,
+			feedForward: () => "again",
+		});
+		expect(loop.kind).toBe("assess");
+		expect(loop.onCap).toBe("advance");
+		expect(loop.result).toBe("last");
+		expect(loop.max).toBe(DEFAULT_ASSESS_MAX);
+		expect(loop.max).toBe(8);
+	});
+
+	it("honours explicit onCap / result / max overrides", () => {
+		const loop = fanout({ units: () => [], onCap: "advance", result: "last", max: 4 });
+		expect(loop.onCap).toBe("advance");
+		expect(loop.result).toBe("last");
+		expect(loop.max).toBe(4);
+	});
+
+	it("checkedMax throws on non-integer / < 1", () => {
+		expect(() => fanout({ units: () => [], max: 0 })).toThrow(/max must be an integer >= 1/);
+		expect(() => iterate({ next: () => null, max: 1.5 })).toThrow(/max must be an integer >= 1/);
+		expect(() =>
+			assess({
+				judge: judge({ skill: "grade", outcome: verdictOutcome }),
+				done: () => true,
+				feedForward: () => "x",
+				max: -2,
+			}),
+		).toThrow(/max must be an integer >= 1/);
+	});
+
+	it("assess() throws on a non-function done / feedForward", () => {
+		expect(() =>
+			assess({
+				judge: judge({ skill: "grade", outcome: verdictOutcome }),
+				done: undefined as never,
+				feedForward: () => "x",
+			}),
+		).toThrow(/`done` must be a function/);
+		expect(() =>
+			assess({
+				judge: judge({ skill: "grade", outcome: verdictOutcome }),
+				done: () => true,
+				feedForward: undefined as never,
+			}),
+		).toThrow(/`feedForward` must be a function/);
+	});
+
+	it("assess() throws on an invalid judge", () => {
+		expect(() =>
+			assess({
+				judge: { outcome: verdictOutcome } as Judge,
+				done: () => true,
+				feedForward: () => "x",
+			}),
+		).toThrow(/assess\(\):.*one is required to dispatch/);
+	});
+});
+
+describe("loopSpecOf", () => {
+	it("returns undefined for a non-loop stage", () => {
+		expect(loopSpecOf(undefined)).toBeUndefined();
+	});
+
+	it("projects a fanout loop without a judge", () => {
+		const loop = fanout({
+			source: "plans",
+			unit: { by: "frontmatter-array", pattern: "phases" },
+			max: 32,
+			units: () => [],
+		});
+		expect(loopSpecOf(loop)).toEqual({
+			kind: "fanout",
+			source: "plans",
+			unit: { by: "frontmatter-array", pattern: "phases" },
+			max: 32,
+			onCap: "halt",
+			result: "entry",
+		});
+	});
+
+	it("projects an iterate loop", () => {
+		const loop = iterate({ next: () => null });
+		expect(loopSpecOf(loop)?.kind).toBe("iterate");
+		expect(loopSpecOf(loop)?.judge).toBeUndefined();
+	});
+
+	it("projects an assess loop with the judge summarised (prompt: boolean)", () => {
+		const loop = assess({
+			judge: judge({ skill: "grade-breakdown", outcome: verdictOutcome }),
+			done: () => true,
+			feedForward: () => "x",
+		});
+		expect(loopSpecOf(loop)?.judge).toEqual({ skill: "grade-breakdown", prompt: false, outcome: "verdict" });
+	});
+
+	it("marks a prompt judge with prompt: true and no skill", () => {
+		const loop = assess({
+			judge: judge({ prompt: "grade this", outcome: verdictOutcome }),
+			done: () => true,
+			feedForward: () => "x",
+		});
+		expect(loopSpecOf(loop)?.judge).toEqual({ skill: undefined, prompt: true, outcome: "verdict" });
 	});
 });

@@ -11,22 +11,6 @@ export const STATUS_KEY = "rpiv-workflow";
 
 export const STATUS_STAGE = (stage: number, total: number, skill: string) => `rpiv: stage ${stage}/${total} — ${skill}`;
 
-/**
- * Status line for a fanout unit. `skill` is the node's resolved skill body,
- * `label` is whatever the user's `FanoutFn` returned for this unit
- * (`"phase 2/5"`, `"task 3/8"`, ...). The runner adds no implicit wording.
- */
-export const STATUS_FANOUT_UNIT = (stage: number, total: number, skill: string, label: string) =>
-	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
-
-/**
- * Status line for an iterate unit. Same shape as `STATUS_FANOUT_UNIT` — the
- * status denominator is the reachable-stage count, so the stage number repeats
- * across units and `label` (e.g. `"phase 2/3 — Vocabulary"`) disambiguates.
- */
-export const STATUS_ITERATE_UNIT = (stage: number, total: number, skill: string, label: string) =>
-	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
-
 export const MSG_STAGE_COMPLETE = (skill: string) => `✓ ${skill} completed`;
 export const MSG_STAGE_FAILED = (skill: string) => `✗ ${skill} failed — stopping workflow`;
 export const MSG_STAGE_ABORTED = (skill: string) => `⏸ ${skill} aborted (ESC) — stopping workflow`;
@@ -106,49 +90,47 @@ export const ERR_BACKWARD_JUMP_EXHAUSTED = (jumps: number, max: number) =>
 	`Backward-jump limit exceeded: ${jumps} backward jumps (max ${max})`;
 
 /**
- * An `iterate` stage's generator kept returning units past the run-wide
- * `maxIterations` safety cap (the backstop for a generator that never returns
- * `null`). Stops the stage with a terminal failure, mirroring the
- * backward-jump guard.
+ * Status line for one loop unit. `skill` is the unit's dispatched skill body
+ * (the judge's skill — or the synthetic `<parent>-judge` label — on a judge
+ * unit); `label` is the unit's display tag (`"phase 2/5"`, `"r0·judge"`).
+ * One template for all three loop kinds — the retired fanout/iterate
+ * templates were byte-identical; assess threads its round/phase cursor as
+ * the label.
  */
-export const MSG_ITERATIONS_EXHAUSTED = (count: number, max: number) =>
-	`rpiv: iterate limit exceeded (${count}/${max}) — stopping workflow to prevent an unbounded generator`;
-
-export const ERR_ITERATIONS_EXHAUSTED = (count: number, max: number) =>
-	`Iterate limit exceeded: generator produced ${count} units (max ${max})`;
-
-/**
- * An `iterate` stage's generator returned null on its FIRST call — the stage
- * produced zero units. Not an error (a legitimately empty input is valid), but
- * the stage published nothing and left the primary artifact untouched, so warn
- * the author rather than silently advancing.
- */
-export const MSG_ITERATE_ZERO_UNITS = (skill: string) =>
-	`rpiv: ${skill} iterate produced zero units — nothing published, advancing`;
+export const STATUS_LOOP_UNIT = (stage: number, total: number, skill: string, label: string) =>
+	`rpiv: stage ${stage}/${total} — ${skill} (${label})`;
 
 /**
- * Status line for an `assess` round sub-step. Same shape as
- * `STATUS_ITERATE_UNIT`, but the disambiguator is the round/phase cursor
- * (`r0·produce`, `r0·judge`, `r1·produce`, …) rather than a unit label. `skill`
- * is the producer skill body on a produce sub-step and the judge skill (or the
- * synthetic `<parent>-judge` label) on a judge sub-step.
+ * Per-unit completion toast — labeled so eight units of one fanout read as
+ * eight distinct completions, not eight copies of the stage banner (the loop
+ * end still owns MSG_STAGE_COMPLETE).
  */
-export const STATUS_ASSESS_ROUND = (
-	stage: number,
-	total: number,
-	skill: string,
-	round: number,
-	phase: "produce" | "judge",
-) => `rpiv: stage ${stage}/${total} — ${skill} (r${round}·${phase})`;
+export const MSG_UNIT_COMPLETE = (skill: string, label: string) => `✓ ${skill} (${label})`;
 
 /**
- * An `assess` stage hit its round cap (`min(assess.max ?? 8, maxIterations)`)
- * without the judge returning `done`. Soft-stop, NOT a terminal failure: warn,
- * keep the last producer output as the stage result, and advance downstream
- * (the locked design decision — no new error code).
+ * A loop produced zero units (push: empty array handled upstream as
+ * single-stage fall-through, so this fires only for a pull loop whose FIRST
+ * call returned null). Not an error — nothing published, the primary stays at
+ * the entry pair; warn so the author notices the empty input.
  */
-export const MSG_ASSESS_SOFTSTOP = (skill: string, max: number) =>
-	`rpiv: ${skill} assess reached the max round cap (${max}) — keeping the last producer output and advancing`;
+export const MSG_LOOP_ZERO_UNITS = (skill: string) =>
+	`rpiv: ${skill} loop produced zero units — nothing published, advancing`;
+
+/**
+ * A loop hit its effective cap (`min(loop.max, run.maxIterations)`) under
+ * `onCap: "halt"` — terminal failure, mirroring the backward-jump guard.
+ */
+export const MSG_LOOP_CAP_HALT = (count: number, max: number) =>
+	`rpiv: loop cap exceeded (${count}/${max}) — stopping workflow to prevent an unbounded loop`;
+export const ERR_LOOP_CAP_HALT = (count: number, max: number) => `Loop cap exceeded: ${count} units (max ${max})`;
+
+/**
+ * A loop hit its effective cap under `onCap: "advance"` — soft-stop: warn,
+ * land the {type:"loop-cap"} telemetry row, keep the projected result,
+ * advance. Deliberately no ERR_ twin (not a failure).
+ */
+export const MSG_LOOP_CAP_ADVANCE = (skill: string, max: number) =>
+	`rpiv: ${skill} loop reached its cap (${max}) — keeping the projected result and advancing`;
 
 export const MSG_AUDIT_WRITE_FAILED = (skill: string) =>
 	`✗ ${skill} completed but audit row could not be written — stopping workflow`;
@@ -217,21 +199,18 @@ export const ERR_RESUME_NO_ROWS = (runId: string) => `rpiv: run ${runId} has no 
 export const ERR_RESUME_STAGE_GONE = (stage: string, workflow: string) =>
 	`rpiv: cannot resume — stage "${stage}" from the run no longer exists in workflow "${workflow}" ` +
 	`(renamed or removed)`;
-export const ERR_RESUME_FANOUT_MISMATCH = (stage: string) =>
-	`rpiv: cannot resume — fanout stage "${stage}" recomputed a different unit list than the run recorded ` +
-	`(the FanoutFn must be deterministic w.r.t. its entry artifact; resume refuses rather than re-run the wrong units)`;
-export const MSG_RESUME_FANOUT_MISMATCH = (stage: string) =>
-	`rpiv: fanout "${stage}" changed on resume — cannot safely continue`;
-export const ERR_RESUME_ITERATE_MISMATCH = (stage: string) =>
-	`rpiv: cannot resume — iterate stage "${stage}" recomputed a different unit than the run recorded at the resume point ` +
-	`(the IterateFn must be deterministic w.r.t. its entry artifact + accumulated outputs; resume refuses rather than re-run the wrong unit)`;
-export const MSG_RESUME_ITERATE_MISMATCH = (stage: string) =>
-	`rpiv: iterate "${stage}" changed on resume — cannot safely continue`;
-export const ERR_RESUME_ASSESS_MISMATCH = (stage: string) =>
-	`rpiv: cannot resume — assess stage "${stage}" recomputed a different pending round/phase than the run recorded at the resume point ` +
-	`(feedForward + judge.done must be deterministic w.r.t. their inputs; resume refuses rather than re-run the wrong sub-step)`;
-export const MSG_RESUME_ASSESS_MISMATCH = (stage: string) =>
-	`rpiv: assess "${stage}" changed on resume — cannot safely continue`;
+/**
+ * Resume drift refusal — one pair for all loop kinds. The unit source
+ * recomputed a different unit than the run recorded at a folded boundary
+ * (the determinism contract: deterministic w.r.t. the fold-replayed RunState
+ * + accumulated outputs). Resume refuses rather than re-run the wrong units.
+ */
+export const ERR_RESUME_LOOP_MISMATCH = (stage: string) =>
+	`rpiv: cannot resume — loop stage "${stage}" recomputed a different unit than the run recorded ` +
+	`(the unit source must be deterministic w.r.t. the replayed run state + accumulated outputs; ` +
+	`resume refuses rather than re-run the wrong units)`;
+export const MSG_RESUME_LOOP_MISMATCH = (stage: string) =>
+	`rpiv: loop "${stage}" changed on resume — cannot safely continue`;
 
 // ---------------------------------------------------------------------------
 // Resume-refusal messages — resumeWorkflowByRef pre-resume guards (resolve →

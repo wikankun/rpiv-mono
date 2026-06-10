@@ -23,7 +23,7 @@ import {
 } from "./messages.js";
 import { appendStage, listArtifacts, type WorkflowStage } from "./state/index.js";
 import type { StopSignal } from "./transcript.js";
-import type { FanoutSession, RunContext, RunState, SessionContext, WorkflowHostContext } from "./types.js";
+import type { RunContext, RunState, SessionContext, UnitRef, WorkflowHostContext } from "./types.js";
 
 /** Single source of ISO-8601 timestamps for audit rows + output meta. */
 export const nowIso = (): string => new Date().toISOString();
@@ -31,18 +31,23 @@ export const nowIso = (): string => new Date().toISOString();
 /**
  * Minimal bookkeeping ctx. Structurally derived from `SessionContext` so any
  * future field added to the base lands here too — no duplicate
- * maintenance. Both `StageSession` and `FanoutSession` collapse to this.
+ * maintenance. Every `StageSession` (single stage or loop unit) collapses to this.
  *
  * `isScript` toggles the `onStageError` ref construction in
  * `recordTerminalFailure` from `skillStageRef` to `scriptStageRef` (the
  * script branch carries no `skill` field). Defaulting to `undefined`
  * preserves the skill-path behaviour for every existing caller.
+ *
+ * `unit` is present iff the failure/cancellation belongs to a loop unit — its
+ * identity is spread into the JSONL row so failed trailers carry the
+ * structured fields the resume guard consumes.
  */
 export type AuditCtx = Pick<
 	SessionContext,
 	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity"
 > & {
 	isScript?: boolean;
+	unit?: UnitRef;
 };
 
 /**
@@ -66,7 +71,7 @@ export function auditCtxFor(
 	run: RunContext,
 	stageName: string,
 	skill: string,
-	opts?: { isScript?: boolean },
+	opts?: { isScript?: boolean; unit?: UnitRef },
 ): AuditCtx {
 	return {
 		cwd: run.cwd,
@@ -77,45 +82,31 @@ export function auditCtxFor(
 		lifecycle: run.lifecycle,
 		runIdentity: runIdentityOf(run),
 		...(opts?.isScript ? { isScript: true } : {}),
+		...(opts?.unit ? { unit: opts.unit } : {}),
 	};
 }
 
 /**
- * JSONL `WorkflowStage.stage` value for fanout-unit rows — built from
- * the parent stage's record key (`stageName`) suffixed with the
- * user-supplied `id` when present, falling back to `label`
- * (e.g. `"implement (phase-2)"` or `"implement (phase 2/4)"`) so
- * post-hoc readers can distinguish loop iterations. Owned by the audit
- * layer because the JSONL row shape is its concern; the runner stays
- * neutral about the wording.
+ * DISPLAY decoration for a loop-unit row's `stage` value —
+ * `"implement (phase-2)"`, `"breakdown (r0·judge)"`. Pure human label: the
+ * machine channel is the structured `parent`/`role`/`unitId`/`unitIndex`
+ * fields (`unitRowFields`); nothing may parse this string back. The driver
+ * builds the tag (`unit.id ?? unit.label` for fanout/iterate;
+ * `r{round}·{phase}` for assess) and decorates once at session construction.
  */
-export const fanoutRowStage = (s: FanoutSession): string => `${s.stageName} (${s.id ?? s.label})`;
+export const decorateStage = (parent: string, tag: string): string => `${parent} (${tag})`;
 
 /**
- * JSONL `WorkflowStage.stage` value for iterate-unit rows. Same projection as
- * `fanoutRowStage` — the parent stage's record key suffixed with the unit's
- * `id ?? label` (e.g. `"blueprint (phase-2)"`) so post-hoc readers can tell
- * the accumulated units apart. Takes the decorated parts directly (rather than
- * a session) because the iterate executor synthesizes the `StageSession` after
- * building this label. Decoration is SAFE for named keying: iterate mandates
- * `outcome.name`, so `resolvePublishName` ignores the decorated `stageName`
- * and every unit publishes to the same `state.named` slot.
+ * Project a session's unit identity into the structured row fields. Returns
+ * `{}` for single stages so call sites spread unconditionally —
+ * `JSON.stringify` drops nothing because nothing is added.
  */
-export const iterateRowStage = (stageName: string, tag: string): string => `${stageName} (${tag})`;
-
-/**
- * JSONL `WorkflowStage.stage` value for `assess`-round rows. Decorates the
- * parent stage's record key with a two-part `r{round}·{phase}` tag
- * (e.g. `"breakdown (r0·produce)"`, `"breakdown (r0·judge)"`) so resume can
- * fold the two-rows-per-round shape: the tag carries both the 0-based round
- * cursor and which sub-step the row recorded. Like `iterateRowStage`, the
- * decoration is opaque to `resolvePublishName` — the producer keys on its
- * `outcome.name` and the judge keys on `judge.outcome.name`, so the tag never
- * splits either named slot. `matchFanoutParent` reverses it by prefix/suffix
- * only, never parsing inside the parens, so the `·`-joined tag round-trips.
- */
-export const assessRowStage = (stageName: string, round: number, phase: "produce" | "judge"): string =>
-	`${stageName} (r${round}·${phase})`;
+export function unitRowFields(
+	unit: UnitRef | undefined,
+): Pick<WorkflowStage, "parent" | "role" | "unitId" | "unitIndex"> {
+	if (!unit) return {};
+	return { parent: unit.parent, role: unit.role, unitId: unit.id, unitIndex: unit.index };
+}
 
 /**
  * Allocates the next `stageNumber`, attempts the append, and returns the
@@ -170,6 +161,7 @@ export async function recordTerminalFailure(
 			status: args.status,
 			ts: nowIso(),
 			errMsg: args.errMsg,
+			...unitRowFields(audit.unit),
 		},
 		audit.state,
 	);
@@ -267,7 +259,7 @@ export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): v
 	recordStage(
 		audit.cwd,
 		audit.runId,
-		{ stage: audit.stageName, skill: audit.skill, status: "skipped", ts: nowIso() },
+		{ stage: audit.stageName, skill: audit.skill, status: "skipped", ts: nowIso(), ...unitRowFields(audit.unit) },
 		audit.state,
 	);
 	ctx.ui.setStatus(STATUS_KEY, undefined);

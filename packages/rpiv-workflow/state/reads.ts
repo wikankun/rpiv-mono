@@ -21,7 +21,7 @@ import { basename } from "node:path";
 import type { Artifact } from "../handle.js";
 import { readNamesIndex } from "./names.js";
 import { runsDir, stateFilePath } from "./paths.js";
-import type { RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from "./state.js";
+import type { LoopCapRow, RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
  * Reads every line, filters by shape (not position). Header has no
@@ -72,6 +72,9 @@ const isWorkflowStage = (row: unknown): row is WorkflowStage =>
 const isRoutingDecision = (row: unknown): row is RoutingDecision =>
 	!!row && (row as { type?: unknown }).type === "routing";
 
+/** Shape guard for loop-cap telemetry rows. */
+const isLoopCapRow = (r: unknown): r is LoopCapRow => (r as { type?: unknown } | undefined)?.type === "loop-cap";
+
 const isWorkflowHeader = (row: unknown): row is WorkflowHeader =>
 	!!row &&
 	typeof (row as { runId?: unknown }).runId === "string" &&
@@ -94,6 +97,11 @@ export function readAllStages(cwd: string, runId: string): WorkflowStage[] {
 
 export function readRoutingDecisions(cwd: string, runId: string): RoutingDecision[] {
 	return readJsonlRows(cwd, runId, isRoutingDecision);
+}
+
+/** All loop-cap telemetry rows for a run, in trail order. */
+export function readLoopCaps(cwd: string, runId: string): LoopCapRow[] {
+	return readJsonlRows(cwd, runId, isLoopCapRow);
 }
 
 /**

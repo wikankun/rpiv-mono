@@ -9,13 +9,12 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type ActsScriptFn,
-	type AssessConfig,
 	acts,
 	defineRoute,
 	defineWorkflow,
 	type EdgeFn,
 	gate,
-	type IterateFn,
+	type LoopDef,
 	type ProducesScriptFn,
 	produces as producesRaw,
 	type ScriptContext,
@@ -23,7 +22,8 @@ import {
 	terminal,
 	type Workflow,
 } from "./api.js";
-import { fanoutOver, iterateOver } from "./control-flow.js";
+import { assess, fanout, iterate } from "./control-flow.js";
+import { judge } from "./judge.js";
 import { noopCollector } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
 import type { CompositionComparator, SkillContractMap } from "./skill-contract.js";
@@ -570,16 +570,16 @@ describe("validateWorkflow — script stage invariants", () => {
 		expect(e.some((i) => /script stages cannot set "outcome"/.test(i.message))).toBe(true);
 	});
 
-	it("rejects `fanout` alongside `run`", () => {
+	it("rejects a `loop` alongside `run`", () => {
 		const e = errors(
 			wf({
-				kind: "produces",
+				kind: "side-effect",
 				sessionPolicy: "fresh",
-				run: noopProducesScript,
-				fanout: () => [],
+				run: noopActsScript,
+				loop: fanout({ units: () => [] }),
 			}),
 		);
-		expect(e.some((i) => /script stages cannot fanout/.test(i.message))).toBe(true);
+		expect(e.some((i) => /script stages cannot loop/.test(i.message))).toBe(true);
 	});
 
 	it('rejects sessionPolicy: "continue" alongside `run`', () => {
@@ -654,10 +654,9 @@ describe("validateWorkflow — script stage invariants", () => {
 	});
 });
 
-describe("validateWorkflow — iterate invariants", () => {
-	const iter: IterateFn = () => null;
+describe("validateWorkflow — iterate loop invariants", () => {
+	const iter = iterate({ next: () => null });
 	const namedOutcome = { name: "plans", collector: noopCollector };
-	const noopActsScript: ActsScriptFn = (_ctx: ScriptContext) => {};
 
 	const wf = (stage: StageDef): Workflow => ({
 		name: "iterating",
@@ -667,50 +666,31 @@ describe("validateWorkflow — iterate invariants", () => {
 	});
 
 	it("accepts a well-formed iterate stage (produces + named outcome + fresh)", () => {
-		const w = wf({ kind: "produces", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter });
+		const w = wf({ kind: "produces", sessionPolicy: "fresh", outcome: namedOutcome, loop: iter });
 		expect(errors(w)).toEqual([]);
 	});
 
-	it("rejects iterate alongside fanout (mutually exclusive)", () => {
-		const e = errors(
-			wf({ kind: "produces", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter, fanout: () => [] }),
-		);
-		expect(e.some((i) => /iterate and fanout are mutually exclusive/.test(i.message))).toBe(true);
-	});
-
-	it("rejects iterate on a script stage (run set)", () => {
-		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopActsScript, iterate: iter }));
-		expect(e.some((i) => /script stages cannot iterate/.test(i.message))).toBe(true);
-	});
-
-	it('rejects iterate with sessionPolicy: "continue"', () => {
-		const e = errors(wf({ kind: "produces", sessionPolicy: "continue", outcome: namedOutcome, iterate: iter }));
-		expect(e.some((i) => /cannot combine iterate with sessionPolicy "continue"/.test(i.message))).toBe(true);
+	it('rejects an iterate loop with sessionPolicy: "continue"', () => {
+		const e = errors(wf({ kind: "produces", sessionPolicy: "continue", outcome: namedOutcome, loop: iter }));
+		expect(e.some((i) => /cannot combine a loop with sessionPolicy "continue"/.test(i.message))).toBe(true);
 	});
 
 	it('rejects iterate on a non-produces stage (kind: "side-effect")', () => {
-		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", outcome: namedOutcome, iterate: iter }));
+		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", outcome: namedOutcome, loop: iter }));
 		expect(e.some((i) => /iterate requires kind "produces"/.test(i.message))).toBe(true);
 	});
 
-	it("rejects iterate when the outcome has no name", () => {
+	it("rejects iterate when the outcome has no name (collecting loop needs a stable slot)", () => {
 		const e = errors(
-			wf({ kind: "produces", sessionPolicy: "fresh", outcome: { collector: noopCollector }, iterate: iter }),
+			wf({ kind: "produces", sessionPolicy: "fresh", outcome: { collector: noopCollector }, loop: iter }),
 		);
-		expect(e.some((i) => /iterate requires an `outcome` with a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => /a collecting loop requires an `outcome` with a `name`/.test(i.message))).toBe(true);
 	});
 });
 
-describe("validateWorkflow — assess invariants", () => {
+describe("validateWorkflow — assess loop invariants", () => {
 	const producerOutcome = { name: "tasks", collector: noopCollector };
 	const verdictOutcome = { name: "verdict", collector: noopCollector };
-	const noopActsScript: ActsScriptFn = (_ctx: ScriptContext) => {};
-
-	// Well-formed skill-judge assess config; override the judge per-test.
-	const assessCfg = (judge: Partial<AssessConfig["judge"]> = {}): AssessConfig => ({
-		judge: { skill: "grade", outcome: verdictOutcome, done: () => true, ...judge },
-		feedForward: () => "decompose further",
-	});
 
 	const wf = (stage: StageDef): Workflow => ({
 		name: "assessing",
@@ -719,41 +699,45 @@ describe("validateWorkflow — assess invariants", () => {
 		edges: { s: "stop" },
 	});
 
+	const skillJudge = () => judge({ skill: "grade", outcome: verdictOutcome });
+	const wellFormed = () => assess({ judge: skillJudge(), done: () => true, feedForward: () => "decompose further" });
+
 	const base = (overrides: Partial<StageDef> = {}): StageDef => ({
 		kind: "produces",
 		sessionPolicy: "fresh",
 		outcome: producerOutcome,
-		assess: assessCfg(),
+		loop: wellFormed(),
 		...overrides,
 	});
+
+	// Hand-rolled loop literal — bypasses the constructor's construction-time
+	// throws so the defensive LOAD gate can be exercised (jiti erases TS types,
+	// so a programmatic embedder can ship a malformed loop the runner must reject).
+	const rawAssessLoop = (over: Record<string, unknown> = {}, judgeOver: Record<string, unknown> = {}): LoopDef =>
+		({
+			kind: "assess",
+			judge: { skill: "grade", outcome: verdictOutcome, ...judgeOver },
+			done: () => true,
+			feedForward: () => "decompose further",
+			max: 8,
+			onCap: "advance",
+			result: "last",
+			...over,
+		}) as unknown as LoopDef;
 
 	it("accepts a well-formed assess stage (produces + skill judge + fresh)", () => {
 		expect(errors(wf(base()))).toEqual([]);
 	});
 
 	it("accepts a well-formed assess stage with a prompt judge", () => {
-		const stage = base({ assess: assessCfg({ skill: undefined, prompt: "Are all tasks atomic?" }) });
+		const stage = base({
+			loop: assess({
+				judge: judge({ prompt: "Are all tasks atomic?", outcome: verdictOutcome }),
+				done: () => true,
+				feedForward: () => "decompose further",
+			}),
+		});
 		expect(errors(wf(stage))).toEqual([]);
-	});
-
-	it("rejects assess alongside iterate (mutually exclusive)", () => {
-		const e = errors(wf(base({ iterate: () => null })));
-		expect(e.some((i) => /assess and iterate are mutually exclusive/.test(i.message))).toBe(true);
-	});
-
-	it("rejects assess alongside fanout (mutually exclusive)", () => {
-		const e = errors(wf(base({ fanout: () => [] })));
-		expect(e.some((i) => /assess and fanout are mutually exclusive/.test(i.message))).toBe(true);
-	});
-
-	it("rejects assess on a script stage (run set)", () => {
-		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopActsScript, assess: assessCfg() }));
-		expect(e.some((i) => /script stages cannot assess/.test(i.message))).toBe(true);
-	});
-
-	it("rejects assess alongside a raw prompt (mutually exclusive)", () => {
-		const e = errors(wf(base({ prompt: "x" })));
-		expect(e.some((i) => /assess and prompt are mutually exclusive/.test(i.message))).toBe(true);
 	});
 
 	it("rejects assess alongside reads (v1 restriction)", () => {
@@ -766,51 +750,64 @@ describe("validateWorkflow — assess invariants", () => {
 		expect(e.some((i) => /assess requires kind "produces"/.test(i.message))).toBe(true);
 	});
 
-	it('rejects assess with sessionPolicy: "continue"', () => {
+	it('rejects an assess loop with sessionPolicy: "continue"', () => {
 		const e = errors(wf(base({ sessionPolicy: "continue" })));
-		expect(e.some((i) => /cannot combine assess with sessionPolicy "continue"/.test(i.message))).toBe(true);
+		expect(e.some((i) => /cannot combine a loop with sessionPolicy "continue"/.test(i.message))).toBe(true);
 	});
 
-	it("rejects a judge whose outcome has no name", () => {
-		const stage = base({ assess: assessCfg({ outcome: { collector: noopCollector } }) });
-		const e = errors(wf(stage));
-		expect(e.some((i) => /assess requires `judge.outcome` with a `name`/.test(i.message))).toBe(true);
+	it("requires a producer outcome.name (collecting loop needs a stable slot)", () => {
+		const e = errors(wf(base({ outcome: { collector: noopCollector } })));
+		expect(e.some((i) => /a collecting loop requires an `outcome` with a `name`/.test(i.message))).toBe(true);
 	});
 
-	it("rejects a judge with no done predicate", () => {
-		const stage = base({ assess: assessCfg({ done: undefined as unknown as AssessConfig["judge"]["done"] }) });
-		const e = errors(wf(stage));
-		expect(e.some((i) => /assess requires `judge.done`/.test(i.message))).toBe(true);
+	it("rejects a judge whose outcome has no name (defensive load gate)", () => {
+		const e = errors(wf(base({ loop: rawAssessLoop({}, { outcome: { collector: noopCollector } }) })));
+		expect(e.some((i) => /assess judge\.outcome must carry a `name`/.test(i.message))).toBe(true);
 	});
 
-	it("rejects a judge that sets both skill and prompt", () => {
-		const stage = base({ assess: assessCfg({ prompt: "grade it" }) }); // skill already set by default
-		const e = errors(wf(stage));
+	it("rejects a judge that sets both skill and prompt (defensive load gate)", () => {
+		const e = errors(wf(base({ loop: rawAssessLoop({}, { prompt: "grade it" }) })));
 		expect(e.some((i) => /assess judge sets both `skill` and `prompt`/.test(i.message))).toBe(true);
 	});
 
-	it("rejects a judge that sets neither skill nor prompt", () => {
-		const stage = base({ assess: assessCfg({ skill: undefined }) });
-		const e = errors(wf(stage));
+	it("rejects a judge that sets neither skill nor prompt (defensive load gate)", () => {
+		const e = errors(wf(base({ loop: rawAssessLoop({}, { skill: undefined }) })));
 		expect(e.some((i) => /assess judge sets neither `skill` nor `prompt`/.test(i.message))).toBe(true);
 	});
 
+	it("rejects a non-function done (defensive load gate)", () => {
+		const e = errors(wf(base({ loop: rawAssessLoop({ done: undefined }) })));
+		expect(e.some((i) => /assess requires `done` to be a function/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a non-function feedForward (defensive load gate)", () => {
+		const e = errors(wf(base({ loop: rawAssessLoop({ feedForward: undefined }) })));
+		expect(e.some((i) => /assess requires `feedForward` to be a function/.test(i.message))).toBe(true);
+	});
+
 	it("rejects a judge outcome name that collides with the producer's publish name", () => {
-		const stage = base({ assess: assessCfg({ outcome: { name: "tasks", collector: noopCollector } }) });
+		const stage = base({
+			loop: assess({
+				judge: judge({ skill: "grade", outcome: { name: "tasks", collector: noopCollector } }),
+				done: () => true,
+				feedForward: () => "decompose further",
+			}),
+		});
 		const e = errors(wf(stage));
 		expect(e.some((i) => /collides with the producer's publish name/.test(i.message))).toBe(true);
 	});
 
-	it.each([0, -1, 1.5])("rejects assess.max: %s (must be an integer >= 1)", (max) => {
-		const stage = base();
-		const e = errors(wf({ ...stage, assess: { ...stage.assess!, max } }));
-		expect(e.some((i) => /assess\.max.*must be an integer >= 1/.test(i.message))).toBe(true);
+	it.each([0, -1, 1.5])("rejects loop.max: %s (must be an integer >= 1)", (max) => {
+		const e = errors(wf(base({ loop: rawAssessLoop({ max }) })));
+		expect(e.some((i) => /loop\.max.*must be an integer >= 1/.test(i.message))).toBe(true);
 	});
 
-	it("accepts assess.max: 1 and an omitted max", () => {
-		const stage = base();
-		expect(errors(wf({ ...stage, assess: { ...stage.assess!, max: 1 } }))).toEqual([]);
-		expect(errors(wf(stage))).toEqual([]);
+	it("accepts loop.max: 1 and an omitted max", () => {
+		const withMax = base({
+			loop: assess({ judge: skillJudge(), done: () => true, feedForward: () => "x", max: 1 }),
+		});
+		expect(errors(wf(withMax))).toEqual([]);
+		expect(errors(wf(base()))).toEqual([]);
 	});
 });
 
@@ -839,22 +836,17 @@ describe("validateWorkflow — prompt invariants", () => {
 		expect(e.some((i) => /a prompt stage cannot also set `skill`/.test(i.message))).toBe(true);
 	});
 
-	it("rejects prompt + fanout", () => {
-		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", fanout: () => [] }));
-		expect(e.some((i) => /prompt and fanout are mutually exclusive/.test(i.message))).toBe(true);
-	});
-
-	it("rejects prompt + iterate", () => {
+	it("rejects prompt + loop", () => {
 		const e = errors(
 			wf({
 				kind: "produces",
 				sessionPolicy: "fresh",
 				prompt: "x",
 				outcome: { name: "p", collector: noopCollector },
-				iterate: () => null,
+				loop: iterate({ next: () => null }),
 			}),
 		);
-		expect(e.some((i) => /prompt and iterate are mutually exclusive/.test(i.message))).toBe(true);
+		expect(e.some((i) => /prompt and loop are mutually exclusive/.test(i.message))).toBe(true);
 	});
 
 	it("rejects prompt + reads", () => {
@@ -1060,34 +1052,38 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 });
 
 describe("checkFanoutSource (control-flow source lint)", () => {
-	const fanoutMsgs = (w: Workflow) => warnings(w).filter((i) => /(fans out|iterates) over/.test(i.message));
+	const loopMsgs = (w: Workflow) =>
+		warnings(w).filter((i) => /(fans out over|iterates over|assesses over)/.test(i.message));
 
-	it("warns when a fanout spec's source is not published by any produces stage", () => {
+	it("warns when a fanout loop's source is not published by any produces stage", () => {
 		const w: Workflow = {
 			name: "t",
 			start: "start",
 			stages: {
 				start: produces(),
-				impl: acts({ fanout: fanoutOver({ source: "plans", run: () => [] }) }),
+				impl: acts({ loop: fanout({ source: "plans", units: () => [] }) }),
 			},
 			edges: { start: "impl", impl: "stop" },
 		};
-		const msgs = fanoutMsgs(w);
+		const msgs = loopMsgs(w);
 		expect(msgs).toHaveLength(1);
 		expect(msgs[0]?.message).toContain('fans out over source "plans"');
 	});
 
-	it("warns when an iterate spec's source is unpublished (the no-`reads` case)", () => {
+	it("warns when an iterate loop's source is unpublished (the no-`reads` case)", () => {
 		const w: Workflow = {
 			name: "t",
 			start: "start",
 			stages: {
 				start: produces(),
-				bp: produces({ iterate: iterateOver({ source: "architecture-reviews", run: () => null }) }),
+				bp: produces({
+					outcome: { name: "bp", collector: noopCollector },
+					loop: iterate({ source: "architecture-reviews", next: () => null }),
+				}),
 			},
 			edges: { start: "bp", bp: "stop" },
 		};
-		expect(fanoutMsgs(w).some((i) => /iterates over source "architecture-reviews"/.test(i.message))).toBe(true);
+		expect(loopMsgs(w).some((i) => /iterates over source "architecture-reviews"/.test(i.message))).toBe(true);
 	});
 
 	it("is silent when the source IS published", () => {
@@ -1096,11 +1092,11 @@ describe("checkFanoutSource (control-flow source lint)", () => {
 			start: "plans",
 			stages: {
 				plans: produces(), // publishes channel "plans" (outcome.name ?? record-key)
-				impl: acts({ fanout: fanoutOver({ source: "plans", run: () => [] }) }),
+				impl: acts({ loop: fanout({ source: "plans", units: () => [] }) }),
 			},
 			edges: { plans: "impl", impl: "stop" },
 		};
-		expect(fanoutMsgs(w)).toEqual([]);
+		expect(loopMsgs(w)).toEqual([]);
 	});
 
 	it("defers to checkReadsReferences when the source is in the stage's reads (no double-report)", () => {
@@ -1109,25 +1105,25 @@ describe("checkFanoutSource (control-flow source lint)", () => {
 			start: "start",
 			stages: {
 				start: produces(),
-				impl: acts({ fanout: fanoutOver({ source: "plans", run: () => [] }), reads: ["plans"] }),
+				impl: acts({ loop: fanout({ source: "plans", units: () => [] }), reads: ["plans"] }),
 			},
 			edges: { start: "impl", impl: "stop" },
 		};
 		// reads owns "plans" (errors); checkFanoutSource stays quiet
-		expect(fanoutMsgs(w)).toEqual([]);
+		expect(loopMsgs(w)).toEqual([]);
 		expect(errors(w).some((i) => /reads "plans"/.test(i.message))).toBe(true);
 	});
 
-	it("is silent for a raw fanout with no spec (opaque → degrade)", () => {
+	it("is silent for a loop with no source (degrade)", () => {
 		const w: Workflow = {
 			name: "t",
 			start: "start",
 			stages: {
 				start: produces(),
-				impl: acts({ fanout: () => [] }),
+				impl: acts({ loop: fanout({ units: () => [] }) }),
 			},
 			edges: { start: "impl", impl: "stop" },
 		};
-		expect(fanoutMsgs(w)).toEqual([]);
+		expect(loopMsgs(w)).toEqual([]);
 	});
 });

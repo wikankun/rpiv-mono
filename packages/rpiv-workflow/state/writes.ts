@@ -12,7 +12,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { runsDir, stateFilePath } from "./paths.js";
-import type { RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js";
+import type { LoopCapRow, RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
  * Shared append primitive: ensure the runs directory exists, then
@@ -54,5 +54,14 @@ export function appendStage(cwd: string, runId: string, stage: WorkflowStage): b
  * for transient disk weather without preserving any invariant.
  */
 export function appendRoutingDecision(cwd: string, runId: string, row: RoutingDecision): boolean {
+	return tryAppendJsonl(cwd, runId, row);
+}
+
+/**
+ * Append a loop-cap telemetry row (an `onCap: "advance"` trip). Telemetry,
+ * not a reconstruction input — a dropped write degrades the trail but never
+ * gates the chain (the live soft-stop toast is the user-facing signal).
+ */
+export function appendLoopCap(cwd: string, runId: string, row: LoopCapRow): boolean {
 	return tryAppendJsonl(cwd, runId, row);
 }

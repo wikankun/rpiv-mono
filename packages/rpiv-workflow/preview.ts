@@ -5,8 +5,7 @@
  * string that `command.ts` hands straight to `ctx.ui.notify(..., "info")`.
  */
 
-import type { AssessConfig, StageDef, Workflow } from "./api.js";
-import { DEFAULT_ASSESS_ROUNDS } from "./assess.js";
+import type { LoopDef, StageDef, Workflow } from "./api.js";
 import { type ConfigLayer, renderConfigLayer } from "./layers.js";
 import type { LoadedWorkflows } from "./load/index.js";
 import { CMD_USAGE_LIST, CMD_USAGE_PREVIEW, CMD_USAGE_RUN } from "./messages.js";
@@ -112,7 +111,7 @@ function formatStageRow(idx: number, stageName: string, stage: StageDef, workflo
 	const decorations = [stage.kind.padEnd(13), stage.sessionPolicy, outcomeTag(stage)];
 	if (stage.inputSchema) decorations.push("in-schema");
 	if (stage.outputSchema) decorations.push("out-schema");
-	if (stage.assess) decorations.push(assessTag(stage.assess));
+	if (stage.loop) decorations.push(loopTag(stage.loop));
 
 	const displayName = stage.skill && stage.skill !== stageName ? `${stageName} (skill: ${stage.skill})` : stageName;
 	const arrow = formatEdge(workflow, stageName);
@@ -142,14 +141,18 @@ function outcomeTag(stage: StageDef): string {
 }
 
 /**
- * Decoration for an `assess` (model-judged "until-done") stage, surfacing the
- * otherwise-invisible judge: `assess(judge: skill:<name>)` for a skill judge,
- * `assess(judge: prompt)` for an inline-prompt judge. The trailing `·max=N`
- * shows the round cap (default 8) so a reader knows the loop's soft-stop bound.
+ * Decoration for a loop stage. Assess keeps its exact pre-redesign strings
+ * (`assess(judge: skill:<name>)·max=N`, `assess(judge: prompt)·max=N` — the
+ * constructor always sets `max`, defaulting to 8). Fanout/iterate gain tags
+ * for the first time: `fanout·max=32`, `iterate·max=32`, or the bare kind
+ * when no cap is declared (the run-wide maxIterations still backstops).
  */
-function assessTag(assess: AssessConfig): string {
-	const judge = assess.judge.skill ? `skill:${assess.judge.skill}` : "prompt";
-	return `assess(judge: ${judge})·max=${assess.max ?? DEFAULT_ASSESS_ROUNDS}`;
+function loopTag(loop: LoopDef): string {
+	if (loop.kind === "assess") {
+		const judge = loop.judge.skill ? `skill:${loop.judge.skill}` : "prompt";
+		return `assess(judge: ${judge})·max=${loop.max}`;
+	}
+	return loop.max !== undefined ? `${loop.kind}·max=${loop.max}` : loop.kind;
 }
 
 /** Render the outgoing edge as a human-readable trailer (string or predicate target set). */

@@ -414,7 +414,7 @@ const result = await runWorkflow(ctx, {
 
 Every callback receives a `LifecycleContext` with `runId`, `workflow`, `totalStages`, the `trigger` metadata, and a `Readonly<RunState>` snapshot. Events fire AFTER their JSONL row lands on disk, so a listener that calls `readLastStage(cwd, ctx.runId)` is guaranteed to see the just-recorded row. Callbacks may be async — the runner awaits them before advancing, giving back-pressure for free. Throws are caught + surfaced through `ctx.ui.notify(..., "warning")`; they never halt the run.
 
-Available callbacks: `onWorkflowStart`, `onStageStart`, `onStageEnd`, `onStageRetry`, `onStageError`, `onRoute`, `onFanoutStart`, `onFanoutUnitStart`, `onFanoutUnitEnd`, `onWorkflowEnd`. See the `LifecycleListeners` JSDoc for the per-event payload.
+Available callbacks: `onWorkflowStart`, `onStageStart`, `onStageEnd`, `onStageRetry`, `onStageError`, `onRoute`, `onLoopStart`, `onUnitStart`, `onUnitEnd`, `onLoopCap`, `onWorkflowEnd`. See the `LifecycleListeners` JSDoc for the per-event payload.
 
 ### Trigger
 

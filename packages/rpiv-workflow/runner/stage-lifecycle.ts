@@ -10,20 +10,18 @@
  */
 
 import type { PromptFn, StageDef } from "../api.js";
-import { runAssess } from "../assess.js";
 import { auditCtxFor, notifyPartialArtifacts, recordTerminalFailure, runIdentityOf } from "../audit.js";
-import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
 import { currentPrimaryArtifact, resolveSkill } from "../internal-utils.js";
-import { runIterate } from "../iterate.js";
+import type { Judge } from "../judge.js";
 import { skillStageRef } from "../lifecycle.js";
+import { freshCursor, type LoopDeps, runLoop } from "../loop.js";
 import {
-	ERR_ITERATIONS_EXHAUSTED,
+	ERR_LOOP_CAP_HALT,
 	ERR_MISSING_ARTIFACT,
 	ERR_MISSING_NAMED_READ,
 	ERR_SKILL_NOT_REGISTERED,
-	MSG_ASSESS_SOFTSTOP,
-	MSG_ITERATIONS_EXHAUSTED,
+	MSG_LOOP_CAP_HALT,
 	MSG_MISSING_ARTIFACT,
 	MSG_MISSING_NAMED_READ,
 	MSG_SKILL_NOT_REGISTERED,
@@ -31,7 +29,7 @@ import {
 	STATUS_KEY,
 	STATUS_STAGE,
 } from "../messages.js";
-import { runFanoutSession, runStageSession } from "../sessions/index.js";
+import { runStageSession } from "../sessions/index.js";
 import { readBranch } from "../transcript.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
@@ -126,7 +124,7 @@ async function resolvePrompt(prompt: string | PromptFn, run: RunContext): Promis
  *      `ensureUpstreamArtifact` preflight guarantees the slot is set; the
  *      `!` is safe.
  */
-function inputForStage(stage: ResolvedStage, run: RunContext): string {
+export function inputForStage(stage: ResolvedStage, run: RunContext): string {
 	const isStart = stage.name === run.workflow.start;
 	if (isStart) return run.state.originalInput;
 	if (stage.def.inheritsArtifacts === false) return run.state.originalInput;
@@ -143,7 +141,7 @@ function inputForStage(stage: ResolvedStage, run: RunContext): string {
  *
  * Pre-condition: every name resolves (enforced by `ensureNamedReads`).
  */
-function formatNamedInputs(names: ReadonlyArray<string>, run: RunContext): string {
+export function formatNamedInputs(names: ReadonlyArray<string>, run: RunContext): string {
 	const parts: string[] = [];
 	for (const name of names) {
 		const latest = run.state.named[name]?.at(-1);
@@ -158,18 +156,12 @@ function formatNamedInputs(names: ReadonlyArray<string>, run: RunContext): strin
 /**
  * Slot ordering (load-bearing):
  *
- *   1. tryFanout                 — shortcut: the stage's FanoutFn returned
- *                                  units, runner ran them; subsequent
- *                                  slots skipped for this stage.
- *   1b. tryIterate              — shortcut: the stage's IterateFn pulls units
- *                                  sequentially (each a produces pass);
- *                                  subsequent slots skipped for this stage.
- *   1c. tryAssess               — shortcut: the stage's `assess` config runs
- *                                  producer→judge rounds (model-judged depth
- *                                  loop); bypasses PRE_PROMPT_CHECKS, so it
- *                                  runs `ensureUpstreamArtifact` +
- *                                  `ensureSkillRegistered` inline. Subsequent
- *                                  slots skipped for this stage.
+ *   1. tryLoop                   — shortcut: a `loop`-field stage expands into
+ *                                  one session per unit through the ONE driver
+ *                                  (loop.ts); subsequent slots skipped for this
+ *                                  stage. A push loop whose unit source returned
+ *                                  an empty list falls through to the
+ *                                  single-stage path (return false).
  *   2. PRE_PROMPT_CHECKS         — preflights that don't need prompt prep.
  *      a. ensureUpstreamArtifact — halt: missing inherited artifact.
  *      b. enforceSessionInvariants — invariant: authoring-time-knowable
@@ -193,9 +185,9 @@ export async function runStage(
 ): Promise<void> {
 	const stage = resolveStage(currentName, idx, run);
 
-	if (await tryFanout(curCtx, stage, idx, run)) return;
-	if (await tryIterate(curCtx, stage, idx, run)) return;
-	if (await tryAssess(curCtx, stage, idx, run)) return;
+	// Unit-loop driver: checked FIRST. A `loop`-field stage runs through the ONE
+	// driver (loop.ts) — one session per unit.
+	if (await tryLoop(curCtx, stage, idx, run)) return;
 
 	// Script stages (`stage.def.run` set) skip the entire skill pipeline —
 	// no `/skill:<name>` prompt to build, no skill-registry check, no
@@ -267,199 +259,137 @@ function resolveStage(currentName: string, idx: number, run: RunContext): Resolv
 }
 
 /**
- * A stage that opts into fanout via `StageDef.fanout` expands into one Pi
- * session per unit returned by the user's `FanoutFn`. The runner is
- * convention-agnostic: it never inspects the artifact, never counts
- * headings, never names a skill — every per-unit decision lives in the
- * FanoutFn. Returns true iff fanout fired (i.e. at least one unit was
- * returned) — caller then returns without running the single-stage path.
- */
-async function tryFanout(
-	curCtx: WorkflowHostContext,
-	stage: ResolvedStage,
-	idx: number,
-	run: RunContext,
-): Promise<boolean> {
-	if (!stage.def.fanout) return false;
-	const primary = currentPrimaryArtifact(run.state);
-	const units = await stage.def.fanout({
-		cwd: run.cwd,
-		artifact: primary,
-		state: run.state,
-	});
-	if (units.length === 0) return false;
-	// Fire both onStageStart (the parent fanout stage IS starting) and
-	// onFanoutStart so listeners receive a coherent stream: every stage gets
-	// onStageStart, fanout stages additionally get onFanoutStart with the
-	// unit list.
-	const ref = skillStageRef(stage.name, stage.stageNumber, stage.skill);
-	await run.lifecycle.fire(curCtx, "onStageStart", ref, lifecycleCtxFor(run));
-	await run.lifecycle.fire(curCtx, "onFanoutStart", ref, units, lifecycleCtxFor(run));
-	await runFanout(curCtx, idx, stage.name, stage.skill, 1, units, run, {
-		runFanoutSession,
-		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
-	});
-	return true;
-}
-
-/**
- * A stage that opts into iteration via `StageDef.iterate` expands into one Pi
- * session per unit pulled from the user's `IterateFn` — the sequential,
- * accumulating dual of fanout. Unlike fanout, each unit runs the stage's
- * `outcome` collector (it reuses `runStageSession`), so units accumulate into
- * `state.named[outcome.name]` and roll the primary artifact forward. Returns
- * true iff this is an iterate stage (always — even a zero-unit no-op handles
- * its own chain advance inside `runIterate`), so the caller returns without
- * running the single-stage path.
+ * A stage with `def.loop` expands into one session per unit through the ONE
+ * driver. Returns true iff the loop fired; a push loop whose unit source
+ * returned an empty list falls through to the single-stage path (return
+ * false) — that path runs its own preflights, so e.g. a missing named read
+ * still halts with the targeted message (today's consumer contract).
  *
- * `onStageStart` fires here, ONCE, matching the "stage expands to N units"
- * mental model; `onStageEnd` fires per unit via `recordStageSuccess`. The
- * stage-entry primary is frozen and threaded as `entryArtifact` so the
- * generator keeps seeing its true source even as the rolling primary advances.
+ * Preflights run UNIFORMLY here (the old shortcuts bypassed them: a ≥1-unit
+ * fanout ran none; iterate ran none; assess re-ran two inline):
+ *   - continue guard (one rule — runtime mirror of load validation);
+ *   - ensureNamedReads + ensureSkillRegistered for ALL loops (every loop's
+ *     units dispatch `/skill:<skill>`, and generators read declared channels);
+ *   - ensureUpstreamArtifact for ASSESS ONLY — the round-0 producer arg is
+ *     the one loop input that consumes the rolling primary (fanout/iterate
+ *     unit prompts are author-built; an entry-point loop with no primary is
+ *     legal for them, as today);
+ *   - judge-skill registry check for any loop carrying a `.skill` judge.
+ *
+ * Capture semantics (pinned): `entryArtifact`, `entryArgs`, and `entryPair`
+ * are frozen HERE, before unit 1; per-unit snapshots are captured by the
+ * driver immediately before each unit's session.
  */
-async function tryIterate(
+async function tryLoop(
 	curCtx: WorkflowHostContext,
 	stage: ResolvedStage,
 	idx: number,
 	run: RunContext,
 ): Promise<boolean> {
-	if (!stage.def.iterate) return false;
-	// Runtime mirror of the load-time invariant — defense-in-depth for embedders
-	// that bypass validateWorkflow. iterate dispatches via runStageSession, which
-	// honors sessionPolicy; a "continue" policy would replay the prior unit's
-	// branch into the next unit's session, so reject before any dispatch. (This
-	// lives here, not in enforceSessionInvariants, because the iterate shortcut
-	// returns before PRE_PROMPT_CHECKS run.)
+	const loop = stage.def.loop;
+	if (!loop) return false;
+
 	if (stage.def.sessionPolicy === "continue") {
 		const reason =
-			`runStage: stage "${stage.name}" cannot combine iterate with sessionPolicy "continue" — ` +
+			`runStage: stage "${stage.name}" cannot combine loop with sessionPolicy "continue" — ` +
 			"each unit requires an isolated session";
 		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
 	}
-	const entryArtifact = currentPrimaryArtifact(run.state); // frozen for the whole loop
-	await run.lifecycle.fire(
-		curCtx,
-		"onStageStart",
-		skillStageRef(stage.name, stage.stageNumber, stage.skill),
-		lifecycleCtxFor(run),
-	);
-	await runIterate(curCtx, idx, stage.name, stage.skill, stage.def, entryArtifact, [], run, {
-		runStageSession,
-		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
-		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
-		haltIterations,
-	});
-	return true;
-}
 
-/**
- * A stage that opts into the model-judged loop via `StageDef.assess` runs
- * producer→judge rounds — the third loop primitive alongside fanout (breadth)
- * and iterate (TS-judged depth). Returns true iff this is an assess stage
- * (always — even a soft-stop at the cap handles its own chain advance inside
- * `runAssess`), so the caller returns without running the single-stage path.
- *
- * `assess` returns before `PRE_PROMPT_CHECKS` run (like `tryIterate` / the
- * script branch), so the two preflights it depends on run inline here:
- *   - the continue-policy guard (each round needs an isolated session);
- *   - `ensureUpstreamArtifact` (the round-0 `inputForStage` projection relies
- *     on the preflight-backed `!`);
- *   - `ensureSkillRegistered` for the PRODUCER skill, plus a parallel inline
- *     check for the JUDGE skill (`ensureSkillRegistered` only inspects
- *     `stage.skill`; the judge skill lives at `assess.judge.skill`). Prompt
- *     judges have no skill to verify. Both checks fail-soft when
- *     `registeredSkills` is undefined (hostless embedder).
- *
- * `onStageStart` fires here, ONCE, matching the "stage expands to N rounds"
- * mental model; `onStageEnd` fires per sub-step via `recordStageSuccess`. The
- * stage-entry primary is frozen and threaded as `entryArtifact` so a dynamic
- * `judge.prompt` keeps seeing its true source even as the rolling primary
- * advances per producer round.
- */
-async function tryAssess(
-	curCtx: WorkflowHostContext,
-	stage: ResolvedStage,
-	idx: number,
-	run: RunContext,
-): Promise<boolean> {
-	if (!stage.def.assess) return false;
-	// Runtime mirror of the load-time invariant — defense-in-depth for embedders
-	// that bypass validateWorkflow. Each round dispatches a fresh producer + judge
-	// session; a "continue" policy would replay the prior sub-step's branch.
-	if (stage.def.sessionPolicy === "continue") {
-		const reason =
-			`runStage: stage "${stage.name}" cannot combine assess with sessionPolicy "continue" — ` +
-			"each round requires an isolated session";
-		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
+	// Push loops compute units FIRST (a throw — incl. a consumer haltPreflight —
+	// propagates with its own attribution; empty ⇒ single-stage fall-through).
+	let units: readonly import("../api.js").Unit[] | undefined;
+	if (loop.kind === "fanout") {
+		units = await loop.units({ cwd: run.cwd, artifact: currentPrimaryArtifact(run.state), state: run.state });
+		if (units.length === 0) return false;
 	}
-	// PRE_PROMPT_CHECKS are skipped on the assess shortcut; run the two it needs
-	// inline. `ensureUpstreamArtifact` guarantees the round-0 primary-handle
-	// projection's `!` is safe; `ensureSkillRegistered` covers the producer skill.
-	ensureUpstreamArtifact(stage, run);
+
+	ensureNamedReads(stage, run);
 	ensureSkillRegistered(stage, run);
-	// `ensureSkillRegistered` only checks `stage.skill` (the producer). A skill
-	// judge dispatches `/skill:<judge.skill>`, so verify it the same way — but
-	// only when the host supplied a registry (fail-soft for hostless embedders,
-	// mirroring `ensureSkillRegistered`). Prompt judges dispatch raw text — skip.
-	const judge = stage.def.assess.judge;
-	if (judge.skill !== undefined && run.registeredSkills !== undefined && !run.registeredSkills.has(judge.skill)) {
-		throw new StagePreflightError(
-			"halt",
-			judge.skill,
-			MSG_SKILL_NOT_REGISTERED(judge.skill),
-			ERR_SKILL_NOT_REGISTERED(judge.skill, stage.stageNumber),
-			true,
-		);
+	if (loop.kind === "assess") {
+		ensureUpstreamArtifact(stage, run);
+		ensureJudgeSkillRegistered(loop.judge, stage, run);
 	}
 
-	// Round-0 producer arg, computed ONCE (module-local projection). Frozen entry
-	// primary threaded so a dynamic judge.prompt can re-embed the true source.
-	const entryArgs = inputForStage(stage, run);
+	const entryArgs = loop.kind === "assess" ? inputForStage(stage, run) : "";
 	const entryArtifact = currentPrimaryArtifact(run.state);
+	const entryPair = { output: run.state.output, primaryArtifact: run.state.primaryArtifact };
+
+	const ref = skillStageRef(stage.name, stage.stageNumber, stage.skill);
+	await run.lifecycle.fire(curCtx, "onStageStart", ref, lifecycleCtxFor(run));
 	await run.lifecycle.fire(
 		curCtx,
-		"onStageStart",
-		skillStageRef(stage.name, stage.stageNumber, stage.skill),
+		"onLoopStart",
+		ref,
+		{ kind: loop.kind, ...(units ? { units } : {}) },
 		lifecycleCtxFor(run),
 	);
-	await runAssess(curCtx, idx, stage.name, stage.skill, stage.def, entryArtifact, entryArgs, 0, undefined, run, {
-		runStageSession,
-		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
-		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
-		softStopAssess,
-	});
+
+	await runLoop(
+		curCtx,
+		{
+			stageIdx: idx,
+			name: stage.name,
+			skill: stage.skill,
+			def: stage.def,
+			loop,
+			entryArtifact,
+			entryArgs,
+			entryPair,
+			units,
+		},
+		freshCursor(),
+		run,
+		buildLoopDeps(),
+	);
 	return true;
 }
 
 /**
- * Emit the soft-stop warning when an assess stage hits its round cap without a
- * `done` verdict. Unlike `haltIterations` (terminal failure), this is a warning
- * only — `runAssess` advances the chain right after, keeping the last producer
- * output as the stage result (the locked design decision).
- *
- * Exported so the resume dispatch arm (`selectResumeEntry`) can build the same
- * `AssessDeps` the forward path injects — mirrors `haltIterations` for iterate.
+ * Registry preflight for a Judge carrying `.skill` — `ensureSkillRegistered`
+ * only inspects `stage.skill`. Fail-soft when `registeredSkills` is undefined
+ * (hostless embedder). Generalized: any future Judge site (verify, panel)
+ * calls the same helper.
  */
-export function softStopAssess(curCtx: WorkflowHostContext, skill: string, max: number): void {
-	curCtx.ui.notify(MSG_ASSESS_SOFTSTOP(skill, max), "warning");
+export function ensureJudgeSkillRegistered(judge: Judge, stage: ResolvedStage, run: RunContext): void {
+	if (judge.skill === undefined || run.registeredSkills === undefined) return;
+	if (run.registeredSkills.has(judge.skill)) return;
+	throw new StagePreflightError(
+		"halt",
+		judge.skill,
+		MSG_SKILL_NOT_REGISTERED(judge.skill),
+		ERR_SKILL_NOT_REGISTERED(judge.skill, stage.stageNumber),
+		true,
+	);
 }
 
 /**
- * Record the terminal failure when an iterate stage's generator blows past the
- * run-wide `maxIterations` cap. Mirrors `checkBackwardJumpGuard`'s terminal
- * path (chain-advance.ts): attribution targets the iterate node's real name.
+ * THE loop deps bundle — built identically by the live path and resume
+ * (`selectResumeEntry`), so the two can't drift (the old per-primitive
+ * bundles were rebuilt by hand in both places).
  */
-export async function haltIterations(
+export function buildLoopDeps(): LoopDeps {
+	return {
+		runStageSession,
+		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
+		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
+		haltLoop,
+	};
+}
+
+/** Terminal failure when a loop's `onCap: "halt"` trips (generalizes haltIterations). */
+export async function haltLoop(
 	curCtx: WorkflowHostContext,
 	run: RunContext,
 	stageName: string,
 	count: number,
+	cap: number,
 ): Promise<void> {
 	await recordTerminalFailure(curCtx, auditCtxFor(run, stageName, stageName), {
 		status: "failed",
-		notifyMsg: MSG_ITERATIONS_EXHAUSTED(count, run.maxIterations),
+		notifyMsg: MSG_LOOP_CAP_HALT(count, cap),
 		notifyLevel: "error",
-		errMsg: ERR_ITERATIONS_EXHAUSTED(count, run.maxIterations),
+		errMsg: ERR_LOOP_CAP_HALT(count, cap),
 	});
 }
 
@@ -554,12 +484,6 @@ function ensureNamedReads(stage: ResolvedStage, run: RunContext): void {
 }
 
 function enforceSessionInvariants(stage: ResolvedStage, run: RunContext): void {
-	if (stage.def.fanout && stage.def.sessionPolicy === "continue") {
-		const reason =
-			`runStage: stage "${stage.name}" cannot combine fanout with sessionPolicy "continue" — ` +
-			"fanout requires per-unit session isolation";
-		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
-	}
 	if (stage.def.sessionPolicy === "continue" && !run.continueHost) {
 		const reason = `runStage: stage "${stage.name}" uses sessionPolicy "continue" but no workflow host was provided to runWorkflow`;
 		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);

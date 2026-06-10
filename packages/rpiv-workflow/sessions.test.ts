@@ -1,11 +1,10 @@
 /**
- * Tests for sessions.ts — the per-stage / per-phase session orchestrator.
+ * Tests for sessions.ts — the per-stage session orchestrator.
  *
- * Drives the two public entries (`runStageSession`, `runFanoutSession`) against
- * synthetic StageSession / FanoutSession objects so internals (retryUntilValid,
- * runOutcome, readSessionOutcome, spawnSession, recordStageSuccess, halt
- * helpers) are exercised at a finer grain than runner.test.ts can reach via
- * runWorkflow.
+ * Drives the sole public entry (`runStageSession`) against synthetic
+ * StageSession objects so internals (retryUntilValid, runOutcome,
+ * readSessionOutcome, spawnSession, recordStageSuccess, halt helpers) are
+ * exercised at a finer grain than runner.test.ts can reach via runWorkflow.
  *
  * Wiring strategy: every test allocates a temp cwd (audit writes JSONL there)
  * and feeds runStageSession either a `createMockSessionChain` ctx (fresh path,
@@ -31,14 +30,15 @@ import {
 	MSG_STAGE_COMPLETE,
 	MSG_STAGE_FAILED,
 	MSG_STAGE_NO_RESPONSE,
+	MSG_UNIT_COMPLETE,
 	MSG_VALIDATION_EXHAUSTED,
 	MSG_VALIDATION_RETRY,
 } from "./messages.js";
-import type { CollectCtx, OutputSpec } from "./output.js";
-import { runFanoutSession, runStageSession } from "./sessions/index.js";
+import type { CollectCtx, Output, OutputSpec } from "./output.js";
+import { runStageSession } from "./sessions/index.js";
 import { DEFAULT_TRIGGER } from "./triggers.js";
 import { typeboxSchema } from "./typebox-adapter.js";
-import type { FanoutSession, RunState, StageSession, WorkflowHostContext } from "./types.js";
+import type { RunState, StageSession, WorkflowHostContext } from "./types.js";
 
 /** Default test wiring for SessionContext's lifecycle + runIdentity fields. */
 const testLifecycle = () => new LifecycleDispatcher(undefined);
@@ -1014,72 +1014,6 @@ describe("sessions — success persistence", () => {
 		expect(state.stagesCompleted).toBe(1);
 		expect(state.lastAllocatedStageNumber).toBe(1);
 	});
-
-	it("phase session: row label is `<skill> (phase N/total)`, never notifies completion", async () => {
-		const chain = createMockSessionChain({
-			cwd: tmpDir,
-			steps: [{ branch: [mockAssistantMessage("done")] }],
-		});
-		const state = freshRunState();
-		const onSuccess = vi.fn(async () => {});
-
-		const phase: FanoutSession = {
-			cwd: tmpDir,
-			runId: "run-test",
-			state,
-			prompt: "/skill:implement phase",
-			stageName: "implement",
-			skill: "implement",
-			lifecycle: testLifecycle(),
-			runIdentity: testRunIdentity(),
-			unitIndex: 2,
-			label: "phase 2/4",
-			stageIndex: 1,
-			onSuccess,
-		};
-
-		await runFanoutSession(chain.ctx as WorkflowHostContext, phase);
-
-		expect(onSuccess).toHaveBeenCalledTimes(1);
-		const rows = readStageRows(tmpDir);
-		expect(rows[0]?.stage).toBe("implement (phase 2/4)");
-		expect(rows[0]?.skill).toBe("implement");
-		// Phase rows MUST NOT notify — the parent stage owns the completion banner.
-		expect(chain.notifications.some((n) => /completed/.test(n.msg))).toBe(false);
-	});
-
-	it("phase session with empty branch → haltPhase records failed row, no onSuccess", async () => {
-		const chain = createMockSessionChain({
-			cwd: tmpDir,
-			steps: [{ branch: [] }],
-		});
-		const state = freshRunState();
-		const onSuccess = vi.fn(async () => {});
-
-		const phase: FanoutSession = {
-			cwd: tmpDir,
-			runId: "run-test",
-			state,
-			prompt: "/skill:implement phase",
-			stageName: "implement",
-			skill: "implement",
-			lifecycle: testLifecycle(),
-			runIdentity: testRunIdentity(),
-			unitIndex: 1,
-			label: "phase 1/2",
-			stageIndex: 0,
-			onSuccess,
-		};
-
-		await runFanoutSession(chain.ctx as WorkflowHostContext, phase);
-
-		expect(onSuccess).not.toHaveBeenCalled();
-		const rows = readStageRows(tmpDir);
-		// Phase halt writes a "failed" row via recordStopFailure → noResponse arm.
-		expect(rows[0]?.status).toBe("failed");
-		expect(rows[0]?.stage).toBe("implement (phase 1/2)");
-		expect(rows[0]?.skill).toBe("implement");
-	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1310,5 +1244,107 @@ describe("sessions — contract-sourced output validation", () => {
 
 		expect(onSuccess).toHaveBeenCalledTimes(1);
 		expect(state.stagesCompleted).toBe(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Loop-unit session coverage (Phase 3 — runStageSession with `unit` set)
+// ---------------------------------------------------------------------------
+
+describe("sessions — loop unit session", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-sessions-unit-"));
+	});
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("writes structured row fields, fires onUnitEnd (never onStageEnd), and toasts MSG_UNIT_COMPLETE", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onUnitEnd = vi.fn();
+		const onStageEnd = vi.fn();
+		const onSuccess = vi.fn<(ctx: WorkflowHostContext, output: Output) => Promise<void>>(async () => {});
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				// Pre-decorated display name; machine identity rides `unit`.
+				stageName: "implement (phase-2)",
+				skill: "implement",
+				lifecycle: new LifecycleDispatcher({ onUnitEnd, onStageEnd }),
+				stage: stage({ outputSchema: FOO_EQ_2_SCHEMA, outcome: scriptedOutcome([okPayload({ foo: 2 })]) }),
+				unit: { parent: "implement", role: "produce", index: 1, id: "phase-2", label: "phase 2/5" },
+				onSuccess,
+			}),
+		);
+
+		// onUnitEnd fires once with the PARENT-named ref; onStageEnd never fires for unit sessions.
+		expect(onUnitEnd).toHaveBeenCalledTimes(1);
+		expect(onStageEnd).not.toHaveBeenCalled();
+		const [ref, unitEvent, output] = onUnitEnd.mock.calls[0]!;
+		expect(ref.name).toBe("implement");
+		expect(unitEvent).toMatchObject({
+			role: "produce",
+			index: 1,
+			unitId: "phase-2",
+			label: "phase 2/5",
+			skill: "implement",
+		});
+		expect(output.artifacts).toBeDefined();
+
+		// Labeled per-unit toast, not the stage banner.
+		expect(chain.notifications.some((n) => n.msg === MSG_UNIT_COMPLETE("implement", "phase 2/5"))).toBe(true);
+		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_COMPLETE("implement"))).toBe(false);
+
+		// The success row carries the decorated display `stage` + all four structured identity fields.
+		const completed = readStageRows(tmpDir).find((r) => r.status === "completed")!;
+		expect(completed.stage).toBe("implement (phase-2)");
+		expect(completed.parent).toBe("implement");
+		expect(completed.role).toBe("produce");
+		expect(completed.unitId).toBe("phase-2");
+		expect(completed.unitIndex).toBe(1);
+
+		// onSuccess receives the full validated Output envelope, not just artifacts[0].
+		expect(onSuccess).toHaveBeenCalledTimes(1);
+		const successOutput = onSuccess.mock.calls[0]![1];
+		expect(successOutput.artifacts).toEqual((output as Output).artifacts);
+	});
+
+	it("single-stage session stays byte-identical: no structured fields, onStageEnd + MSG_STAGE_COMPLETE", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onUnitEnd = vi.fn();
+		const onStageEnd = vi.fn();
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				lifecycle: new LifecycleDispatcher({ onUnitEnd, onStageEnd }),
+				stage: stage({ outputSchema: FOO_EQ_2_SCHEMA, outcome: scriptedOutcome([okPayload({ foo: 2 })]) }),
+			}),
+		);
+
+		expect(onStageEnd).toHaveBeenCalledTimes(1);
+		expect(onUnitEnd).not.toHaveBeenCalled();
+		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_COMPLETE("test"))).toBe(true);
+
+		const completed = readStageRows(tmpDir).find((r) => r.status === "completed")!;
+		expect(completed).not.toHaveProperty("parent");
+		expect(completed).not.toHaveProperty("role");
+		expect(completed).not.toHaveProperty("unitId");
+		expect(completed).not.toHaveProperty("unitIndex");
 	});
 });

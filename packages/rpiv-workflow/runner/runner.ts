@@ -28,13 +28,10 @@
  */
 
 import type { Workflow } from "../api.js";
-import type { AssessDeps } from "../assess.js";
 import { auditCtxFor, notifyPartialArtifacts, nowIso, recordTerminalFailure } from "../audit.js";
-import type { FanoutDeps } from "../fanout.js";
 import { handleToString } from "../handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "../host.js";
 import { currentPrimaryArtifact } from "../internal-utils.js";
-import type { IterateDeps } from "../iterate.js";
 import { buildLifecycleContext, LifecycleDispatcher, type LifecycleListeners } from "../lifecycle.js";
 import {
 	ERR_RESUME_NO_ROWS,
@@ -48,31 +45,15 @@ import {
 	MSG_WORKFLOW_COMPLETE,
 	STATUS_KEY,
 } from "../messages.js";
-import { runFanoutSession, runStageSession } from "../sessions/index.js";
 import { getSkillContracts } from "../skill-contracts/index.js";
 import { type ClaimResult, claimName, generateRunId, writeHeader } from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
 import type { RunContext, RunState } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
-import {
-	assessStageNames,
-	fanoutStageNames,
-	iterateStageNames,
-	matchFanoutParent,
-	type ReconstructResult,
-	reconstructState,
-} from "./resume.js";
-import { resumeAssessStage } from "./resume-assess.js";
-import { resumeFanoutStage } from "./resume-fanout.js";
-import { resumeIterateStage } from "./resume-iterate.js";
-import {
-	captureStageSnapshot,
-	haltIterations,
-	runStage,
-	StagePreflightError,
-	softStopAssess,
-} from "./stage-lifecycle.js";
+import { type ReconstructResult, reconstructState } from "./resume.js";
+import { recordLoopDriftFailure, resumeLoopStage } from "./resume-loop.js";
+import { buildLoopDeps, runStage, StagePreflightError } from "./stage-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Policy constants
@@ -90,10 +71,12 @@ import {
 export const MAX_BACKWARD_JUMPS = 2;
 
 /**
- * Run-wide safety cap on `iterate`-stage units — the backstop for a generator
- * that never returns `null`. Mirrors rpiv-pi's `MAX_PHASES` (the convention
- * cap a fanout author would self-impose); 32 is comfortably above any
- * realistic per-stage unit count while still halting a runaway loop.
+ * Run-wide safety cap on loop units — the backstop for any loop kind whose
+ * source never terminates (a pull generator that never returns `null`, an
+ * assess `done` that never trips). Clamps the effective cap of every loop
+ * (`min(loop.max, run.maxIterations)`). Mirrors rpiv-pi's `MAX_PHASES` (the
+ * convention cap a fanout author would self-impose); 32 is comfortably above
+ * any realistic per-stage unit count while still halting a runaway loop.
  */
 export const MAX_ITERATIONS = 32;
 
@@ -314,7 +297,7 @@ export async function resumeWorkflow(
 	const { workflow, header } = options;
 	const cwd = ctx.cwd;
 
-	const recon = reconstructState(cwd, workflow, header);
+	const recon = await reconstructState(cwd, workflow, header);
 	if (!recon.ok) {
 		// Pure envelope — no self-notify, mirroring `runWorkflow`'s pre-flight
 		// rejections. A reconstruct refusal writes no JSONL, so the caller surfaces
@@ -334,7 +317,7 @@ export async function resumeWorkflow(
 		trigger: { kind: "command", name: "wf", meta: { resumedFrom: options.ref } },
 	});
 
-	return executeRun(ctx, run, selectResumeEntry(ctx, workflow, recon, run));
+	return executeRun(ctx, run, selectResumeEntry(ctx, recon, run));
 }
 
 // ---------------------------------------------------------------------------
@@ -414,79 +397,30 @@ function buildRunContext(
 }
 
 /**
- * Pick the chain re-entry thunk for a resumed run from its trail trailer:
- *   - decorated fanout-unit trailer → resume the fanout from the next unit
- *     (`resumeFanoutStage`);
- *   - decorated iterate-unit trailer → re-enter the pull loop at the next unit
- *     (`resumeIterateStage`) — catches BOTH a completed and a failed iterate-unit
- *     trailer, since a completed unit may still have remaining units to pull;
- *   - decorated assess-round trailer → re-enter the producer→judge loop at the
- *     pending sub-step (`resumeAssessStage`) — also catches BOTH completed (a
- *     producer awaiting its judge; a judge whose verdict drives advance-vs-continue)
- *     and failed trailers;
- *   - completed normal trailer → route onward (a finished run hits stop ⇒ no-op);
+ * Pick the chain re-entry thunk from the trail trailer. Dispatch keys on the
+ * STRUCTURED `parent` field — no string matching, no per-primitive arms:
+ *   - fold-detected drift → record the parent-attributed terminal failure
+ *     (zero dispatch; lifecycle bracketing identical to every other entry);
+ *   - trailing unit row → re-enter the loop with the fold's cursor;
+ *   - completed normal trailer → route onward (finished run hits stop ⇒ no-op);
  *   - failed/aborted trailer → re-run that stage.
- *
- * A decorated unit row has a `stage` key absent from `workflow.stages` matching a
- * fanout/iterate/assess parent — meaning the run died inside that stage. The
- * `workflow.stages[last.stage] === undefined` outer guard keeps normal trailers on
- * the binary arms; a normal trailer after a fully-completed fanout/iterate/assess
- * falls through to them.
  */
 function selectResumeEntry(
 	ctx: WorkflowHostContext,
-	workflow: Workflow,
 	recon: Extract<ReconstructResult, { ok: true }>,
 	run: RunContext,
 ): () => Promise<void> {
+	if (recon.drift) {
+		const { parent, errMsg } = recon.drift;
+		return () => recordLoopDriftFailure(ctx, run, parent, errMsg);
+	}
+
 	const last = recon.rows[recon.rows.length - 1]!;
 	const idx = last.stageNumber - 1; // status-line / routing index; JSONL number comes from the allocator
 
-	if (workflow.stages[last.stage] === undefined) {
-		const fanoutParent = matchFanoutParent(last.stage, fanoutStageNames(workflow));
-		if (fanoutParent) {
-			const fanoutDeps: FanoutDeps = {
-				runFanoutSession,
-				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
-			};
-			const completed = recon.fanoutProgress.get(fanoutParent) ?? [];
-			return () => resumeFanoutStage(ctx, fanoutParent, idx, completed, run, fanoutDeps);
-		}
-		const iterateParent = matchFanoutParent(last.stage, iterateStageNames(workflow));
-		if (iterateParent) {
-			const iterateDeps: IterateDeps = {
-				runStageSession,
-				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
-				captureSnapshot: (d, i, r) => captureStageSnapshot(d, i, r),
-				haltIterations,
-			};
-			const point = recon.iterateProgress.get(iterateParent) ?? { entryArtifact: undefined, accumulated: [] };
-			const pendingDecorated = last.status !== "completed" ? last.stage : undefined;
-			return () => resumeIterateStage(ctx, iterateParent, idx, point, pendingDecorated, run, iterateDeps);
-		}
-		const assessParent = matchFanoutParent(last.stage, assessStageNames(workflow));
-		if (assessParent) {
-			const assessDeps: AssessDeps = {
-				runStageSession,
-				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
-				captureSnapshot: (d, i, r) => captureStageSnapshot(d, i, r),
-				softStopAssess,
-			};
-			// Both completed and failed assess trailers route here (a completed producer
-			// awaits its judge; a completed judge drives advance-vs-continue). The guard
-			// only fires on a failed/aborted trailer, so `pendingDecorated` is failure-only.
-			const point = recon.assessProgress.get(assessParent) ?? {
-				entryArtifact: undefined,
-				round: 0,
-				lastProducerOutput: undefined,
-				lastVerdict: undefined,
-				phase: "produce" as const,
-			};
-			const pendingDecorated = last.status !== "completed" ? last.stage : undefined;
-			return () => resumeAssessStage(ctx, assessParent, idx, point, pendingDecorated, run, assessDeps);
-		}
+	if (last.parent !== undefined) {
+		return () => resumeLoopStage(ctx, recon.trailing!, idx, run, buildLoopDeps());
 	}
-
 	if (last.status === "completed") {
 		return () => advanceChain(ctx, last.stage, idx, run); // route onward; finished run ⇒ hits stop ⇒ no-op
 	}

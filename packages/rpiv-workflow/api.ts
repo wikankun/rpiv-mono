@@ -75,197 +75,158 @@ export type SessionPolicy = (typeof SESSION_POLICIES)[number];
 export const ON_INVALID_VALUES = ["retry", "halt"] as const;
 export type OnInvalid = (typeof ON_INVALID_VALUES)[number];
 
+// ===========================================================================
+// Loop vocabulary — the data shapes behind StageDef.loop
+// (constructors live in control-flow.ts: fanout() / iterate() / assess())
+// ===========================================================================
+
 /**
- * Opt-in fanout — a user-supplied function that decomposes a stage's work
- * into N units, one Pi session per unit. The runner owns iteration +
- * audit; the FanoutFn owns the convention (how units are detected, what
- * each session's prompt body says, how each is labelled).
- *
- * rpiv-workflow ships ZERO fanout conventions: no markdown regex, no
- * phase counter, no schema. A consumer wanting markdown-heading fanout
- * writes the ~10 lines themselves and reuses one constant across stages.
- *
- * Invariants enforced by the runner:
- * - Empty return ⇒ no fanout (fall through to the single-stage path).
- * - Throws ⇒ stage halts, attributed to this stage.
- * - `stage.sessionPolicy === "continue"` is incompatible with fanout
- *   (validated at load + at preflight).
- *
- * Cap policy: the runner does not bound `units.length`. Authors of bespoke
- * FanoutFns own their own safety bounds — same posture as
- * `maxBackwardJumps` (the only run-wide cap the runner enforces).
+ * One unit of loop work — the single unit type for all three loop kinds.
+ * `prompt` is the body sent to the skill; `label` is the human display tag
+ * woven into the status line, the per-unit toast, and the decorated row
+ * display; `id` is the stable audit identity written to the row's `unitId`
+ * field (falls back to `label`). Post-hoc tooling and the resume drift guard
+ * join on `id ?? label` — set `id` when `label` may be reworded.
  */
-export type FanoutFn = (ctx: FanoutContext) => readonly FanoutUnit[] | Promise<readonly FanoutUnit[]>;
-
-export interface FanoutContext {
-	cwd: string;
-	/**
-	 * Primary artifact inherited from the upstream stage (or undefined when
-	 * the fanout stage is the entry point). FanoutFns that need to read an
-	 * upstream artifact short-circuit to `[]` when undefined — the runner
-	 * treats that as "no fanout" and runs the single-stage path. The
-	 * handle's serialized form (path / URL / opaque id) is what most
-	 * FanoutFns weave into their per-unit prompt body.
-	 */
-	artifact: import("./handle.js").Artifact | undefined;
-	state: Readonly<RunState>;
-}
-
-export interface FanoutUnit {
-	/**
-	 * Body sent to the skill: the runner dispatches `/skill:<stage.skill>
-	 * <prompt>` once per unit. The unit owns artifact-path threading + any
-	 * per-unit cue — the runner adds nothing implicit.
-	 */
+export interface Unit {
 	prompt: string;
-	/**
-	 * Short label woven into the status line + JSONL audit row.
-	 * The audit `skill` field becomes `<stage.skill> (<id ?? label>)`;
-	 * the status line shows `rpiv: stage X/Y — <stage.skill> (<label>)`.
-	 * Keep it short and disambiguating (`"phase 2/5"`, `"task 3/8"`).
-	 */
 	label: string;
-	/**
-	 * Optional stable identifier used in the JSONL audit row in place of
-	 * `label`. Set this when `label` is a human-facing display string that
-	 * may be reworded — `id` keeps the audit projection stable across
-	 * label edits and matches the pattern post-hoc tooling joins on
-	 * (`"phase-2"`, `"task-3"`). Omit to fall back to `label`.
-	 */
 	id?: string;
 }
 
 /**
- * Opt-in iteration — the sequential, accumulating counterpart to `FanoutFn`.
- * Where `fanout` computes all units up front and runs them blind to one
- * another, `iterate` is invoked once per unit (pull model), each call
- * receiving the validated `Output`s of every prior unit in this stage. Return
- * the next unit, or `null`/`undefined` to terminate the stage.
- *
- * Each unit runs the stage's `outcome` collector like a one-shot `produces`
- * stage: it validates against `outputSchema`, appends its `Output` to
- * `state.named[outcome.name]`, and rolls the primary artifact forward.
- *
- * Invariants enforced by the runner:
- * - First call returns null  ⇒ stage completes as a zero-unit no-op (advances).
- * - Throws                   ⇒ stage halts, attributed to this stage.
- * - `accumulated.length` reaching the run-wide `maxIterations` cap ⇒ stage
- *   halts with a terminal failure (the backstop for a generator that never
- *   returns null).
- * - Requires `kind: "produces"` + an `outcome` with a `name`; incompatible
- *   with `sessionPolicy: "continue"` and with `fanout`/`run` (validated at
- *   load + at preflight).
+ * Push-model unit source: all units computed up front, each run blind to the
+ * others. Empty return ⇒ no loop (fall through to the single-stage path).
+ * Throws ⇒ stage halts, attributed to this stage (a thrown
+ * `StagePreflightError` keeps its own attribution — the `haltPreflight`
+ * consumer contract).
  */
-export type IterateFn = (ctx: IterateContext) => IterateUnit | null | Promise<IterateUnit | null>;
+export type FanoutFn = (ctx: FanoutContext) => readonly Unit[] | Promise<readonly Unit[]>;
+
+export interface FanoutContext {
+	cwd: string;
+	/** Primary artifact inherited from upstream (undefined when the loop stage is the entry point). */
+	artifact: import("./handle.js").Artifact | undefined;
+	state: Readonly<RunState>;
+}
+
+/**
+ * Pull-model unit source: invoked once per unit, each call receiving the
+ * validated `Output`s of every prior unit in this generation. Return the next
+ * unit, or `null`/`undefined` to terminate the loop.
+ *
+ * RESUME CONTRACT (all loop kinds): the unit source must be deterministic
+ * w.r.t. the fold-replayed `RunState` at the unit boundary + this
+ * generation's accumulated outputs. The resume fold re-calls it at every
+ * folded boundary and refuses on drift.
+ */
+export type IterateFn = (ctx: IterateContext) => Unit | null | Promise<Unit | null>;
 
 export interface IterateContext {
 	cwd: string;
-	/**
-	 * Stage-entry primary artifact, FROZEN across every unit. Does not roll
-	 * forward to the prior unit's output — use `accumulated` (or `state.named`)
-	 * for that. Undefined when the iterate stage is the entry point.
-	 *
-	 * On a corrective back-edge re-entry the rolling primary may be a
-	 * downstream doc; generators that must re-read their true source should
-	 * read it from `state.named` rather than relying on this slot.
-	 */
+	/** Stage-entry primary, FROZEN across every unit (never rolls forward). */
 	artifact: import("./handle.js").Artifact | undefined;
 	state: Readonly<RunState>;
-	/** Validated Outputs of this stage's already-completed units, in order. */
+	/** Validated Outputs of this generation's completed units, in order. */
 	accumulated: readonly import("./output.js").Output[];
 	/** 0-based index of the unit about to run (== accumulated.length). */
 	index: number;
 }
 
-/** Same shape as `FanoutUnit` (prompt + label + optional stable id). */
-export type IterateUnit = FanoutUnit;
-
-// ===========================================================================
-// Assess primitive — model-judged "until-done" depth loop
-// ===========================================================================
-
-/**
- * The separate model judge that decides a `assess` loop's termination. Unlike
- * `iterate` (whose predicate is synchronous in-process TS), the judge is a
- * dispatched session — a **skill** (`/skill:<judge.skill> <producerHandle>`,
- * the latest producer artifact auto-injected as the input handle) or a raw
- * **prompt** (the author embeds the handle/output themselves). Exactly one of
- * `skill` / `prompt` is the dispatch discriminator (validated at load).
- *
- * The judge runs as a `produces`-kind session so its verdict is *validated* by
- * `outcome` and published into its own dedicated `state.named[outcome.name]`
- * channel — distinct from the producer's outcome name. The synchronous
- * `done(verdict)` reads that model-made verdict.
- */
-export interface AssessJudge {
-	/** Present → `/skill:<skill>` dispatch (producer handle auto-injected). Absent → raw-prompt dispatch. */
-	skill?: string;
-	/**
-	 * Judge prompt. REQUIRED for a prompt judge (no skill) — the author embeds
-	 * the producer handle/output themselves, since a dispatched session delivers
-	 * only the prompt text. Optional for a skill judge (the producer handle is
-	 * folded into `/skill:<skill> <handle>` automatically).
-	 */
-	prompt?: string | ((ctx: AssessJudgeContext) => string | Promise<string>);
-	/**
-	 * REQUIRED — validates the verdict and names its dedicated `state.named`
-	 * channel (its `.name` must differ from the producer outcome's).
-	 *
-	 * ≥1-ARTIFACT CONSTRAINT: the collector MUST materialize at least one
-	 * artifact (e.g. a JSON verdict file whose parser yields `{ done, feedback }`).
-	 * A judge session whose collector returns zero artifacts is a **fatal halt**
-	 * via `enforceCompletionContract` — no retry, no soft-stop. A judge that
-	 * replies "not done" inline without writing anything kills the run.
-	 */
-	outcome: OutputSpec;
-	/** Sync TS reading the model-made verdict. `true` → loop stops, producer output is the stage result. */
-	done: (verdict: Output) => boolean;
-}
-
-/** Context handed to a dynamic `AssessJudge.prompt`. */
-export interface AssessJudgeContext {
-	cwd: string;
-	/** Latest producer output (also the session's input handle). */
-	output: Output;
-	/** Frozen original ask, referenceable; the author embeds it if wanted. */
-	entryArtifact: import("./handle.js").Artifact | undefined;
-	state: Readonly<RunState>;
-	/** 0-based round index. */
-	round: number;
-}
-
-/**
- * Opt-in model-judged depth loop — the third loop primitive alongside `fanout`
- * (breadth) and `iterate` (TS-judged depth). Each round runs a **producer**
- * session (this stage's skill/outcome) then a **judge** session
- * (`AssessJudge`). On `done`, the producer output is the stage result;
- * otherwise the verdict's feedback is fed forward into the next producer round
- * via `feedForward`.
- *
- * Mutually exclusive with `fanout`/`iterate`/`run`/`prompt`/`reads`. Requires
- * `kind: "produces"` and `sessionPolicy` other than `"continue"`. The `max`
- * cap **soft-stops** (warn + advance with the last producer output — no
- * terminal failure). (validated at load + at preflight.)
- */
-export interface AssessConfig {
-	judge: AssessJudge;
-	/** Builds the next producer prompt arg from the just-judged round's output + verdict. */
-	feedForward: (ctx: AssessFeedContext) => string;
-	/** Default 8, clamped by `run.maxIterations`. */
-	max?: number;
-}
-
-/** Context handed to `AssessConfig.feedForward`. */
-export interface AssessFeedContext {
+/** Context handed to `AssessLoop.feedForward`. */
+export interface FeedForwardContext {
 	cwd: string;
 	/** Producer output just judged. */
-	output: Output;
+	output: import("./output.js").Output;
 	/** Judge verdict (incl. feedback). */
-	verdict: Output;
+	verdict: import("./output.js").Output;
 	/** 0-based round index of the round just judged. */
 	round: number;
 	state: Readonly<RunState>;
 }
+
+/**
+ * Role a unit row/event carries. Every main-work unit — fanout unit, iterate
+ * unit, assess producer — is `"produce"`; judge sub-steps are `"judge"`. A
+ * future `verify` hook extends the union. The `result: "last"` projection and
+ * the resume fold's apply rule key on this.
+ */
+export type UnitRole = "produce" | "judge";
+
+/**
+ * What happens when a loop hits its effective cap (`min(max, run.maxIterations)`):
+ * `"halt"` — terminal failure (mirrors the backward-jump guard);
+ * `"advance"` — soft-stop: warn, land a `{type:"loop-cap"}` telemetry row,
+ * fire `onLoopCap`, keep the projected result, advance downstream.
+ */
+export type CapPolicy = "halt" | "advance";
+
+/**
+ * What the loop leaves in `{state.output, state.primaryArtifact}` — the PAIR
+ * is governed as one (routing + downstream prompts read both):
+ * `"entry"` — restore the pair captured at loop entry (fanout default;
+ *             reproduces routing-sees-upstream);
+ * `"last"`  — the last completed `role: "produce"` unit's pair (iterate /
+ *             assess default; zero produce units degrades to entry).
+ * Applied at ONE point — loop advance — by the live driver and the resume
+ * fold's generation close identically. Mid-loop transient rolls are accepted.
+ */
+export type ResultProjection = "entry" | "last";
+
+/**
+ * How a stage's work is split into units, AS DATA (moved from control-flow.ts;
+ * shape unchanged). The framework never interprets `by`/`pattern` — they're
+ * introspection hints for agents and the `checkFanoutSource` lint.
+ */
+export interface UnitSelector {
+	by: string;
+	pattern?: string;
+	meta?: Record<string, unknown>;
+}
+
+/** Introspectable data common to all three loop kinds. */
+interface LoopCommon {
+	/** The named channel the units are split FROM (a `consumes` signal). */
+	source?: string;
+	/** How units are detected (opaque convention). */
+	unit?: UnitSelector;
+	/** Cardinality ceiling; clamped by `run.maxIterations` at runtime. */
+	max?: number;
+	onCap: CapPolicy;
+	result: ResultProjection;
+}
+
+/** Parallel-shaped push loop (units still run sequentially today). */
+export interface FanoutLoop extends LoopCommon {
+	kind: "fanout";
+	units: FanoutFn;
+}
+
+/** Sequential accumulating pull loop. */
+export interface IterateLoop extends LoopCommon {
+	kind: "iterate";
+	next: IterateFn;
+}
+
+/** Model-judged until-done loop: producer→judge rounds. */
+export interface AssessLoop extends LoopCommon {
+	kind: "assess";
+	/** Round cap — REQUIRED here (the `assess()` constructor defaults it to 8). */
+	max: number;
+	judge: import("./judge.js").Judge;
+	/** Sync TS reading the model-made verdict. `true` → loop stops. */
+	done: (verdict: import("./output.js").Output) => boolean;
+	/** Builds the next producer prompt arg from the just-judged round's pair. */
+	feedForward: (ctx: FeedForwardContext) => string;
+}
+
+/**
+ * The single loop field's value — a DATA object with function-valued fields,
+ * introspectable by construction (project with `loopSpecOf`). Author via the
+ * `fanout()` / `iterate()` / `assess()` constructors (control-flow.ts), which
+ * validate at construction and fill kind-specific defaults.
+ */
+export type LoopDef = FanoutLoop | IterateLoop | AssessLoop;
 
 // ===========================================================================
 // Script-stage primitives — skillless TS functions in place of `/skill:<x>`
@@ -408,38 +369,21 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	maxRetries?: number;
 	validateTimeoutMs?: number;
 	/**
-	 * Opt-in fanout. When set, the runner invokes the function with a
-	 * `FanoutContext`, awaits the returned units, and runs one Pi session
-	 * per unit (single-stage path when the array is empty). Incompatible
-	 * with `sessionPolicy: "continue"` — fanout requires per-unit session
-	 * isolation.
+	 * Opt-in unit loop. When set, the runner expands this stage into one Pi
+	 * session per unit through ONE driver (`loop.ts`); the constructor picked
+	 * the kind:
+	 *   - `fanout({...})`  — push: all units precomputed; `produces` kind =
+	 *     collecting units (full collect→validate→publish, `outcome.name`
+	 *     required); `acts` kind = side-effect units.
+	 *   - `iterate({...})` — pull: one unit per call, accumulating; requires
+	 *     `kind: "produces"` + `outcome.name`.
+	 *   - `assess({...})`  — producer→judge rounds; requires `kind: "produces"`
+	 *     + `outcome.name` (the producer is a collecting unit too).
+	 * Mutually exclusive with `run`/`prompt` and `sessionPolicy: "continue"`
+	 * (validated at load + at preflight). `assess` keeps the v1 `reads`
+	 * restriction.
 	 */
-	fanout?: FanoutFn;
-	/**
-	 * Opt-in sequential accumulation — the dual of `fanout`. When set, the
-	 * runner pulls units one at a time, feeding each generator call the prior
-	 * units' `Output`s; every unit runs the stage's `outcome` like a one-shot
-	 * `produces` stage and accumulates into `state.named[outcome.name]`.
-	 *
-	 * Mutually exclusive with `fanout` and `run`. Requires `kind: "produces"`,
-	 * an `outcome` with a `name`, and `sessionPolicy` other than `"continue"`.
-	 * (validated at load + at preflight.)
-	 */
-	iterate?: IterateFn;
-	/**
-	 * Opt-in model-judged "until-done" depth loop. When set, the runner runs
-	 * producer→judge rounds: the producer is this stage's skill/outcome; the
-	 * judge (`AssessConfig.judge`) is a separate model session whose validated
-	 * verdict decides termination. On `done` the producer output is the stage
-	 * result; otherwise `feedForward` carries the verdict's feedback into the
-	 * next producer round. A `max`-round cap soft-stops (warn + advance, last
-	 * producer output preserved — no terminal failure).
-	 *
-	 * Mutually exclusive with `fanout`/`iterate`/`run`/`prompt`/`reads`.
-	 * Requires `kind: "produces"` and `sessionPolicy` other than `"continue"`.
-	 * (validated at load + at preflight.)
-	 */
-	assess?: AssessConfig;
+	loop?: LoopDef;
 	/**
 	 * Whether the stage inherits the chain's primary artifact from
 	 * upstream `produces` stages. Default `true`. Set to `false` on a
@@ -524,7 +468,7 @@ export function defineWorkflow(spec: Workflow): Workflow {
  * function: validation (`inputSchema` / `outputSchema` + retry knobs)
  * and artifact-inheritance opt-out. `kind` and `sessionPolicy` are not
  * configurable — script stages are always `"produces"` + `"fresh"`.
- * `skill`, `outcome`, and `fanout` are unauthorisable here.
+ * `skill`, `outcome`, and `loop` are unauthorisable here.
  */
 interface ProducesScriptOptions<TIn = unknown, TOut = unknown> {
 	run: ProducesScriptFn<string, TOut>;
@@ -553,7 +497,7 @@ interface ActsScriptOptions<TIn = unknown> {
 /**
  * Options accepted by `produces.prompt({ prompt, outcome, ... })` — the typed
  * builder for a raw-prompt `produces` stage. The dispatch-conflicting fields
- * (`skill`, `run`, `fanout`, `iterate`, `reads`) are STRUCTURALLY ABSENT, so an
+ * (`skill`, `run`, `loop`, `reads`) are STRUCTURALLY ABSENT, so an
  * object-literal call site that sets one fails TypeScript's excess-property
  * check — the load-time exclusion becomes compile-time for the idiomatic path.
  * `outcome` is required (a `produces` stage always needs one).

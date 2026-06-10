@@ -188,10 +188,10 @@ export interface RunContext {
 }
 
 /**
- * Per-stage / per-unit common base. Extended by `StageSession` and
- * `FanoutSession`; consumed in pick form by `AuditCtx` (audit.ts) so the audit
- * layer pins its dependency on this shape structurally instead of
- * duplicating the field list.
+ * Per-stage / per-unit common base. Extended by `StageSession` (loop units
+ * thread their identity through `StageSession.unit`); consumed in pick form by
+ * `AuditCtx` (audit.ts) so the audit layer pins its dependency on this shape
+ * structurally instead of duplicating the field list.
  *
  * `stageName` is the workflow stage's record key — the value that lands
  * in `WorkflowStage.stage`. `skill` is the Pi skill body the runner
@@ -210,7 +210,7 @@ export interface SessionContext {
 	stageName: string;
 	/** Pi skill body — `/skill:<skill>` dispatch + status-line label + JSONL `WorkflowStage.skill`. */
 	skill: string;
-	/** Shared lifecycle dispatcher. Threaded from `RunContext` so the audit layer can fire `onStageEnd` / `onStageError` / `onFanoutUnitEnd` without re-importing it. */
+	/** Shared lifecycle dispatcher. Threaded from `RunContext` so the audit layer can fire `onStageEnd` / `onStageError` / `onUnitEnd` without re-importing it. */
 	lifecycle: LifecycleDispatcher;
 	/**
 	 * Read-only run identity passed to lifecycle callbacks. Captured at
@@ -222,6 +222,24 @@ export interface SessionContext {
 		totalStages: number;
 		trigger: RunTrigger;
 	};
+}
+
+/**
+ * Unit identity threaded onto a loop unit's session. Source of the
+ * structured JSONL row fields (`unitRowFields`, audit.ts) and the public
+ * `UnitEvent` lifecycle payload. `parent` is the loop stage's record key —
+ * the value resume dispatch and the fold key on; `label` feeds the decorated
+ * display string, the status line, and the per-unit toast.
+ */
+export interface UnitRef {
+	parent: string;
+	role: import("./api.js").UnitRole;
+	/** 0-based generation cursor (== the round index for assess loops). */
+	index: number;
+	/** Stable audit identity (`unit.id ?? unit.label` for fanout/iterate; undefined for assess). */
+	id?: string;
+	/** Display tag. */
+	label: string;
 }
 
 export interface StageSession extends SessionContext {
@@ -248,53 +266,20 @@ export interface StageSession extends SessionContext {
 	continueHost?: WorkflowHost;
 	/** Only set for continue stages — branch slice offset. */
 	branchOffset?: number;
-	onFailure?: (ctx: WorkflowHostContext) => void;
-	onSuccess: (ctx: WorkflowHostContext, artifact: Artifact | undefined) => Promise<void>;
-}
-
-/**
- * One unit of a fanout iteration. `label` is the user-supplied
- * disambiguating tag from `FanoutUnit.label`; it's woven into the status
- * line (`STATUS_FANOUT_UNIT`). The JSONL row's `stage` value (built by
- * `fanoutRowStage`) prefixes the parent's `stageName` with `id ?? label`
- * so the runner adds no implicit wording.
- */
-export interface FanoutSession extends SessionContext {
-	/** 1-based position within the run's fanout array — for halt diagnostics. */
-	unitIndex: number;
-	/** From `FanoutUnit.label` — already disambiguating, e.g. `"phase 2/5"`. */
-	label: string;
 	/**
-	 * From `FanoutUnit.id` when set — stable audit identifier preferred
-	 * over `label` in JSONL rows. Undefined when the user supplied none.
+	 * Present iff this session IS one loop unit. Pre-decorated at session
+	 * construction by the driver (`stageName` carries the DISPLAY decoration;
+	 * this field carries the machine identity). Drives: structured row fields,
+	 * `onUnitEnd` instead of `onStageEnd`, the labeled per-unit toast, and
+	 * unit-attributed failure rows.
 	 */
-	id?: string;
-	/** Parent stage's 0-based index. */
-	stageIndex: number;
-	onSuccess: (ctx: WorkflowHostContext) => Promise<void>;
-}
-
-/**
- * One sub-step of an `assess` round — either the **producer** session (runs
- * the parent stage's skill/outcome) or the **judge** session (runs the
- * synthetic `produces` def carrying `judge.outcome`). Mirrors `FanoutSession`:
- * a `SessionContext` plus the loop cursor (`round`, `phase`), the audit label
- * (`id`/`label`), the parent's `stageIndex`, and a continuation `onSuccess`.
- *
- * The JSONL row's `stage` value (built by `assessRowStage`) decorates the
- * parent's `stageName` with `r{round}·{phase}` so resume can fold the
- * two-rows-per-round shape.
- */
-export interface AssessSession extends SessionContext {
-	/** 0-based round index. */
-	round: number;
-	/** Which sub-step this session is — drives the audit-row phase tag. */
-	phase: "produce" | "judge";
-	/** Disambiguating audit label woven into the status line (`r{round}·{phase}`). */
-	label: string;
-	/** Stable audit identifier preferred over `label` when set. */
-	id?: string;
-	/** Parent stage's 0-based index. */
-	stageIndex: number;
-	onSuccess: (ctx: WorkflowHostContext) => Promise<void>;
+	unit?: UnitRef;
+	onFailure?: (ctx: WorkflowHostContext) => void;
+	/**
+	 * Receives the stage's VALIDATED Output envelope (not just
+	 * `artifacts[0]`) — loop continuations thread it into `accumulated` /
+	 * `feedForward` directly, removing the `run.state.output!` back-read
+	 * pattern the old drivers carried.
+	 */
+	onSuccess: (ctx: WorkflowHostContext, output: Output) => Promise<void>;
 }

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EdgeTarget, FanoutFn, ScriptContext, StageDef, StageKind, StageSchema, Workflow } from "./api.js";
 import { defineRoute, defineWorkflow, gate, produces, terminal } from "./api.js";
 import { registerBuiltIns } from "./built-ins.js";
+import { fanout } from "./control-flow.js";
 import { fs as fsHandle } from "./handle.js";
 import type { OutputSpec } from "./output.js";
 import { eq, gt } from "./predicates.js";
@@ -437,7 +438,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: phaseHeadingsFanout },
+				implement: { loop: fanout({ units: phaseHeadingsFanout }) },
 			}),
 			input: "x",
 		});
@@ -468,10 +469,10 @@ describe("runWorkflow", () => {
 		expect(stages.slice(1).every((s) => s.status === "completed")).toBe(true);
 	});
 
-	it("uses FanoutUnit.id in the audit row when set, falling back to label otherwise", async () => {
-		// Mixed-id FanoutFn: phase 1 has an id, phase 2 does not. The audit
-		// row should prefer `id` per-unit so post-hoc tooling joins on a
-		// stable key when one was supplied.
+	it("uses the unit's id in the row's stage decoration when set, falling back to label otherwise", async () => {
+		// Mixed-id units: phase 1 has an id, phase 2 does not. The decorated
+		// `stage` string should prefer `id` per-unit so post-hoc tooling joins
+		// on a stable key when one was supplied.
 		const planRelPath = ".rpiv/artifacts/plans/p.md";
 		mkdirSync(join(tmpDir, ".rpiv", "artifacts", "plans"), { recursive: true });
 		writeFileSync(join(tmpDir, planRelPath), "# Plan\n\n## Phase 1: alpha\n## Phase 2: beta\n");
@@ -492,7 +493,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: mixedIdFanout },
+				implement: { loop: fanout({ units: mixedIdFanout }) },
 			}),
 			input: "x",
 		});
@@ -706,7 +707,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: phaseHeadingsFanout },
+				implement: { loop: fanout({ units: phaseHeadingsFanout }) },
 			}),
 			input: "x",
 		});
@@ -1098,14 +1099,14 @@ describe("runWorkflow", () => {
 
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("ic", ["implement"], {
-					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
+					implement: { sessionPolicy: "continue", loop: fanout({ units: phaseHeadingsFanout }) },
 				}),
 				input: "x",
 				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/cannot combine fanout with sessionPolicy.*continue/);
+			expect(result.error).toMatch(/cannot combine loop with sessionPolicy.*continue/);
 
 			// JSONL now carries a row attributed to the failing stage —
 			// no orphan header-only file.
@@ -1161,14 +1162,14 @@ describe("runWorkflow", () => {
 			// gates only on missing pi) lets the run reach the mid-chain throw.
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("midthrow", ["research", "implement"], {
-					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
+					implement: { sessionPolicy: "continue", loop: fanout({ units: phaseHeadingsFanout }) },
 				}),
 				input: "x",
 				host: mockPi.pi,
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/cannot combine fanout with sessionPolicy.*continue/);
+			expect(result.error).toMatch(/cannot combine loop with sessionPolicy.*continue/);
 
 			const { stages } = readState(tmpDir);
 			const completedRows = stages.filter((s) => s.status === "completed");
@@ -2533,12 +2534,12 @@ describe("runWorkflow", () => {
 				onStageError: (stage: unknown, error: unknown, ctx: unknown) =>
 					void calls.push(["onStageError", [stage, error, ctx]]),
 				onRoute: (from: unknown, to: unknown, ctx: unknown) => void calls.push(["onRoute", [from, to, ctx]]),
-				onFanoutStart: (stage: unknown, units: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutStart", [stage, units, ctx]]),
-				onFanoutUnitStart: (stage: unknown, unit: unknown, i: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutUnitStart", [stage, unit, i, ctx]]),
-				onFanoutUnitEnd: (stage: unknown, unit: unknown, i: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutUnitEnd", [stage, unit, i, ctx]]),
+				onLoopStart: (stage: unknown, info: unknown, ctx: unknown) =>
+					void calls.push(["onLoopStart", [stage, info, ctx]]),
+				onUnitStart: (stage: unknown, unit: unknown, ctx: unknown) =>
+					void calls.push(["onUnitStart", [stage, unit, ctx]]),
+				onUnitEnd: (stage: unknown, unit: unknown, output: unknown, ctx: unknown) =>
+					void calls.push(["onUnitEnd", [stage, unit, output, ctx]]),
 				onWorkflowEnd: (result: unknown, ctx: unknown) => void calls.push(["onWorkflowEnd", [result, ctx]]),
 			};
 			return { calls, lifecycle };
@@ -2632,7 +2633,7 @@ describe("runWorkflow", () => {
 			expect(to).toBe("stop");
 		});
 
-		it("onFanoutStart + onFanoutUnitStart/End fire in correct order for a 3-unit fanout", async () => {
+		it("onLoopStart + onUnitStart/End fire in correct order for a 3-unit fanout loop", async () => {
 			const planRel = ".rpiv/artifacts/plans/p.md";
 			writeArtifact(tmpDir, planRel, "# Plan\n## Phase 1:\n## Phase 2:\n## Phase 3:\n");
 			const chain = createMockSessionChain({
@@ -2655,19 +2656,24 @@ describe("runWorkflow", () => {
 			};
 			const { calls, lifecycle } = recorder();
 			await runWorkflow(chain.ctx, {
-				workflow: wf("rip", ["research", "implement"], { implement: { fanout: phaseFanout } }),
+				workflow: wf("rip", ["research", "implement"], { implement: { loop: fanout({ units: phaseFanout }) } }),
 				input: "x",
 				lifecycle,
 			});
-			const fanoutNames = names(calls).filter((n) => n.startsWith("onFanout") || n === "onStageStart");
-			// Expected fanout sequence within the implement stage:
-			//   onStageStart(implement) → onFanoutStart → onFanoutUnitStart x onFanoutUnitEnd interleaved.
-			const impl = fanoutNames.slice(fanoutNames.indexOf("onFanoutStart") - 1);
+			const loopNames = names(calls).filter(
+				(n) => n === "onLoopStart" || n === "onUnitStart" || n === "onUnitEnd" || n === "onStageStart",
+			);
+			// Expected loop sequence within the implement stage:
+			//   onStageStart(implement) → onLoopStart → (onUnitStart → onUnitEnd) × 3.
+			const impl = loopNames.slice(loopNames.indexOf("onLoopStart") - 1);
 			expect(impl[0]).toBe("onStageStart");
-			expect(impl[1]).toBe("onFanoutStart");
-			// Three unit-start + unit-end pairs after fanout start.
-			expect(impl.filter((n) => n === "onFanoutUnitStart")).toHaveLength(3);
-			expect(impl.filter((n) => n === "onFanoutUnitEnd")).toHaveLength(3);
+			expect(impl[1]).toBe("onLoopStart");
+			// Three unit-start + unit-end pairs after loop start.
+			expect(impl.filter((n) => n === "onUnitStart")).toHaveLength(3);
+			expect(impl.filter((n) => n === "onUnitEnd")).toHaveLength(3);
+			// Units pair start-before-end: the first post-loopStart event is a unit start.
+			expect(impl[2]).toBe("onUnitStart");
+			expect(impl[3]).toBe("onUnitEnd");
 		});
 
 		it("onWorkflowEnd fires exactly once as the last event with the result envelope", async () => {

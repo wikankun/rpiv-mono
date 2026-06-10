@@ -9,11 +9,9 @@
 
 export {
 	type ActsScriptFn,
-	type AssessConfig,
-	type AssessFeedContext,
-	type AssessJudge,
-	type AssessJudgeContext,
+	type AssessLoop,
 	acts,
+	type CapPolicy,
 	type DefineRouteOptions,
 	defineRoute,
 	defineWorkflow,
@@ -22,11 +20,13 @@ export {
 	type EdgeTarget,
 	type FanoutContext,
 	type FanoutFn,
-	type FanoutUnit,
+	type FanoutLoop,
+	type FeedForwardContext,
 	gate,
 	type IterateContext,
 	type IterateFn,
-	type IterateUnit,
+	type IterateLoop,
+	type LoopDef,
 	marksReadsData,
 	ON_INVALID_VALUES,
 	type OnInvalid,
@@ -34,6 +34,7 @@ export {
 	type PromptFn,
 	produces,
 	READS_DATA,
+	type ResultProjection,
 	type ScriptContext,
 	SESSION_POLICIES,
 	type SessionPolicy,
@@ -43,22 +44,21 @@ export {
 	type StageKind,
 	type StageSchema,
 	terminal,
+	type Unit,
+	type UnitRole,
+	type UnitSelector,
 	type Workflow,
 } from "./api.js";
 export { registerBuiltIns, registerBuiltInsProvider } from "./built-ins.js";
 export {
-	type ControlFlowSpec,
+	assess,
+	DEFAULT_ASSESS_MAX,
 	describeFlow,
-	type FanoutSpec,
-	fanoutOver,
-	fanoutSpecOf,
-	type IterateSpec,
-	iterateOver,
-	iterateSpecOf,
-	type SpeccedFanoutFn,
-	type SpeccedIterateFn,
+	fanout,
+	iterate,
+	type LoopSpec,
+	loopSpecOf,
 	type StageShape,
-	type UnitSelector,
 } from "./control-flow.js";
 export {
 	type Artifact,
@@ -77,7 +77,16 @@ export type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "
 // consumer needs them); internal callers import them from their source modules
 // directly.
 export type { JsonSchemaCapable, JsonSchemaObject } from "./json-schema.js";
-export { type LifecycleContext, type LifecycleListeners, registerLifecycle, type StageRef } from "./lifecycle.js";
+export { type Judge, type JudgeContext, judge, judgeShapeIssues } from "./judge.js";
+export {
+	type LifecycleContext,
+	type LifecycleListeners,
+	type LoopCapInfo,
+	type LoopStartInfo,
+	registerLifecycle,
+	type StageRef,
+	type UnitEvent,
+} from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { aliasSkills, loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
 export {
@@ -138,11 +147,13 @@ export {
 	registerSkillContractsProvider,
 } from "./skill-contracts/index.js";
 export {
+	type LoopCapRow,
 	listArtifacts,
 	listRuns,
 	type RunSummary,
 	readHeader,
 	readLastStage,
+	readLoopCaps,
 	resolveRun,
 	runsDir,
 	stateFilePath,

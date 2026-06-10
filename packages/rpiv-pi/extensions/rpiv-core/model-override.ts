@@ -288,6 +288,36 @@ export async function registerModelOverrideLifecycle(pi: ExtensionAPI): Promise<
 				});
 			},
 
+			onUnitStart: async (stage: { name: string }, unit: { skill: string }, ctx: { workflow: string }) => {
+				// Per-unit model resolution through the SAME cascade onStageStart uses,
+				// with the unit's dispatched skill: produce units re-resolve the stage's
+				// own override (idempotent re-apply); JUDGE units resolve
+				// `skills.<judge.skill>` — judges get their own model for the first time.
+				// Units run strictly sequentially, so the global setModel flip is
+				// race-free; setBaselineModel=true keeps the D7 no-bleedthrough invariant
+				// (an unconfigured unit reverts to baseline, not the prior unit's model).
+				if (!baselineCaptured || !baseline) return;
+
+				const config = loadModelsConfig();
+				const override = resolveStageModel(config, {
+					workflow: ctx.workflow,
+					stage: stage.name,
+					skill: unit.skill,
+				});
+
+				await applyOrSkipIfStale(async () => {
+					const { hasModelChange } = await applyEffectiveModel(pi, {
+						overrideModel: override?.model,
+						baselineModel: baseline!.model,
+						overrideThinking: override?.thinking,
+						baselineThinking: baseline!.thinking,
+						label: `unit "${stage.name} (${unit.skill})"`,
+						setBaselineModel: true,
+					});
+					baseline!.hasModelChange = hasModelChange;
+				});
+			},
+
 			onWorkflowEnd: async () => {
 				if (!baselineCaptured || !baseline) return;
 				const base = baseline;

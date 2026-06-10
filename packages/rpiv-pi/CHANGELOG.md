@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- The built-in workflows' loop stages migrate to the new `loop:` field + `fanout()` / `iterate()` / `assess()` constructors (no behavior change): `FRONTMATTER_PHASE_FANOUT` / `PLANS_PHASE_FANOUT` become `fanout({ units })`, and `REVIEW_PHASE_ITERATE` becomes `iterate({ next })`. `implement` still fans out one pass per plan phase; polish's `blueprint` still iterates one pass per review phase.
+
+### Added
+- Per-unit model resolution for loop stages via the new `onUnitStart` lifecycle hook — a judge or per-phase unit's dispatched skill now resolves its model through the existing `models.json` `skills.<name>` cascade with no new configuration axes.
+
 ## [1.19.1] - 2026-06-10
 
 ### Added

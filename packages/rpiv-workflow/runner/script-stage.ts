@@ -22,7 +22,7 @@
  * `validateWorkflow:checkScriptStageInvariants`):
  *   - `stage.skill` is unset.
  *   - `stage.outcome` is unset (no collector to run).
- *   - `stage.fanout` is unset (the runner's per-unit machinery doesn't
+ *   - `stage.loop` is unset (the runner's per-unit machinery doesn't
  *     apply; authors write their own loop inside `run()`).
  *   - `stage.sessionPolicy !== "continue"` (no session to continue).
  */
@@ -58,7 +58,7 @@ import type { ResolvedStage } from "./stage-lifecycle.js";
  *
  * Caller pre-conditions (held by `runStage`):
  *   - `ensureInputValid` already passed (post-prompt-checks pipeline).
- *   - `tryFanout` returned `false` (fanout incompatible by validation).
+ *   - `tryLoop` returned `false` (a script stage cannot carry a `loop`).
  */
 export async function runScript(
 	curCtx: WorkflowHostContext,

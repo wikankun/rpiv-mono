@@ -30,9 +30,10 @@ import {
 	type StageDef,
 	type Workflow,
 } from "./api.js";
-import { fanoutSpecOf, iterateSpecOf } from "./control-flow.js";
+import { loopSpecOf } from "./control-flow.js";
 import { resolvePublishName, resolveSkill } from "./internal-utils.js";
 import { extractJsonSchema } from "./json-schema.js";
+import { judgeShapeIssues } from "./judge.js";
 import type { ConfigLayer } from "./layers.js";
 import { isSchemaCompatible } from "./schema-compat.js";
 import type { ProducesSpec, SkillContractMap } from "./skill-contract.js";
@@ -199,12 +200,116 @@ function checkStageSemantics(w: Workflow, issues: WorkflowValidationIssue[]): vo
 		checkRetryBounds(w, name, stage, issues);
 		checkTimeoutBounds(w, name, stage, issues);
 		checkStageEnums(w, name, stage, issues);
-		checkFanoutContinueInvariant(w, name, stage, issues);
-		checkIterateInvariants(w, name, stage, issues);
-		checkAssessInvariants(w, name, stage, issues);
+		checkLoopInvariants(w, name, stage, issues);
 		checkPromptInvariants(w, name, stage, issues);
 		checkInheritsArtifactsKind(w, name, stage, issues);
 		checkScriptStageInvariants(w, name, stage, issues);
+	}
+}
+
+const LOOP_KINDS = ["fanout", "iterate", "assess"] as const;
+
+/**
+ * One rule block for the single `loop` field. Constructors already threw on
+ * these at authoring time; this is the defensive load gate for hand-rolled
+ * literals (jiti erases TS types) and programmatic embedders.
+ */
+function checkLoopInvariants(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
+	const loop = stage.loop;
+	if (!loop) return;
+
+	if (!(LOOP_KINDS as readonly string[]).includes(loop.kind)) {
+		issues.push(error(w.name, name, `loop.kind: "${loop.kind}" — must be one of ${LOOP_KINDS.join(", ")}`));
+		return; // kind-specific rules below would misfire on an unknown kind
+	}
+	// ONE continue rule (was three identical ones).
+	if (stage.sessionPolicy === "continue") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}" cannot combine a loop with sessionPolicy "continue" — each unit requires an isolated session`,
+			),
+		);
+	}
+	// Enforced for ALL loops now (was advisory-only for fanout/iterate specs).
+	if (loop.max !== undefined && (!Number.isInteger(loop.max) || loop.max < 1)) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": loop.max: ${loop.max} — must be an integer >= 1 (run.maxIterations caps the upper bound)`,
+			),
+		);
+	}
+	// Pull loops + assess run the stage's outcome collector per unit.
+	if ((loop.kind === "iterate" || loop.kind === "assess") && stage.kind !== "produces") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": ${loop.kind} requires kind "produces" — each unit runs an outcome collector`,
+			),
+		);
+	}
+	// A stable named slot: iterate and assess always (every unit/round runs the
+	// produces collector), fanout when COLLECTING (produces kind) — the decorated
+	// display string must never split the accumulation slot.
+	const needsName =
+		loop.kind === "iterate" || loop.kind === "assess" || (loop.kind === "fanout" && stage.kind === "produces");
+	if (needsName && !stage.outcome?.name) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": a collecting loop requires an \`outcome\` with a \`name\` so units publish to a stable named slot`,
+			),
+		);
+	}
+
+	if (loop.kind !== "assess") return;
+
+	if (stage.reads?.length) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess cannot set \`reads\` in v1 — the round-0 producer prompt uses the primary-handle projection`,
+			),
+		);
+	}
+	// Judge shape — SAME rule source as the judge() factory (no wording drift).
+	for (const issue of judgeShapeIssues(loop.judge)) {
+		issues.push(error(w.name, name, `stage "${name}": assess ${issue}`));
+	}
+	if (typeof loop.done !== "function") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess requires \`done\` to be a function deciding termination from the verdict`,
+			),
+		);
+	}
+	if (typeof loop.feedForward !== "function") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess requires \`feedForward\` to be a function building the next producer arg`,
+			),
+		);
+	}
+	// Verdict-channel collision — STAYS workflow-level (needs the producer's
+	// publish identity, which only the stage knows).
+	if (loop.judge?.outcome?.name && loop.judge.outcome.name === (stage.outcome?.name ?? name)) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": judge.outcome.name "${loop.judge.outcome.name}" collides with the producer's publish name — give the verdict its own channel`,
+			),
+		);
 	}
 }
 
@@ -265,231 +370,6 @@ function checkStageEnums(w: Workflow, name: string, stage: StageDef, issues: Wor
 }
 
 /**
- * Fanout requires per-unit session isolation — `continue` would replay the
- * prior unit's branch into the next unit's session. The runner enforces
- * this at dispatch (`enforceSessionInvariants`); surfacing it at load
- * time gives user-authored configs a targeted error instead of a generic
- * chain-advance failure on first invocation.
- *
- * The invariant is keyed on the stage's `fanout` field — not on a skill
- * name — keeping the package skill-agnostic: any stage opting into
- * fanout must use `sessionPolicy: "fresh"` regardless of what skill it
- * dispatches.
- */
-function checkFanoutContinueInvariant(
-	w: Workflow,
-	name: string,
-	stage: StageDef,
-	issues: WorkflowValidationIssue[],
-): void {
-	if (stage.fanout && stage.sessionPolicy === "continue") {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}" cannot combine fanout with sessionPolicy "continue" — fanout requires per-unit session isolation`,
-			),
-		);
-	}
-}
-
-/**
- * `iterate` is the sequential, accumulating dual of `fanout`. Its invariants
- * are stricter because each unit runs the stage's collector and publishes to a
- * single named slot:
- *
- *   - mutually exclusive with `fanout` (push vs pull — a stage is one or the
- *     other) and with `run` (a script stage writes its own loop);
- *   - incompatible with `sessionPolicy: "continue"` — like fanout, each unit
- *     needs an isolated session (also mirrored at preflight);
- *   - requires `kind: "produces"` — units run an `outcome` collector;
- *   - requires `outcome.name` — every unit publishes to the SAME
- *     `state.named` slot via `resolvePublishName`, and the per-unit audit row
- *     is decorated, so without an explicit name the decoration would split the
- *     slot across units.
- *
- * The `fanout`/`run`/`kind`/`outcome.name` rules are authoring-time-knowable,
- * so load validation is the primary gate; only the `continue` rule needs a
- * runtime mirror (embedders may bypass load validation).
- */
-function checkIterateInvariants(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
-	if (!stage.iterate) return;
-	if (stage.fanout) {
-		issues.push(error(w.name, name, `stage "${name}": iterate and fanout are mutually exclusive (pull vs push)`));
-	}
-	// iterate + run is reported by checkScriptStageInvariants (mirrors fanout + run).
-	if (stage.sessionPolicy === "continue") {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}" cannot combine iterate with sessionPolicy "continue" — each unit requires an isolated session`,
-			),
-		);
-	}
-	if (stage.kind !== "produces") {
-		issues.push(
-			error(w.name, name, `stage "${name}": iterate requires kind "produces" — each unit runs an outcome collector`),
-		);
-	}
-	if (!stage.outcome?.name) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": iterate requires an \`outcome\` with a \`name\` so accumulated units publish to a stable named slot`,
-			),
-		);
-	}
-}
-
-/**
- * `assess` is the model-judged "until-done" depth loop — the producer→judge
- * dual of `iterate`'s in-process predicate. Its invariants keep the
- * two-sessions-per-round shape well-formed and the judge dispatch unambiguous:
- *
- *   - mutually exclusive with `fanout`/`iterate` (one loop primitive per stage)
- *     and with `prompt`/`reads` (the round-0 producer prompt uses the simple
- *     primary-handle projection; `reads` is a v1 restriction);
- *   - requires `kind: "produces"` — the producer runs an outcome collector;
- *   - requires a judge `outcome` (with a `name`) and a `done` predicate — the
- *     verdict is validated and published to its own dedicated `state.named`
- *     channel, which `done` reads;
- *   - the judge `outcome.name` must differ from the producer's publish name —
- *     the live restore-after-judge leaves the verdict in its own channel; a
- *     collision would let the verdict overwrite the producer's history;
- *   - judge dispatch is skill-XOR-prompt — exactly one of `judge.skill` /
- *     `judge.prompt` (both is ambiguous; neither has nothing to dispatch);
- *   - incompatible with `sessionPolicy: "continue"` — each session is isolated;
- *   - `max`, when set, must be an integer >= 1 — `max < 1` would soft-stop at
- *     round 0 and the stage would silently produce nothing.
- *
- * (`assess` + `run` is reported by `checkScriptStageInvariants`, mirroring
- * `iterate` + `run`. The producer's own `outcome` requirement is covered by the
- * produces-requires-outcome rule in `checkStageEnums`.)
- */
-function checkAssessInvariants(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
-	if (!stage.assess) return;
-	if (stage.fanout) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess and fanout are mutually exclusive (one loop primitive per stage)`,
-			),
-		);
-	}
-	if (stage.iterate) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess and iterate are mutually exclusive (one loop primitive per stage)`,
-			),
-		);
-	}
-	if (stage.prompt !== undefined) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess and prompt are mutually exclusive — the producer dispatches its own skill`,
-			),
-		);
-	}
-	if (stage.reads?.length) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess cannot set \`reads\` in v1 — the round-0 producer prompt uses the primary-handle projection`,
-			),
-		);
-	}
-	if (stage.kind !== "produces") {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess requires kind "produces" — the producer runs an outcome collector`,
-			),
-		);
-	}
-	if (stage.sessionPolicy === "continue") {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}" cannot combine assess with sessionPolicy "continue" — each session requires isolation`,
-			),
-		);
-	}
-	// `max < 1` would pass load and soft-stop at round 0 — the stage silently
-	// produces nothing and downstream inherits the PRE-stage primary. Reject at
-	// load like `checkRetryBounds`; the runtime upper bound is `run.maxIterations`.
-	if (stage.assess.max !== undefined && (!Number.isInteger(stage.assess.max) || stage.assess.max < 1)) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess.max: ${stage.assess.max} — must be an integer >= 1 (the run-wide maxIterations caps the upper bound)`,
-			),
-		);
-	}
-
-	const judge = stage.assess.judge;
-	if (!judge) {
-		issues.push(error(w.name, name, `stage "${name}": assess requires a \`judge\``));
-		return;
-	}
-	if (!judge.outcome?.name) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess requires \`judge.outcome\` with a \`name\` so the verdict publishes to its own named slot`,
-			),
-		);
-	}
-	if (typeof judge.done !== "function") {
-		issues.push(
-			error(w.name, name, `stage "${name}": assess requires \`judge.done\` to decide termination from the verdict`),
-		);
-	}
-	const hasSkill = judge.skill !== undefined;
-	const hasPrompt = judge.prompt !== undefined;
-	if (hasSkill && hasPrompt) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess judge sets both \`skill\` and \`prompt\` — choose one dispatch (skill XOR prompt)`,
-			),
-		);
-	}
-	if (!hasSkill && !hasPrompt) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess judge sets neither \`skill\` nor \`prompt\` — one is required to dispatch the judge`,
-			),
-		);
-	}
-	// Restore-after-judge leaves the verdict in its own channel; a name collision
-	// with the producer's publish slot would overwrite producer history.
-	if (judge.outcome?.name && judge.outcome.name === (stage.outcome?.name ?? name)) {
-		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": assess judge.outcome.name "${judge.outcome.name}" collides with the producer's publish name — give the verdict its own channel`,
-			),
-		);
-	}
-}
-
-/**
  * `prompt` is the raw-text dispatch — the third option alongside skill
  * (`/skill:<name>`) and script `run`. Its invariants keep the dispatch
  * discriminator unambiguous and the input model single:
@@ -497,8 +377,8 @@ function checkAssessInvariants(w: Workflow, name: string, stage: StageDef, issue
  *   - mutually exclusive with an explicit `skill` (you're either invoking a
  *     skill or sending raw text — `skill` defaulting to the record key does
  *     NOT trip this, only an explicitly-set `skill`);
- *   - mutually exclusive with `fanout`/`iterate` in v1 (chat fan-out is a
- *     deferred composition);
+ *   - mutually exclusive with a `loop` in v1 (chat fan-out is a deferred
+ *     composition; units own their own prompts);
  *   - mutually exclusive with `reads` — a skill stage's `reads` auto-builds a
  *     labelled-flag arg, but a prompt stage's text is author-owned; rather than
  *     give `reads` two meanings, require the prompt to read `state.named`
@@ -525,14 +405,9 @@ function checkPromptInvariants(w: Workflow, name: string, stage: StageDef, issue
 			),
 		);
 	}
-	if (stage.fanout) {
+	if (stage.loop) {
 		issues.push(
-			error(w.name, name, `stage "${name}": prompt and fanout are mutually exclusive (chat fan-out is deferred)`),
-		);
-	}
-	if (stage.iterate) {
-		issues.push(
-			error(w.name, name, `stage "${name}": prompt and iterate are mutually exclusive (chat iterate is deferred)`),
+			error(w.name, name, `stage "${name}": prompt and loop are mutually exclusive — units own their prompts`),
 		);
 	}
 	if (stage.reads?.length) {
@@ -598,7 +473,7 @@ function checkInheritsArtifactsKind(
  *   - `outcome`   — the function returns the `Output` envelope directly;
  *                   there is no transcript / tool-use stream for a
  *                   collector to scan.
- *   - `fanout`    — a TS function can write its own loop; the runner's
+ *   - `loop`      — a TS function can write its own loop; the runner's
  *                   per-unit session machinery doesn't apply.
  *   - `sessionPolicy: "continue"` — there is no Pi session at all on a
  *                                   script stage; nothing to continue.
@@ -632,19 +507,9 @@ function checkScriptStageInvariants(
 			),
 		);
 	}
-	if (stage.fanout) {
+	if (stage.loop) {
 		issues.push(
-			error(w.name, name, `stage "${name}": script stages cannot fanout — write a loop inside run() instead`),
-		);
-	}
-	if (stage.iterate) {
-		issues.push(
-			error(w.name, name, `stage "${name}": script stages cannot iterate — write a loop inside run() instead`),
-		);
-	}
-	if (stage.assess) {
-		issues.push(
-			error(w.name, name, `stage "${name}": script stages cannot assess — write a loop inside run() instead`),
+			error(w.name, name, `stage "${name}": script stages cannot loop — write a loop inside run() instead`),
 		);
 	}
 	if (stage.prompt !== undefined) {
@@ -705,35 +570,35 @@ function checkReadsReferences(w: Workflow, issues: WorkflowValidationIssue[]): v
 }
 
 /**
- * Load-time fanout/iterate source check (Phase 3 — control-flow as data). A stage
- * whose `fanout`/`iterate` carries a declarative `.spec` (via `fanoutOver`/
- * `iterateOver`) with a `source` channel must have that channel published by some
- * `produces` stage in this workflow — otherwise the stage splits over a channel
- * nothing fills. Same publisher model as `checkReadsReferences`
- * (`stage.outcome?.name ?? <record-key>`).
+ * Load-time loop-source check (control-flow as data). A stage whose `loop`
+ * declares a `source` channel (via `fanout()`/`iterate()`/`assess()`) must have
+ * that channel published by some `produces` stage in this workflow — otherwise
+ * the stage splits over a channel nothing fills. Same publisher model as
+ * `checkReadsReferences` (`stage.outcome?.name ?? <record-key>`).
  *
- * WARNS (never errors): `source` is an introspective hint, and a raw/opaque fanout
- * (no `.spec`) or a spec without `source` degrades silently — mirrors the
- * edge-compat posture. When the source is already in the stage's `reads`,
- * `checkReadsReferences` owns it (errors) — skip to avoid double-reporting. The
- * additive value is the `iterate`/closure-sourced case, which declares no `reads:`
- * and is otherwise unchecked.
+ * WARNS (never errors): `source` is an introspective hint, and a loop without
+ * `source` degrades silently — mirrors the edge-compat posture. When the source
+ * is already in the stage's `reads`, `checkReadsReferences` owns it (errors) —
+ * skip to avoid double-reporting. The additive value is the `iterate`/closure-
+ * sourced case, which declares no `reads:` and is otherwise unchecked.
  */
+const LOOP_VERB = { fanout: "fans out over", iterate: "iterates over", assess: "assesses over" } as const;
+
 function checkFanoutSource(w: Workflow, issues: WorkflowValidationIssue[]): void {
 	const published = new Set<string>();
 	for (const [name, stage] of Object.entries(w.stages)) {
 		if (stage.kind === "produces") published.add(stage.outcome?.name ?? name);
 	}
 	for (const [name, stage] of Object.entries(w.stages)) {
-		const spec = fanoutSpecOf(stage.fanout) ?? iterateSpecOf(stage.iterate);
+		const spec = loopSpecOf(stage.loop);
 		const source = spec?.source;
-		if (!source || published.has(source)) continue; // opaque / no source / satisfied → degrade
+		if (!source || published.has(source)) continue; // no source / satisfied → degrade
 		if (stage.reads?.includes(source)) continue; // checkReadsReferences owns this channel
 		issues.push(
 			warning(
 				w.name,
 				name,
-				`stage "${name}" ${spec.kind === "fanout" ? "fans out" : "iterates"} over source "${source}" but no produces stage in this workflow publishes it`,
+				`stage "${name}" ${LOOP_VERB[spec.kind]} source "${source}" but no produces stage in this workflow publishes it`,
 			),
 		);
 	}

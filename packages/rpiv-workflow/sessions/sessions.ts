@@ -1,6 +1,7 @@
 /**
- * Session execution — one Pi session per workflow stage / fanout unit.
- * `runStageSession` and `runFanoutSession` are the two public entries.
+ * Session execution — one Pi session per workflow stage / loop unit.
+ * `runStageSession` is the only public entry (loop units run through it too,
+ * threading their identity via `StageSession.unit`).
  *
  * The fresh-vs-continue policy split is owned by `SessionPolicyHandler`
  * (see `spawn.ts`): `FRESH_HANDLER` and `CONTINUE_HANDLER` implement
@@ -17,43 +18,38 @@
 
 import {
 	type AuditCtx,
-	fanoutRowStage,
 	nowIso,
 	recordCancellation,
 	recordStage,
 	recordStopFailure,
 	recordTerminalFailure,
+	unitRowFields,
 } from "../audit.js";
 import { applyCompletedStage } from "../internal-utils.js";
-import { buildLifecycleContext, skillStageRef } from "../lifecycle.js";
+import { buildLifecycleContext, skillStageRef, type UnitEvent } from "../lifecycle.js";
 import {
 	ERR_AUDIT_WRITE_FAILED,
 	ERR_VALIDATION_FAILED,
 	MSG_AUDIT_WRITE_FAILED,
 	MSG_STAGE_COMPLETE,
 	MSG_STAGE_FAILED,
+	MSG_UNIT_COMPLETE,
 	MSG_VALIDATION_EXHAUSTED,
 } from "../messages.js";
 import type { Output } from "../output.js";
 import { type BranchEntry, classifyStop, readBranch, type StopSignal } from "../transcript.js";
-import type { FanoutSession, SessionContext, StageSession, WorkflowHostContext } from "../types.js";
+import type { SessionContext, StageSession, WorkflowHostContext } from "../types.js";
 import { produceAndValidateOutput } from "./extraction.js";
-import { FRESH_HANDLER, handlerFor } from "./spawn.js";
+import { handlerFor } from "./spawn.js";
 
 // ===========================================================================
 // PUBLIC ENTRIES — what the orchestrator calls
 // ===========================================================================
 
-/** Execute one DAG stage in its own session. */
+/** Execute one DAG stage (or loop unit) in its own session. */
 export async function runStageSession(ctx: WorkflowHostContext, s: StageSession): Promise<void> {
 	const handler = handlerFor(s.stage.sessionPolicy);
 	const { cancelled } = await handler.spawn(ctx, s.prompt, (sessionCtx) => postStage(sessionCtx, s), s.continueHost);
-	if (cancelled) await recordCancellation(ctx, auditFor(s));
-}
-
-/** Execute one fanout-unit iteration. Always fresh. */
-export async function runFanoutSession(ctx: WorkflowHostContext, s: FanoutSession): Promise<void> {
-	const { cancelled } = await FRESH_HANDLER.spawn(ctx, s.prompt, (sessionCtx) => postFanout(sessionCtx, s));
 	if (cancelled) await recordCancellation(ctx, auditFor(s));
 }
 
@@ -73,16 +69,9 @@ async function postStage(ctx: WorkflowHostContext, s: StageSession): Promise<voi
 	if (result.kind === "validation-exhausted") return haltStageWithValidationFailure(ctx, s, result.failureSummary);
 
 	if (!(await recordStageSuccess(ctx, s, result.output))) return;
-	await s.onSuccess(ctx, result.output.artifacts[0]);
-}
-
-/** Fanout-unit post-processing: classify outcome → persist bare row → chain. */
-async function postFanout(ctx: WorkflowHostContext, s: FanoutSession): Promise<void> {
-	const outcome = readSessionOutcome(ctx, undefined);
-	if (outcome.stop !== "stop") return haltFanout(ctx, s, outcome.stop);
-
-	if (!(await recordFanoutSuccess(ctx, s))) return;
-	await s.onSuccess(ctx);
+	// The validated Output goes to the continuation directly — loop drivers
+	// thread it into accumulated / feedForward without state back-reads.
+	await s.onSuccess(ctx, result.output);
 }
 
 // ===========================================================================
@@ -120,25 +109,23 @@ async function haltStageWithValidationFailure(
 	);
 }
 
-async function haltFanout(
-	ctx: WorkflowHostContext,
-	s: FanoutSession,
-	stop: Exclude<StopSignal, "stop">,
-): Promise<void> {
-	await recordStopFailure(ctx, auditFor(s), stop, `${s.skill} unit ${s.unitIndex} (${s.label}) failed`);
-}
-
 // ===========================================================================
 // SUCCESS-PERSISTENCE HELPERS
 // ===========================================================================
 
 /**
- * Write + counter-increment guard shared by `recordStageSuccess` and
- * `recordFanoutSuccess`. Returns `true` iff the JSONL row landed.
+ * Write + counter-increment guard for `recordStageSuccess`. Returns `true`
+ * iff the JSONL row landed.
  * Output assignment lives here so callers get the same "output is
- * set iff the row that carried it landed" invariant.
+ * set iff the row that carried it landed" invariant. Unit rows carry the
+ * structured identity fields alongside the decorated display `stage`; a
+ * single stage (or a fanout unit, whose row label is built upstream) has no
+ * `unit`, so `unitRowFields` adds nothing and the row stays byte-identical.
  */
-function tryRecordStage(s: SessionContext, row: { stage: string; skill?: string; output?: Output }): boolean {
+function tryRecordStage(
+	s: SessionContext & Pick<StageSession, "unit">,
+	row: { stage: string; skill?: string; output?: Output },
+): boolean {
 	const assigned = recordStage(
 		s.cwd,
 		s.runId,
@@ -148,6 +135,7 @@ function tryRecordStage(s: SessionContext, row: { stage: string; skill?: string;
 			status: "completed",
 			ts: nowIso(),
 			output: row.output,
+			...unitRowFields(s.unit),
 		},
 		s.state,
 	);
@@ -162,18 +150,36 @@ function tryRecordStage(s: SessionContext, row: { stage: string; skill?: string;
  * chain advances only when the audit row landed. On failure, leaves
  * `state.output` / `state.primaryArtifact` at their prior values and sets
  * `state.termination.error` to halt the run.
+ *
+ * Single stages keep the `onStageEnd` + `MSG_STAGE_COMPLETE` contract
+ * verbatim. Loop units fire `onUnitEnd` (NEVER `onStageEnd` — that's reserved
+ * for single-stage and loop-level semantics) with a labeled toast, the ref
+ * carrying the PARENT stage name so listeners key on graph identity, not the
+ * display decoration.
  */
 async function recordStageSuccess(ctx: WorkflowHostContext, s: StageSession, output: Output): Promise<boolean> {
 	if (tryRecordStage(s, { stage: s.stageName, skill: s.skill, output })) {
 		applyCompletedStage(s.state, s.stage, s.stageName, output);
-		ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
-		await s.lifecycle.fire(
-			ctx,
-			"onStageEnd",
-			skillStageRef(s.stageName, s.state.lastAllocatedStageNumber, s.skill),
-			output,
-			lifecycleCtxFromSession(s),
-		);
+		if (s.unit) {
+			ctx.ui.notify(MSG_UNIT_COMPLETE(s.skill, s.unit.label), "info");
+			await s.lifecycle.fire(
+				ctx,
+				"onUnitEnd",
+				skillStageRef(s.unit.parent, s.state.lastAllocatedStageNumber, s.skill),
+				unitEventOf(s),
+				output,
+				lifecycleCtxFromSession(s),
+			);
+		} else {
+			ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
+			await s.lifecycle.fire(
+				ctx,
+				"onStageEnd",
+				skillStageRef(s.stageName, s.state.lastAllocatedStageNumber, s.skill),
+				output,
+				lifecycleCtxFromSession(s),
+			);
+		}
 		return true;
 	}
 	ctx.ui.notify(MSG_AUDIT_WRITE_FAILED(s.skill), "error");
@@ -181,21 +187,10 @@ async function recordStageSuccess(ctx: WorkflowHostContext, s: StageSession, out
 	return false;
 }
 
-async function recordFanoutSuccess(ctx: WorkflowHostContext, s: FanoutSession): Promise<boolean> {
-	const stageLabel = fanoutRowStage(s);
-	if (tryRecordStage(s, { stage: stageLabel, skill: s.skill })) {
-		await s.lifecycle.fire(
-			ctx,
-			"onFanoutUnitEnd",
-			skillStageRef(s.stageName, s.stageIndex + 1, s.skill),
-			{ prompt: s.prompt, label: s.label, ...(s.id !== undefined && { id: s.id }) },
-			s.unitIndex,
-			lifecycleCtxFromSession(s),
-		);
-		return true;
-	}
-	s.state.termination.error = ERR_AUDIT_WRITE_FAILED(stageLabel);
-	return false;
+/** Public `UnitEvent` payload from the session's `UnitRef` + dispatched skill. */
+function unitEventOf(s: StageSession): UnitEvent {
+	const u = s.unit!;
+	return { role: u.role, index: u.index, unitId: u.id, label: u.label, skill: s.skill };
 }
 
 /** Build a `LifecycleContext` from any SessionContext-shaped object. */
@@ -240,12 +235,15 @@ function readSessionOutcome(ctx: WorkflowHostContext, branchOffset: number | und
 // Helpers
 // ===========================================================================
 
-const auditFor = (s: StageSession | FanoutSession): AuditCtx => ({
+const auditFor = (s: StageSession): AuditCtx => ({
 	cwd: s.cwd,
 	runId: s.runId,
 	state: s.state,
-	stageName: "unitIndex" in s ? fanoutRowStage(s) : s.stageName,
+	stageName: s.stageName,
 	skill: s.skill,
 	lifecycle: s.lifecycle,
 	runIdentity: s.runIdentity,
+	// Loop units thread their identity onto failure/cancellation rows so failed
+	// trailers carry the structured fields the resume drift guard consumes.
+	...(s.unit ? { unit: s.unit } : {}),
 });

@@ -16,6 +16,11 @@ const LIFECYCLE_KEY = Symbol.for("@juicesharp/rpiv-workflow:lifecycle");
 interface LifecycleBundle {
 	onWorkflowStart?: (ctx: unknown) => unknown | Promise<unknown>;
 	onStageStart?: (stage: { name: string; skill?: string }, ctx: { workflow: string }) => unknown | Promise<unknown>;
+	onUnitStart?: (
+		stage: { name: string },
+		unit: { skill: string },
+		ctx: { workflow: string },
+	) => unknown | Promise<unknown>;
 	onWorkflowEnd?: (result: unknown, ctx: unknown) => unknown | Promise<unknown>;
 }
 
@@ -284,6 +289,75 @@ describe("model-override", () => {
 				expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
 				expect(setThinkingLevel).toHaveBeenLastCalledWith("medium"); // baseline thinking
 			});
+		});
+	});
+
+	describe("onUnitStart per-unit override application", () => {
+		async function setup(opts: { setModelResult?: boolean } = {}) {
+			const fake = makePi({ baselineThinking: "medium", ...opts });
+			registerModelOverrideSessionStart(fake.pi);
+			await registerModelOverrideLifecycle(fake.pi);
+			const handler = fake.sessionStart()!;
+			const registry = {
+				find: vi.fn((provider: string, modelId: string) => ({ provider, id: modelId })),
+			};
+			await handler({}, { modelRegistry: registry, model: BASELINE_MODEL });
+			const lc = lastListener();
+			await lc.onWorkflowStart?.({});
+			return { ...fake, registry, lc };
+		}
+
+		it("resolves a judge unit's model through skills[judge.skill] (judges get their own model)", async () => {
+			// A judge unit dispatches the judge's own skill body; the cascade resolves
+			// it through the `skills.<judge.skill>` rung — the first time a judge can
+			// carry a distinct model.
+			writeModels({ skills: { "grade-breakdown": { model: "zai/glm-4-7", thinking: "high" } } });
+			const { setModel, setThinkingLevel, registry, lc } = await setup();
+
+			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
+
+			expect(registry.find).toHaveBeenCalledWith("zai", "glm-4-7");
+			expect(setModel).toHaveBeenLastCalledWith({ provider: "zai", id: "glm-4-7" });
+			expect(setThinkingLevel).toHaveBeenLastCalledWith("high");
+		});
+
+		it("reverts an unconfigured unit to baseline (no bleed-through from the prior unit's model)", async () => {
+			// The judge unit is configured; the following produce unit is not — it must
+			// revert to baseline, not inherit the judge's model.
+			writeModels({ skills: { "grade-breakdown": { model: "zai/glm-4-7" } } });
+			const { setModel, setThinkingLevel, lc } = await setup();
+
+			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
+			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "breakdown" }, { workflow: "polish" });
+
+			expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
+			expect(setThinkingLevel).toHaveBeenLastCalledWith("medium");
+		});
+
+		it("idempotently re-applies a produce unit's stage override", async () => {
+			// A produce unit re-resolves the stage's own override via the skills rung —
+			// the same model the stage applied at onStageStart, re-applied per unit.
+			writeModels({ skills: { implement: { model: "openai/o3-pro", thinking: "high" } } });
+			const { setModel, setThinkingLevel, lc } = await setup();
+
+			await lc.onUnitStart?.({ name: "implement" }, { skill: "implement" }, { workflow: "ship" });
+			await lc.onUnitStart?.({ name: "implement" }, { skill: "implement" }, { workflow: "ship" });
+
+			expect(setModel).toHaveBeenLastCalledWith({ provider: "openai", id: "o3-pro" });
+			expect(setThinkingLevel).toHaveBeenLastCalledWith("high");
+		});
+
+		it("is a no-op when no baseline was captured (workflow not started)", async () => {
+			writeModels({ skills: { "grade-breakdown": { model: "zai/glm-4-7" } } });
+			const fake = makePi();
+			registerModelOverrideSessionStart(fake.pi);
+			await registerModelOverrideLifecycle(fake.pi);
+			const lc = lastListener();
+
+			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
+
+			expect(fake.setModel).not.toHaveBeenCalled();
+			expect(fake.setThinkingLevel).not.toHaveBeenCalled();
 		});
 	});
 

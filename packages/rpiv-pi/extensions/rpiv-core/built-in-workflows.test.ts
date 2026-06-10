@@ -27,6 +27,7 @@ import {
 	defineWorkflow,
 	type EdgeFn,
 	type FanoutFn,
+	fanout,
 	type Output,
 	produces,
 	type RunState,
@@ -36,7 +37,7 @@ import {
 	validateWorkflow,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow";
-import { describeFlow, fs as fsHandle } from "@juicesharp/rpiv-workflow/registration";
+import { describeFlow, fs as fsHandle, loopSpecOf } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rpivArtifactMdOutcome } from "./artifact-collector.js";
 import { builtInWorkflows } from "./built-in-workflows.js";
@@ -412,7 +413,7 @@ describe("phase fanout rows preserve both stage name (record key) and skill body
 			start: "research",
 			stages: {
 				research: produces({ outcome: rpivArtifactMdOutcome }),
-				"implement-after-revise": acts({ skill: "implement", fanout: phaseFanout }),
+				"implement-after-revise": acts({ skill: "implement", loop: fanout({ units: phaseFanout }) }),
 			},
 			edges: { research: "implement-after-revise", "implement-after-revise": "stop" },
 		});
@@ -637,9 +638,9 @@ describe("polish workflow", () => {
 
 		it("blueprint is an iterate stage and implement is a fanout stage (the two co-exist)", () => {
 			const wf = findWorkflow("polish");
-			expect(typeof wf.stages.blueprint?.iterate).toBe("function");
+			expect(wf.stages.blueprint?.loop?.kind).toBe("iterate");
 			expect(wf.stages.blueprint?.kind).toBe("produces");
-			expect(typeof wf.stages.implement?.fanout).toBe("function");
+			expect(wf.stages.implement?.loop?.kind).toBe("fanout");
 		});
 
 		it("code-review sources its schema from the contract (no inline outputSchema) and gates to commit | blueprint", () => {
@@ -932,9 +933,9 @@ describe("ship workflow", () => {
 		});
 
 		const fanout = () => {
-			const f = findWorkflow("ship").stages.implement?.fanout;
-			if (!f) throw new Error("ship implement stage has no fanout");
-			return f;
+			const loop = findWorkflow("ship").stages.implement?.loop;
+			if (loop?.kind !== "fanout") throw new Error("ship implement stage has no fanout loop");
+			return loop.units;
 		};
 		const writePlan = (rel: string, body: string) => {
 			const parts = rel.split("/");
@@ -1136,9 +1137,9 @@ describe("polish — REVIEW_PHASE_ITERATE (frontmatter-driven)", () => {
 	});
 
 	const iterate = () => {
-		const iter = findWorkflow("polish").stages.blueprint?.iterate;
-		if (!iter) throw new Error("polish blueprint stage has no iterate");
-		return iter;
+		const loop = findWorkflow("polish").stages.blueprint?.loop;
+		if (loop?.kind !== "iterate") throw new Error("polish blueprint stage has no iterate loop");
+		return loop.next;
 	};
 	const write = (rel: string, body: string) => {
 		const parts = rel.split("/");
@@ -1270,11 +1271,17 @@ describe("control-flow specs are introspectable (presets self-describe)", () => 
 		if (!wf) throw new Error(`workflow ${workflow} not found`);
 		return describeFlow(wf).find((s) => s.stage === stage);
 	};
+	// `describeFlow` now projects control-flow off the unified `loop` field;
+	// `loopSpecOf(stage.loop)` is the same projection it carries in `control.spec`,
+	// asserted directly here for the source/unit/max detail.
+	const loopSpecOfStage = (workflow: string, stage: string) => {
+		const wf = builtInWorkflows.find((w) => w.name === workflow);
+		if (!wf) throw new Error(`workflow ${workflow} not found`);
+		return loopSpecOf(wf.stages[stage]?.loop);
+	};
 
 	it("build/implement reports a fanout spec sourcing the plans channel", () => {
-		const impl = shapeOf("build", "implement");
-		expect(impl?.control.mode).toBe("fanout");
-		expect(impl?.control.spec).toMatchObject({
+		expect(loopSpecOfStage("build", "implement")).toMatchObject({
 			kind: "fanout",
 			source: "plans",
 			unit: { by: "frontmatter-array", pattern: "phases" },
@@ -1283,11 +1290,8 @@ describe("control-flow specs are introspectable (presets self-describe)", () => 
 	});
 
 	it("polish/blueprint reports an iterate spec sourcing architecture-reviews", () => {
-		const bp = shapeOf("polish", "blueprint");
-		expect(bp?.control.mode).toBe("iterate");
-		expect(bp?.control.spec).toMatchObject({
+		expect(loopSpecOfStage("polish", "blueprint")).toMatchObject({
 			kind: "iterate",
-			dependsOnPrior: true,
 			source: "architecture-reviews",
 		});
 	});

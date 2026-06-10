@@ -1,8 +1,8 @@
 /**
- * Reconstruction tests for `reconstructState` — the pure fold that rebuilds
- * `RunState` from a run's JSONL audit trail.
+ * Reconstruction tests for `reconstructState` — the ONE async fold that
+ * rebuilds `RunState` from a run's JSONL audit trail.
  *
- * Covers 8 cases:
+ * Covers:
  *   1. Produces-only linear chain (primary + named + output + counters)
  *   2. Side-effect stage between produces (primary preserved)
  *   3. Terminal stage (primary cleared)
@@ -10,10 +10,15 @@
  *      visited + lastStageNumber include it)
  *   5. Empty file → no-rows refusal
  *   6. Stage gone from workflow → stage-gone refusal
- *   7. Decorated fanout unit rows → counters-only fold + fanoutProgress;
- *      decorated iterate unit rows → full-produces fold + iterateProgress
- *      (rolling primary, named accumulation, generation reset)
+ *   7. Loop-unit rows keyed on the STRUCTURED `parent` field — fanout entry
+ *      projection at generation close, iterate "last" projection + trailing
+ *      cursor, assess channel separation + transient judge roll, full-row
+ *      drift guard, and the legacy-row (`parent`-less) stage-gone refusal
  *   8. Named-slot append-order (array history preserved across repeated calls)
+ *
+ * End-to-end loop-resume DISPATCH (re-run failed+remaining units, finished
+ * no-op silence, the assess pending paths, back-edge generation reset) lives
+ * in `resume-loop.test.ts`.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,9 +26,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Workflow } from "../api.js";
+import { type FanoutFn, type IterateFn, produces, type Workflow } from "../api.js";
+import { assess, fanout, iterate } from "../control-flow.js";
 import type { Artifact } from "../handle.js";
 import { fs as fsHandle } from "../handle.js";
+import { judge } from "../judge.js";
 import type { Output } from "../output.js";
 import {
 	appendStage,
@@ -136,12 +143,64 @@ function writeRunStages(stages: WorkflowStage[]): WorkflowHeader {
 	return baseHeader;
 }
 
+/** A structured loop-unit row (the machine channel — `stage` is display only). */
+const fanoutUnitRow = (
+	parent: string,
+	unitId: string,
+	unitIndex: number,
+	num: number,
+	output: Output | undefined,
+	status: WorkflowStage["status"] = "completed",
+): WorkflowStage => ({
+	stageNumber: num,
+	stage: `${parent} (${unitId})`,
+	skill: parent,
+	status,
+	ts: `t${num}`,
+	parent,
+	role: "produce",
+	unitId,
+	unitIndex,
+	...(output ? { output } : {}),
+	...(status === "failed" ? { errMsg: "boom" } : {}),
+});
+
+const assessProduceRow = (parent: string, round: number, num: number, output: Output): WorkflowStage => ({
+	stageNumber: num,
+	stage: `${parent} (r${round}·produce)`,
+	skill: parent,
+	status: "completed",
+	ts: `t${num}`,
+	parent,
+	role: "produce",
+	unitIndex: round,
+	output,
+});
+
+const assessJudgeRow = (
+	parent: string,
+	judgeSkill: string,
+	round: number,
+	num: number,
+	output: Output,
+): WorkflowStage => ({
+	stageNumber: num,
+	stage: `${parent} (r${round}·judge)`,
+	skill: judgeSkill,
+	status: "completed",
+	ts: `t${num}`,
+	parent,
+	role: "judge",
+	unitIndex: round,
+	output,
+});
+
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
 
 describe("reconstructState", () => {
-	it("produces-only linear chain: advances primary, appends named, tracks counters", () => {
+	it("produces-only linear chain: advances primary, appends named, tracks counters", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const art2 = fakeArtifact("plans/p2.md");
 		const out1 = fakeOutput([art1]);
@@ -166,7 +225,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return; // type narrow
@@ -183,7 +242,7 @@ describe("reconstructState", () => {
 		expect(result.rows).toHaveLength(2);
 	});
 
-	it("side-effect stage between produces: primary preserved, named untouched by side-effect", () => {
+	it("side-effect stage between produces: primary preserved, named untouched by side-effect", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const out1 = fakeOutput([art1]);
 		const sideOut = fakeOutput([]); // side-effect output, no artifacts
@@ -207,7 +266,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, sideEffectWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, sideEffectWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -222,7 +281,7 @@ describe("reconstructState", () => {
 		expect(result.visited).toEqual(new Set(["plan", "commit"]));
 	});
 
-	it("terminal stage (inheritsArtifacts: false): clears primary", () => {
+	it("terminal stage (inheritsArtifacts: false): clears primary", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const out1 = fakeOutput([art1]);
 		const termOut = fakeOutput([]);
@@ -245,7 +304,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, terminalWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, terminalWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -256,7 +315,7 @@ describe("reconstructState", () => {
 		expect(result.state.named.plan).toEqual([out1]);
 	});
 
-	it("failed trailing row: output NOT seeded, stagesCompleted excludes it, visited + lastStageNumber include it", () => {
+	it("failed trailing row: output NOT seeded, stagesCompleted excludes it, visited + lastStageNumber include it", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const out1 = fakeOutput([art1]);
 
@@ -279,7 +338,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -300,11 +359,11 @@ describe("reconstructState", () => {
 		expect(result.state.named.build).toBeUndefined();
 	});
 
-	it("empty file (no stage rows): returns no-rows refusal", () => {
+	it("empty file (no stage rows): returns no-rows refusal", async () => {
 		// Write header only, no stage rows
 		writeHeader(tmpDir, baseHeader);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
@@ -312,7 +371,7 @@ describe("reconstructState", () => {
 		expect(result.detail).toBe(baseHeader.runId);
 	});
 
-	it("row whose stage is not in workflow.stages: returns stage-gone refusal", () => {
+	it("row whose stage is not in workflow.stages: returns stage-gone refusal", async () => {
 		writeRunStages([
 			{
 				stageNumber: 1,
@@ -331,7 +390,7 @@ describe("reconstructState", () => {
 		]);
 
 		// linearWorkflow only has plan, build, deploy — no "renamed-away"
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
@@ -339,106 +398,105 @@ describe("reconstructState", () => {
 		expect(result.detail).toBe("renamed-away");
 	});
 
-	it("decorated fanout unit rows: folds counters-only, tracks fanoutProgress, no primary mutation", () => {
+	// -------------------------------------------------------------------------
+	// Loop-unit rows — keyed on the STRUCTURED `parent` field
+	// -------------------------------------------------------------------------
+
+	it("fanout generation: units publish to the named channel; generation close restores the entry primary", async () => {
 		const planArt = fakeArtifact("plans/p1.md");
-		const planOut = fakeOutput([planArt]);
-		// Workflow: plan (produces) -> build (fanout). Build units are decorated rows.
+		const u1 = fakeArtifact("builds/b1.md");
+		const u2 = fakeArtifact("builds/b2.md");
+		const tail = fakeArtifact("deploys/d1.md");
+		const units: FanoutFn = () => [
+			{ prompt: "u1", label: "phase 1/2", id: "phase-1" },
+			{ prompt: "u2", label: "phase 2/2", id: "phase-2" },
+		];
 		const wf: Workflow = {
 			name: "test-wf",
 			start: "plan",
 			stages: {
-				plan: { kind: "produces", sessionPolicy: "fresh" },
-				build: { kind: "produces", sessionPolicy: "fresh", fanout: () => [] },
+				plan: produces({ outcome: makeOutcome("plans") }),
+				build: produces({ outcome: makeOutcome("builds"), loop: fanout({ units }) }),
+				deploy: produces({ outcome: makeOutcome("deploys") }),
 			},
-			edges: { plan: "build", build: "stop" },
+			edges: { plan: "build", build: "deploy", deploy: "stop" },
 		} as Workflow;
 
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: planOut },
-			{ stageNumber: 2, stage: "build (phase 1/2)", skill: "build", status: "completed", ts: "t2" },
-			{ stageNumber: 3, stage: "build (phase 2/2)", skill: "build", status: "completed", ts: "t3" },
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput([planArt]) },
+			fanoutUnitRow("build", "phase-1", 0, 2, fakeOutput([u1])),
+			fanoutUnitRow("build", "phase-2", 1, 3, fakeOutput([u2])),
+			{
+				stageNumber: 4,
+				stage: "deploy",
+				skill: "deploy",
+				status: "completed",
+				ts: "t4",
+				output: fakeOutput([tail]),
+			},
 		]);
 
-		const result = reconstructState(tmpDir, wf, baseHeader);
+		const result = await reconstructState(tmpDir, wf, baseHeader);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 
-		// Counters advanced for every completed row (1 plan + 2 units)...
-		expect(result.state.stagesCompleted).toBe(3);
-		// ...but the fanout units left the primary on the pre-fanout artifact.
-		expect(result.state.primaryArtifact).toStrictEqual(planArt);
+		// Generation closed before deploy → primary restored to the entry (planArt),
+		// then deploy rolled it forward to its own artifact.
+		expect(result.state.primaryArtifact).toStrictEqual(tail);
+		// Both units published into the builds channel (every unit collects).
+		expect(result.state.named.builds?.map((o) => o.artifacts[0])).toEqual([u1, u2]);
+		// Counters: plan + 2 units + deploy.
+		expect(result.state.stagesCompleted).toBe(4);
 		// Parent is visited; the decorated keys are not.
-		expect(result.visited).toEqual(new Set(["plan", "build"]));
-		// fanoutProgress carries the completed decorated strings in order.
-		expect(result.fanoutProgress.get("build")).toEqual(["build (phase 1/2)", "build (phase 2/2)"]);
+		expect(result.visited).toEqual(new Set(["plan", "build", "deploy"]));
+		// Generation closed → no trailing open generation.
+		expect(result.trailing).toBeUndefined();
+		expect(result.drift).toBeUndefined();
 	});
 
-	it("failed fanout unit is excluded from fanoutProgress (the k+1 resume point)", () => {
+	it("fanout drift: a recomputed unit id differs from a recorded row → ok with drift set, state still applied", async () => {
+		const units: FanoutFn = () => [{ prompt: "x", label: "task", id: "task-1" }];
 		const wf: Workflow = {
 			name: "test-wf",
 			start: "build",
-			stages: { build: { kind: "produces", sessionPolicy: "fresh", fanout: () => [] } },
+			stages: { build: produces({ outcome: makeOutcome("builds"), loop: fanout({ units }) }) },
 			edges: { build: "stop" },
 		} as Workflow;
-		writeRunStages([
-			{ stageNumber: 1, stage: "build (phase 1/3)", skill: "build", status: "completed", ts: "t1" },
-			{ stageNumber: 2, stage: "build (phase 2/3)", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
-		]);
-		const result = reconstructState(tmpDir, wf, baseHeader);
+
+		writeRunStages([fanoutUnitRow("build", "phase-1", 0, 1, fakeOutput([fakeArtifact("builds/b1.md")]))]);
+
+		const result = await reconstructState(tmpDir, wf, baseHeader);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
+
+		// Drift recorded against the parent; the fold still applied the row so state is complete.
+		expect(result.drift?.parent).toBe("build");
+		expect(result.drift?.errMsg).toMatch(/deterministic/);
 		expect(result.state.stagesCompleted).toBe(1);
-		expect(result.fanoutProgress.get("build")).toEqual(["build (phase 1/3)"]);
-		expect(result.visited).toEqual(new Set(["build"]));
 	});
 
-	it("looped fanout: a second generation resets fanoutProgress to the trailing pass; stagesCompleted stays cumulative", () => {
-		// build (fanout) -> review (produces) -> build (fanout, gen 2). Units are decorated rows.
-		const wf: Workflow = {
-			name: "test-wf",
-			start: "build",
-			stages: {
-				build: { kind: "produces", sessionPolicy: "fresh", fanout: () => [] },
-				review: { kind: "produces", sessionPolicy: "fresh" },
-			},
-			edges: { build: "review", review: "build" },
-		} as Workflow;
-		writeRunStages([
-			{ stageNumber: 1, stage: "build (a)", skill: "build", status: "completed", ts: "t1" },
-			{ stageNumber: 2, stage: "build (b)", skill: "build", status: "completed", ts: "t2" },
-			{
-				stageNumber: 3,
-				stage: "review",
-				skill: "review",
-				status: "completed",
-				ts: "t3",
-				output: fakeOutput([fakeArtifact("reviews/r1.md")]),
-			},
-			// gen 2 — non-contiguous with gen 1 (a review row broke contiguity).
-			{ stageNumber: 4, stage: "build (a)", skill: "build", status: "completed", ts: "t4" },
-			{ stageNumber: 5, stage: "build (b)", skill: "build", status: "failed", ts: "t5", errMsg: "boom" },
-		]);
-		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		// fanoutProgress holds ONLY the trailing generation's completed prefix (gen 2's "build (a)").
-		expect(result.fanoutProgress.get("build")).toEqual(["build (a)"]);
-		// stagesCompleted counts ALL completed units across both generations (2 + 1) + the review.
-		expect(result.state.stagesCompleted).toBe(4);
-		expect(result.visited).toEqual(new Set(["build", "review"]));
+	it("legacy decorated row without `parent` refuses stage-gone (pre-redesign run, no migration)", async () => {
+		writeRunStages([{ stageNumber: 1, stage: "build (phase 1/2)", skill: "build", status: "completed", ts: "t1" }]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toBe("stage-gone");
+		expect(result.detail).toBe("build (phase 1/2)");
 	});
 
-	it("decorated iterate unit rows: full-produces fold — rolls primary, accumulates named, builds iterateProgress", () => {
+	it("iterate generation: rolls the primary forward; trailing open generation carries the accumulated cursor", async () => {
 		const reviewArt = fakeArtifact("reviews/r1.md");
-		const plan1 = fakeArtifact("plans/p1.md");
-		const plan2 = fakeArtifact("plans/p2.md");
-		// review (produces) -> blueprint (iterate, produces "plans"). Units are decorated rows.
+		const p1 = fakeArtifact("plans/p1.md");
+		const p2 = fakeArtifact("plans/p2.md");
+		const next: IterateFn = ({ index }) =>
+			index >= 2 ? null : { prompt: `p${index + 1}`, label: `phase ${index + 1}`, id: `phase-${index + 1}` };
 		const wf: Workflow = {
 			name: "test-wf",
 			start: "review",
 			stages: {
-				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
-				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
+				review: produces({ outcome: makeOutcome("reviews") }),
+				blueprint: produces({ outcome: makeOutcome("plans"), loop: iterate({ next }) }),
 			},
 			edges: { review: "blueprint", blueprint: "stop" },
 		} as Workflow;
@@ -452,377 +510,72 @@ describe("reconstructState", () => {
 				ts: "t1",
 				output: fakeOutput([reviewArt]),
 			},
-			{
-				stageNumber: 2,
-				stage: "blueprint (phase-1)",
-				skill: "blueprint",
-				status: "completed",
-				ts: "t2",
-				output: fakeOutput([plan1]),
-			},
-			{
-				stageNumber: 3,
-				stage: "blueprint (phase-2)",
-				skill: "blueprint",
-				status: "completed",
-				ts: "t3",
-				output: fakeOutput([plan2]),
-			},
+			fanoutUnitRow("blueprint", "phase-1", 0, 2, fakeOutput([p1])),
+			fanoutUnitRow("blueprint", "phase-2", 1, 3, fakeOutput([p2])),
 		]);
 
-		const result = reconstructState(tmpDir, wf, baseHeader);
+		const result = await reconstructState(tmpDir, wf, baseHeader);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 
-		// Counters advanced for every completed row (1 review + 2 units).
-		expect(result.state.stagesCompleted).toBe(3);
-		// Primary ROLLED FORWARD to the last unit (unlike fanout, which leaves it on entry).
-		expect(result.state.primaryArtifact).toStrictEqual(plan2);
-		// state.named accumulated both plans under the outcome name.
-		expect(result.state.named.plans?.map((o) => o.artifacts[0])).toEqual([plan1, plan2]);
-		// Parent is visited; decorated keys are not.
+		// Primary rolled forward to the last unit (iterate units roll, unlike fanout).
+		expect(result.state.primaryArtifact).toStrictEqual(p2);
+		expect(result.state.named.plans?.map((o) => o.artifacts[0])).toEqual([p1, p2]);
 		expect(result.visited).toEqual(new Set(["review", "blueprint"]));
-		// iterateProgress: trailing generation's accumulated (both units) + FROZEN entry artifact (the review).
-		const point = result.iterateProgress.get("blueprint")!;
-		expect(point.entryArtifact).toStrictEqual(reviewArt);
-		expect(point.accumulated.map((o) => o.artifacts[0])).toEqual([plan1, plan2]);
+		// Trailing open generation carries the reconstructed driver cursor + FROZEN entry.
+		expect(result.trailing?.parent).toBe("blueprint");
+		expect(result.trailing?.cursor.index).toBe(2);
+		expect(result.trailing?.cursor.accumulated.map((o) => o.artifacts[0])).toEqual([p1, p2]);
+		expect(result.trailing?.entryArtifact).toStrictEqual(reviewArt);
+		expect(result.drift).toBeUndefined();
 	});
 
-	it("failed iterate unit is excluded from accumulated (the re-pull point)", () => {
-		const wf: Workflow = {
-			name: "test-wf",
-			start: "blueprint",
-			stages: {
-				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
-			},
-			edges: { blueprint: "stop" },
-		} as Workflow;
-		writeRunStages([
-			{
-				stageNumber: 1,
-				stage: "blueprint (phase-1)",
-				skill: "blueprint",
-				status: "completed",
-				ts: "t1",
-				output: fakeOutput([fakeArtifact("plans/p1.md")]),
-			},
-			{
-				stageNumber: 2,
-				stage: "blueprint (phase-2)",
-				skill: "blueprint",
-				status: "failed",
-				ts: "t2",
-				errMsg: "boom",
-			},
-		]);
-		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		expect(result.state.stagesCompleted).toBe(1);
-		expect(result.iterateProgress.get("blueprint")!.accumulated).toHaveLength(1);
-		expect(result.visited).toEqual(new Set(["blueprint"]));
-	});
-
-	it("corrective loop: a second iterate generation resets accumulated + entry artifact, named keeps both", () => {
-		const reviewArt = fakeArtifact("reviews/r1.md");
-		const codeReviewArt = fakeArtifact("reviews/cr1.md"); // the loop-back artifact that re-enters blueprint
-		const wf: Workflow = {
-			name: "test-wf",
-			start: "review",
-			stages: {
-				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
-				blueprint: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("plans"), iterate: () => null },
-				"code-review": { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
-			},
-			edges: { review: "blueprint", blueprint: "code-review", "code-review": "blueprint" },
-		} as Workflow;
-		writeRunStages([
-			{
-				stageNumber: 1,
-				stage: "review",
-				skill: "review",
-				status: "completed",
-				ts: "t1",
-				output: fakeOutput([reviewArt]),
-			},
-			{
-				stageNumber: 2,
-				stage: "blueprint (phase-1)",
-				skill: "blueprint",
-				status: "completed",
-				ts: "t2",
-				output: fakeOutput([fakeArtifact("plans/g1p1.md")]),
-			},
-			{
-				stageNumber: 3,
-				stage: "code-review",
-				skill: "code-review",
-				status: "completed",
-				ts: "t3",
-				output: fakeOutput([codeReviewArt]),
-			},
-			// gen 2 starts here — non-contiguous with gen 1.
-			{
-				stageNumber: 4,
-				stage: "blueprint (phase-1)",
-				skill: "blueprint",
-				status: "completed",
-				ts: "t4",
-				output: fakeOutput([fakeArtifact("plans/g2p1.md")]),
-			},
-		]);
-		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		const point = result.iterateProgress.get("blueprint")!;
-		// Trailing generation: only gen-2's single unit, entry artifact = the code-review (loop-back primary).
-		expect(point.accumulated).toHaveLength(1);
-		expect(point.entryArtifact).toStrictEqual(codeReviewArt);
-		// state.named.plans accumulated BOTH generations.
-		expect(result.state.named.plans).toHaveLength(2);
-	});
-
-	it("prefix-name collision: 'build (x)' matches build, not 'build-extra'", () => {
-		const wf: Workflow = {
-			name: "test-wf",
-			start: "build",
-			stages: {
-				build: { kind: "produces", sessionPolicy: "fresh", fanout: () => [] },
-				"build-extra": { kind: "produces", sessionPolicy: "fresh", fanout: () => [] },
-			},
-			edges: { build: "build-extra", "build-extra": "stop" },
-		} as Workflow;
-		writeRunStages([
-			{ stageNumber: 1, stage: "build (phase 1/1)", skill: "build", status: "completed", ts: "t1" },
-			{ stageNumber: 2, stage: "build-extra (phase 1/1)", skill: "build-extra", status: "completed", ts: "t2" },
-		]);
-		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		expect(result.fanoutProgress.get("build")).toEqual(["build (phase 1/1)"]);
-		expect(result.fanoutProgress.get("build-extra")).toEqual(["build-extra (phase 1/1)"]);
-	});
-
-	// -------------------------------------------------------------------------
-	// Assess fold — two rows per round (`r{n}·produce`, `r{n}·judge`)
-	// -------------------------------------------------------------------------
-
-	/**
-	 * Minimal assess workflow: `breakdown` produces "tasks", its judge produces
-	 * "verdict". feedForward/done are never invoked by the fold (it replays rows),
-	 * so stubs suffice; only `judge.outcome.name` is read (for the verdict channel).
-	 */
-	const assessWf: Workflow = {
-		name: "test-wf",
-		start: "breakdown",
-		stages: {
-			breakdown: {
-				kind: "produces",
-				sessionPolicy: "fresh",
-				outcome: makeOutcome("tasks"),
-				assess: {
-					judge: { skill: "grade", outcome: makeOutcome("verdict"), done: () => false },
-					feedForward: () => "more",
-				},
-			},
-		},
-		edges: { breakdown: "stop" },
-	} as Workflow;
-
-	const produceRow = (n: number, num: number, art: Artifact, status: WorkflowStage["status"] = "completed") =>
-		({
-			stageNumber: num,
-			stage: `breakdown (r${n}·produce)`,
-			skill: "breakdown",
-			status,
-			ts: `t${num}`,
-			...(status === "completed" ? { output: fakeOutput([art]) } : {}),
-		}) as WorkflowStage;
-
-	const judgeRow = (n: number, num: number, art: Artifact, status: WorkflowStage["status"] = "completed") =>
-		({
-			stageNumber: num,
-			stage: `breakdown (r${n}·judge)`,
-			skill: "grade",
-			status,
-			ts: `t${num}`,
-			...(status === "completed" ? { output: fakeOutput([art]) } : {}),
-		}) as WorkflowStage;
-
-	it("assess: N complete rounds → round=N, channels separated, state holds last producer (never verdict)", () => {
-		const p0 = fakeArtifact("tasks/p0.md");
+	it("assess generation: producer + judge rows publish to separate channels; close restores the last producer pair", async () => {
+		const p0 = fakeArtifact("tasks/t0.md");
 		const v0 = fakeArtifact("verdicts/v0.json");
-		const p1 = fakeArtifact("tasks/p1.md");
+		const p1 = fakeArtifact("tasks/t1.md");
 		const v1 = fakeArtifact("verdicts/v1.json");
-
-		writeRunStages([produceRow(0, 1, p0), judgeRow(0, 2, v0), produceRow(1, 3, p1), judgeRow(1, 4, v1)]);
-
-		const result = reconstructState(tmpDir, assessWf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-
-		// Every completed row of EITHER phase bumps the counter (2 produce + 2 judge).
-		expect(result.state.stagesCompleted).toBe(4);
-		// Post-fold state holds the LAST producer's values — never a verdict.
-		expect(result.state.primaryArtifact).toStrictEqual(p1);
-		expect(result.state.output).toStrictEqual(fakeOutput([p1]));
-		// Producer outputs and verdicts live in distinct named channels.
-		expect(result.state.named.tasks?.map((o) => o.artifacts[0])).toEqual([p0, p1]);
-		expect(result.state.named.verdict?.map((o) => o.artifacts[0])).toEqual([v0, v1]);
-		// Parent visited; decorated keys are not.
-		expect(result.visited).toEqual(new Set(["breakdown"]));
-
-		const point = result.assessProgress.get("breakdown")!;
-		// After 2 complete rounds the next produce is round 2.
-		expect(point.round).toBe(2);
-		expect(point.phase).toBe("produce");
-		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([p1]));
-		expect(point.lastVerdict).toStrictEqual(fakeOutput([v1]));
-		// entryArtifact frozen at the first producer row (no upstream → undefined).
-		expect(point.entryArtifact).toBeUndefined();
-	});
-
-	it("assess: completed produce trailer → pending judge for that round", () => {
-		const p0 = fakeArtifact("tasks/p0.md");
-		writeRunStages([produceRow(0, 1, p0)]);
-
-		const result = reconstructState(tmpDir, assessWf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-
-		const point = result.assessProgress.get("breakdown")!;
-		expect(point.phase).toBe("judge");
-		expect(point.round).toBe(0);
-		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([p0]));
-		expect(point.lastVerdict).toBeUndefined();
-		// Producer published; no verdict yet.
-		expect(result.state.named.tasks).toHaveLength(1);
-		expect(result.state.named.verdict).toBeUndefined();
-		expect(result.state.stagesCompleted).toBe(1);
-	});
-
-	it("assess: failed produce trailer → re-run produce (not counted, no output seeded)", () => {
-		const p0 = fakeArtifact("tasks/p0.md");
-		const v0 = fakeArtifact("verdicts/v0.json");
-		writeRunStages([
-			produceRow(0, 1, p0),
-			judgeRow(0, 2, v0),
-			produceRow(1, 3, fakeArtifact("tasks/p1.md"), "failed"),
-		]);
-
-		const result = reconstructState(tmpDir, assessWf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-
-		const point = result.assessProgress.get("breakdown")!;
-		expect(point.phase).toBe("produce");
-		expect(point.round).toBe(1);
-		// The failed produce did not advance state — primary/output stay on round 0's producer.
-		expect(result.state.primaryArtifact).toStrictEqual(p0);
-		expect(result.state.output).toStrictEqual(fakeOutput([p0]));
-		// 1 produce + 1 judge completed; the failed produce excluded.
-		expect(result.state.stagesCompleted).toBe(2);
-	});
-
-	it("assess: failed judge trailer → re-run judge for that round (verdict not stashed)", () => {
-		const p0 = fakeArtifact("tasks/p0.md");
-		writeRunStages([produceRow(0, 1, p0), judgeRow(0, 2, fakeArtifact("verdicts/v0.json"), "failed")]);
-
-		const result = reconstructState(tmpDir, assessWf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-
-		const point = result.assessProgress.get("breakdown")!;
-		expect(point.phase).toBe("judge");
-		expect(point.round).toBe(0);
-		expect(point.lastVerdict).toBeUndefined();
-		// Judge failed → not published, not counted; producer state intact.
-		expect(result.state.named.verdict).toBeUndefined();
-		expect(result.state.primaryArtifact).toStrictEqual(p0);
-		expect(result.state.stagesCompleted).toBe(1);
-	});
-
-	it("assess: entryArtifact freezes at the first producer row when an upstream primary exists", () => {
-		const upstream = fakeArtifact("reqs/r1.md");
-		const p0 = fakeArtifact("tasks/p0.md");
-		// review (produces) -> breakdown (assess). The breakdown entry is the review artifact.
-		const wf: Workflow = {
-			name: "test-wf",
-			start: "review",
-			stages: {
-				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
-				breakdown: assessWf.stages.breakdown,
-			},
-			edges: { review: "breakdown", breakdown: "stop" },
-		} as Workflow;
-		writeRunStages([
-			{
-				stageNumber: 1,
-				stage: "review",
-				skill: "review",
-				status: "completed",
-				ts: "t1",
-				output: fakeOutput([upstream]),
-			},
-			produceRow(0, 2, p0),
-			judgeRow(0, 3, fakeArtifact("verdicts/v0.json")),
-		]);
-
-		const result = reconstructState(tmpDir, wf, baseHeader);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-
-		const point = result.assessProgress.get("breakdown")!;
-		// Frozen at the review artifact (the breakdown entry), not rolled to the producer.
-		expect(point.entryArtifact).toStrictEqual(upstream);
-		// But the rolled primary sits on the latest producer.
-		expect(result.state.primaryArtifact).toStrictEqual(p0);
-	});
-
-	it("assess: a back-edge second generation resets the point to the trailing pass; named keeps both", () => {
+		const g1 = fakeArtifact("gates/g1.md");
+		const loop = assess({
+			judge: judge({ skill: "grade", outcome: makeOutcome("verdict") }),
+			done: () => false,
+			feedForward: () => "more",
+		});
 		const wf: Workflow = {
 			name: "test-wf",
 			start: "breakdown",
 			stages: {
-				breakdown: assessWf.stages.breakdown,
-				gate: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("gates") },
+				breakdown: produces({ outcome: makeOutcome("tasks"), loop }),
+				gate: produces({ outcome: makeOutcome("gates") }),
 			},
-			edges: { breakdown: "gate", gate: "breakdown" },
+			edges: { breakdown: "gate", gate: "stop" },
 		} as Workflow;
-		const gen2p0 = fakeArtifact("tasks/g2p0.md");
+
 		writeRunStages([
-			// gen 1
-			produceRow(0, 1, fakeArtifact("tasks/g1p0.md")),
-			judgeRow(0, 2, fakeArtifact("verdicts/g1v0.json")),
-			// a non-assess row breaks contiguity
-			{
-				stageNumber: 3,
-				stage: "gate",
-				skill: "gate",
-				status: "completed",
-				ts: "t3",
-				output: fakeOutput([fakeArtifact("gates/g1.md")]),
-			},
-			// gen 2 — fresh generation
-			produceRow(0, 4, gen2p0),
+			assessProduceRow("breakdown", 0, 1, fakeOutput([p0])),
+			assessJudgeRow("breakdown", "grade", 0, 2, fakeOutput([v0])),
+			assessProduceRow("breakdown", 1, 3, fakeOutput([p1])),
+			assessJudgeRow("breakdown", "grade", 1, 4, fakeOutput([v1])),
+			{ stageNumber: 5, stage: "gate", skill: "gate", status: "completed", ts: "t5", output: fakeOutput([g1]) },
 		]);
 
-		const result = reconstructState(tmpDir, wf, baseHeader);
+		const result = await reconstructState(tmpDir, wf, baseHeader);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 
-		const point = result.assessProgress.get("breakdown")!;
-		// Trailing generation: only gen-2's pending judge for round 0.
-		expect(point.phase).toBe("judge");
-		expect(point.round).toBe(0);
-		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([gen2p0]));
-		// entryArtifact reset to gen 2's entry (the gate loop-back primary).
-		expect(point.entryArtifact?.handle).toStrictEqual(fakeArtifact("gates/g1.md").handle);
-		// state.named.tasks accumulated BOTH generations' producers.
-		expect(result.state.named.tasks).toHaveLength(2);
+		// Producers and verdicts live in distinct named channels.
+		expect(result.state.named.tasks?.map((o) => o.artifacts[0])).toEqual([p0, p1]);
+		expect(result.state.named.verdict?.map((o) => o.artifacts[0])).toEqual([v0, v1]);
+		// Generation closed before gate → "last" projects the last producer (p1), THEN gate rolled it.
+		expect(result.state.primaryArtifact).toStrictEqual(g1);
+		// Every completed row of either phase bumped the counter (2 produce + 2 judge + gate).
+		expect(result.state.stagesCompleted).toBe(5);
+		expect(result.visited).toEqual(new Set(["breakdown", "gate"]));
+		expect(result.trailing).toBeUndefined();
+		expect(result.drift).toBeUndefined();
 	});
 
-	it("named slot accumulates across completed rows for the same key (append order)", () => {
+	it("named slot accumulates across completed rows for the same key (append order)", async () => {
 		// Simulate a backward-jump loop: plan runs twice, producing two outputs.
 		const art1 = fakeArtifact("plans/p1.md");
 		const art2 = fakeArtifact("plans/p2.md");
@@ -848,7 +601,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -860,7 +613,7 @@ describe("reconstructState", () => {
 		expect(result.state.stagesCompleted).toBe(2);
 	});
 
-	it("aborted row is treated like a failed row: excluded from state seeding", () => {
+	it("aborted row is treated like a failed row: excluded from state seeding", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const out1 = fakeOutput([art1]);
 
@@ -883,7 +636,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -894,7 +647,7 @@ describe("reconstructState", () => {
 		expect(result.lastStageNumber).toBe(2);
 	});
 
-	it("skipped row is excluded from state seeding", () => {
+	it("skipped row is excluded from state seeding", async () => {
 		const art1 = fakeArtifact("plans/p1.md");
 		const out1 = fakeOutput([art1]);
 
@@ -916,7 +669,7 @@ describe("reconstructState", () => {
 			},
 		]);
 
-		const result = reconstructState(tmpDir, linearWorkflow, baseHeader);
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -1345,5 +1098,5 @@ describe("resumeWorkflow", () => {
 		});
 	});
 
-	// Mid-iterate resume dispatch is covered end-to-end in `resume-iterate.test.ts`.
+	// Mid-loop resume dispatch (fanout/iterate/assess) is covered end-to-end in `resume-loop.test.ts`.
 });

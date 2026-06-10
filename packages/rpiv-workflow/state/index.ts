@@ -6,6 +6,7 @@
 
 export type {
 	ClaimResult,
+	LoopCapRow,
 	NamesIndex,
 	RoutingDecision,
 	RunSummary,
@@ -15,6 +16,7 @@ export type {
 } from "./state.js";
 export {
 	addNameToIndex,
+	appendLoopCap,
 	appendRoutingDecision,
 	appendStage,
 	claimName,
@@ -26,6 +28,7 @@ export {
 	readAllStages,
 	readHeader,
 	readLastStage,
+	readLoopCaps,
 	readNamesIndex,
 	readRoutingDecisions,
 	rebuildIndex,

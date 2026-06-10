@@ -5,6 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 import { acts, defineWorkflow, gate, produces, type StageDef, type Workflow } from "./api.js";
+import { assess, fanout, iterate } from "./control-flow.js";
+import { judge } from "./judge.js";
 import type { LoadedWorkflows } from "./load/index.js";
 import { gitCommitOutcome } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
@@ -303,18 +305,19 @@ describe("formatWorkflowDetails", () => {
 		expect(cLine).not.toContain("out-schema");
 	});
 
-	it("renders the judge mode for an assess stage — skill judge", () => {
+	it("renders the loop tag for an assess stage — skill judge", () => {
 		const verdictSpec = { name: "verdicts", collector: { snapshot: false } } as never;
 		const assessWorkflow: Workflow = {
 			name: "assessed",
 			start: "breakdown",
 			stages: {
 				breakdown: produces({
-					assess: {
-						judge: { skill: "grade-breakdown", outcome: verdictSpec, done: () => true },
+					loop: assess({
+						judge: judge({ skill: "grade-breakdown", outcome: verdictSpec }),
+						done: () => true,
 						feedForward: () => "decompose further",
 						max: 5,
-					},
+					}),
 				}),
 				commit: acts(),
 			},
@@ -334,17 +337,18 @@ describe("formatWorkflowDetails", () => {
 		expect(bdLine).toContain("assess(judge: skill:grade-breakdown)·max=5");
 	});
 
-	it("renders the judge mode for an assess stage — prompt judge with default max", () => {
+	it("renders the loop tag for an assess stage — prompt judge with default max", () => {
 		const verdictSpec = { name: "verdicts", collector: { snapshot: false } } as never;
 		const assessWorkflow: Workflow = {
 			name: "assessed-prompt",
 			start: "breakdown",
 			stages: {
 				breakdown: produces({
-					assess: {
-						judge: { prompt: "Are all tasks atomic?", outcome: verdictSpec, done: () => true },
+					loop: assess({
+						judge: judge({ prompt: "Are all tasks atomic?", outcome: verdictSpec }),
+						done: () => true,
 						feedForward: () => "decompose further",
-					},
+					}),
 				}),
 				commit: acts(),
 			},
@@ -362,6 +366,37 @@ describe("formatWorkflowDetails", () => {
 		const out = formatWorkflowDetails(loaded, "assessed-prompt");
 		const bdLine = out.split("\n").find((l) => /breakdown/.test(l)) ?? "";
 		expect(bdLine).toContain("assess(judge: prompt)·max=8");
+	});
+
+	it("renders the loop tag for fanout / iterate stages (max and bare kind)", () => {
+		const loopWorkflow: Workflow = {
+			name: "looped",
+			start: "build",
+			stages: {
+				build: acts({ loop: fanout({ units: () => [], max: 32 }) }),
+				bp: produces({
+					outcome: { name: "plans", collector: { snapshot: false } } as never,
+					loop: iterate({ next: () => null }),
+				}),
+				commit: acts(),
+			},
+			edges: { build: "bp", bp: "commit", commit: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [loopWorkflow],
+			default: "looped",
+			workflowSources: new Map([["looped", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+			skillAliases: {},
+			skillContracts: new Map(),
+		};
+		const out = formatWorkflowDetails(loaded, "looped");
+		const buildLine = out.split("\n").find((l) => /^\s*\d+\.\s+build\b/.test(l)) ?? "";
+		const bpLine = out.split("\n").find((l) => /^\s*\d+\.\s+bp\b/.test(l)) ?? "";
+		expect(buildLine).toContain("fanout·max=32");
+		expect(bpLine).toContain("iterate");
+		expect(bpLine).not.toContain("iterate·max");
 	});
 
 	it("annotates aliased stages with (skill: <body>) when stage.skill differs from the stage id", () => {

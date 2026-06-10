@@ -18,7 +18,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadWorkflows } from "./load/index.js";
-import { LEGACY_OVERLAY_NOTICE, LEGACY_RUNS_NOTICE } from "./messages.js";
+import {
+	ERR_LOOP_CAP_HALT,
+	ERR_RESUME_LOOP_MISMATCH,
+	LEGACY_OVERLAY_NOTICE,
+	LEGACY_RUNS_NOTICE,
+	MSG_LOOP_CAP_ADVANCE,
+	MSG_LOOP_CAP_HALT,
+	MSG_LOOP_ZERO_UNITS,
+	MSG_RESUME_LOOP_MISMATCH,
+	MSG_UNIT_COMPLETE,
+	STATUS_LOOP_UNIT,
+} from "./messages.js";
 
 /** Extract the single backtick-delimited shell after `Move it:` from a notice. */
 const extractShell = (notice: string): string => {
@@ -138,5 +149,43 @@ describe.skipIf(process.platform === "win32")("LEGACY_RUNS_NOTICE — embedded m
 		expect(existsSync(join(workflowsDir, "runs", "2026-05-01_10-00-00-abcd.jsonl"))).toBe(true);
 		expect(existsSync(join(workflowsDir, "runs", "2026-05-02_11-00-00-ef01.jsonl"))).toBe(true);
 		expect(existsSync(join(workflowsDir, "2026-05-01_10-00-00-abcd.jsonl"))).toBe(false);
+	});
+});
+
+describe("unified loop message templates", () => {
+	it("STATUS_LOOP_UNIT renders the stage/skill/label status line", () => {
+		expect(STATUS_LOOP_UNIT(4, 7, "implement", "phase 2/5")).toBe("rpiv: stage 4/7 — implement (phase 2/5)");
+	});
+
+	it("MSG_UNIT_COMPLETE renders a labeled per-unit completion toast", () => {
+		expect(MSG_UNIT_COMPLETE("implement", "phase 2/5")).toBe("✓ implement (phase 2/5)");
+	});
+
+	it("MSG_LOOP_ZERO_UNITS warns the loop published nothing", () => {
+		expect(MSG_LOOP_ZERO_UNITS("blueprint")).toBe(
+			"rpiv: blueprint loop produced zero units — nothing published, advancing",
+		);
+	});
+
+	it("MSG/ERR_LOOP_CAP_HALT render the terminal cap wording", () => {
+		expect(MSG_LOOP_CAP_HALT(5, 5)).toBe(
+			"rpiv: loop cap exceeded (5/5) — stopping workflow to prevent an unbounded loop",
+		);
+		expect(ERR_LOOP_CAP_HALT(5, 5)).toBe("Loop cap exceeded: 5 units (max 5)");
+	});
+
+	it("MSG_LOOP_CAP_ADVANCE renders the soft-stop wording", () => {
+		expect(MSG_LOOP_CAP_ADVANCE("breakdown", 8)).toBe(
+			"rpiv: breakdown loop reached its cap (8) — keeping the projected result and advancing",
+		);
+	});
+
+	it("ERR/MSG_RESUME_LOOP_MISMATCH render the drift-refusal wording", () => {
+		expect(ERR_RESUME_LOOP_MISMATCH("implement")).toContain(
+			'cannot resume — loop stage "implement" recomputed a different unit',
+		);
+		expect(MSG_RESUME_LOOP_MISMATCH("implement")).toBe(
+			'rpiv: loop "implement" changed on resume — cannot safely continue',
+		);
 	});
 });

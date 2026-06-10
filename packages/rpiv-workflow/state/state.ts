@@ -15,6 +15,7 @@
  * else lives in a focused module.
  */
 
+import type { UnitRole } from "../api.js";
 import type { Output } from "../output.js";
 import type { RunTrigger } from "../triggers.js";
 
@@ -29,14 +30,22 @@ export type StageStatus = "completed" | "failed" | "skipped" | "aborted";
  * shape-filter on `stageNumber`, so any rows that don't satisfy the
  * current shape are silently skipped.
  *
- * Two identity fields:
- *  - `stage` — the workflow stage's record key. Always present. The
- *    audit row's "which step ran" answer; stable across skill-body
- *    overrides and aliased stages.
- *  - `skill?` — the Pi skill body invoked, when this row records a
- *    skill stage. Absent for script stages (`StageDef.run`); equal to
- *    `stage` in the common case where `produces()` / `acts()` defaults
- *    the skill body to the record key.
+ * Identity fields:
+ *  - `stage` — DISPLAY identity. For single stages this is the workflow
+ *    record key; for loop-unit rows it is the decorated human string
+ *    (`"implement (phase-2)"`, `"breakdown (r0·judge)"`). Machine readers
+ *    must NOT parse it — the structured fields below are the only machine
+ *    channel.
+ *  - `skill?` — the Pi skill body invoked. Absent for script stages; the
+ *    judge's own skill on judge-unit rows.
+ *  - `parent?` / `role?` / `unitId?` / `unitIndex?` — present iff the row
+ *    records a loop unit. `parent` is the loop stage's record key (the
+ *    resume fold + dispatch key on it); `role` says produce vs judge;
+ *    `unitIndex` is the 0-based cursor within the generation (== the round
+ *    for assess loops); `unitId` is the author-stable unit identity
+ *    (`unit.id ?? unit.label`) for fanout/iterate, absent for assess
+ *    (identity there is `(role, unitIndex)`). Present on FAILURE rows too —
+ *    the resume drift guard consumes failed-trailer identity.
  *
  * The row no longer carries a top-level `artifact` field — discovery
  * moved into the collector, and the canonical artifact list lives on
@@ -57,6 +66,25 @@ export interface WorkflowStage {
 	 * JSONL alone, without depending on a transient `ctx.ui.notify` toast.
 	 */
 	errMsg?: string;
+	parent?: string;
+	role?: UnitRole;
+	unitId?: string;
+	unitIndex?: number;
+}
+
+/**
+ * Telemetry row appended when a loop's `onCap: "advance"` trips — makes the
+ * soft-stop durable (post-hoc readers can distinguish "judge said done" from
+ * "cap tripped"). Shape-discriminated like RoutingDecision; stage readers and
+ * the resume fold skip it untouched. `count` is units run for fanout/iterate,
+ * rounds run for assess; `max` is the effective cap that tripped.
+ */
+export interface LoopCapRow {
+	type: "loop-cap";
+	stage: string;
+	count: number;
+	max: number;
+	ts: string;
 }
 
 /** First line of the JSONL file. */
@@ -125,7 +153,8 @@ export {
 	readAllStages,
 	readHeader,
 	readLastStage,
+	readLoopCaps,
 	readRoutingDecisions,
 	resolveRun,
 } from "./reads.js";
-export { appendRoutingDecision, appendStage, writeHeader } from "./writes.js";
+export { appendLoopCap, appendRoutingDecision, appendStage, writeHeader } from "./writes.js";

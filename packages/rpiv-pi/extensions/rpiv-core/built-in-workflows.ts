@@ -21,17 +21,17 @@ import {
 	acts,
 	defineWorkflow,
 	eq,
-	type FanoutUnit,
-	fanoutOver,
+	fanout,
 	gate,
 	gitCommitOutcome,
 	gt,
 	handleToString,
-	iterateOver,
+	iterate,
 	type Output,
 	type PromptFn,
 	produces,
 	type RunState,
+	type Unit,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow/registration";
 import { StagePreflightError } from "@juicesharp/rpiv-workflow/runner";
@@ -144,11 +144,11 @@ const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | u
  * inherits one plan (ship/build/arch/vet); polish's accumulating multi-plan
  * variant is `PLANS_PHASE_FANOUT`.
  */
-const FRONTMATTER_PHASE_FANOUT = fanoutOver({
+const FRONTMATTER_PHASE_FANOUT = fanout({
 	source: "plans",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ state, cwd }) => {
+	units: ({ state, cwd }) => {
 		const plan = latestFsArtifact(state, "plans");
 		if (plan?.handle.kind !== "fs") return [];
 		const path = plan.handle.path;
@@ -189,7 +189,7 @@ const shipWorkflow = defineWorkflow({
 	start: "blueprint",
 	stages: {
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -216,7 +216,7 @@ const buildWorkflow = defineWorkflow({
 	stages: {
 		research: produces(),
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		"code-review": produces(),
 		revise: produces({ reads: ["plans", "reviews"] }),
@@ -253,7 +253,7 @@ const archWorkflow = defineWorkflow({
 		research: produces(),
 		design: produces(),
 		plan: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
@@ -287,7 +287,7 @@ const vetWorkflow = defineWorkflow({
 	stages: {
 		"code-review": produces(),
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -373,11 +373,11 @@ const phaseDeps = (entry: unknown): number[] => {
  * heading count (stale derive), and every `depends_on` must reference an earlier
  * phase (exists, no self/forward/cyclic edge against body order).
  */
-const REVIEW_PHASE_ITERATE = iterateOver({
+const REVIEW_PHASE_ITERATE = iterate({
 	source: "architecture-reviews",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ artifact, state, accumulated, cwd }) => {
+	next: ({ artifact, state, accumulated, cwd }) => {
 		// Source the review from the named registry — robust to corrective re-entry,
 		// where the rolling primary is the latest code-review doc, not the review.
 		const review = latestFsArtifact(state, "architecture-reviews") ?? artifact;
@@ -452,12 +452,12 @@ const REVIEW_PHASE_ITERATE = iterateOver({
  * `planPhaseRecords`. MAX_PHASES is enforced on the aggregate unit count, since
  * polish fans one implement pass over the whole plan set.
  */
-const PLANS_PHASE_FANOUT = fanoutOver({
+const PLANS_PHASE_FANOUT = fanout({
 	source: "plans",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ state, cwd }) => {
-		const units: FanoutUnit[] = [];
+	units: ({ state, cwd }) => {
+		const units: Unit[] = [];
 		for (const out of latestPlans(state, cwd)) {
 			for (const a of out.artifacts) {
 				if (a.handle.kind !== "fs") continue;
@@ -505,8 +505,8 @@ const polishWorkflow = defineWorkflow({
 	start: "architecture-review",
 	stages: {
 		"architecture-review": produces(),
-		blueprint: produces({ iterate: REVIEW_PHASE_ITERATE }),
-		implement: acts({ fanout: PLANS_PHASE_FANOUT, reads: ["plans"] }),
+		blueprint: produces({ loop: REVIEW_PHASE_ITERATE }),
+		implement: acts({ loop: PLANS_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ prompt: VALIDATE_PLANS_PROMPT }),
 		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),

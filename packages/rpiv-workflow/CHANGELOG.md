@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- `Judge` is now a first-class type with a valid-by-construction `judge({ skill | prompt, outcome })` factory. A judge names a dispatchable grading session — `skill` (`/skill:<skill> <producerHandle>`, producer artifact auto-injected) XOR `prompt` (raw text) — whose verdict is validated by `outcome` and published to its own dedicated `state.named` channel. The collector must materialize ≥1 artifact (zero is a fatal halt). `judgeShapeIssues` is the single shape-rule source shared by the factory and load-time validation.
+- Structured unit-row JSONL fields (`parent` / `role` / `unitId` / `unitIndex`) on every loop-unit row, plus a `{type:"loop-cap"}` telemetry row (`appendLoopCap` / `readLoopCaps`) written when an `onCap: "advance"` soft-stop trips. Readers shape-filter on `stageNumber`, so the new rows are skipped by existing stage/telemetry readers.
+- Unit-generic lifecycle hooks `onLoopStart` / `onUnitStart` / `onUnitEnd` / `onLoopCap` (payloads `LoopStartInfo` / `UnitEvent` / `LoopCapInfo`). `onUnitStart` fires uniformly for produce AND judge units — the race-free seam (units run strictly sequentially) a model-override listener flips the model on, resolving per-unit models through the existing `models.json` `skills.<name>` cascade.
+
+### Changed
+- **BREAKING** — the three organically-grown loop primitives are replaced by ONE `loop:` field on `StageDef`, authored via the `fanout()` / `iterate()` / `assess()` constructors. The old `fanout:` / `iterate:` / `assess:` `StageDef` fields and the `fanoutOver(spec)` / `iterateOver(spec)` wrappers are **removed**. Every unit now runs the identical stage-session path with a structured unit identity; one declared `result` projection (`"entry"` / `"last"`) replaces three implicit state semantics; one async resume fold with a full-row drift guard replaces three folds + three re-entry modules. `loopSpecOf(stage.loop)` is the single introspection channel; `describeFlow` reports `control.mode: "single" | "fanout" | "iterate" | "assess"` from the `loop` field. Constructors validate at construction (`max` must be an integer ≥ 1; assess defaults `max` to 8, `onCap` to `"advance"`); the same rules are re-checked at load for hand-rolled literals.
+- **BREAKING** — the `onFanoutStart` / `onFanoutUnitStart` / `onFanoutUnitEnd` lifecycle hooks are removed; observe loops via `onLoopStart` / `onUnitStart` / `onUnitEnd` / `onLoopCap`. TS consumers of the removed hooks get compile errors (intended).
+- One resume contract for all loop kinds: a unit source must be deterministic w.r.t. the fold-replayed run state + this generation's accumulated outputs. The resume fold re-checks every folded unit and refuses (terminal failure) rather than re-run a different unit than the run recorded.
+
+### Removed
+- No migration for in-flight runs. Runs recorded before this version carry decorated `stage` keys with no `parent` field on their unit rows, so `reconstructState` refuses to resume them with the existing `stage-gone` message. JSONL run logs are debug artifacts — there is no on-disk migration.
+
 ## [1.19.1] - 2026-06-10
 
 ## [1.19.0] - 2026-06-09

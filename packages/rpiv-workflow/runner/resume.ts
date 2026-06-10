@@ -1,112 +1,49 @@
 /**
- * State reconstruction for resuming a failed (or cut-off) workflow run.
- * Pure fold over the JSONL audit trail — no I/O beyond `readAllStages`.
+ * State reconstruction for resuming a run. ONE async fold over the JSONL
+ * trail: rows with `parent` set are loop-unit rows (the structured machine
+ * channel — the decorated `stage` string is never parsed); everything else
+ * folds as a normal stage.
  *
- * Used by `resumeWorkflow` (runner.ts) to rebuild `RunState` from a past
- * run's stage rows, then re-enter the chain machinery at the right seam.
- * New rows **append to the same JSONL file** so the trail reads as one
- * story: *ran → failed → resumed → continued*.
+ * THE REPLAY CONTRACT: a loop's unit source must be deterministic w.r.t. the
+ * fold-replayed `RunState` at the unit boundary + this generation's
+ * accumulated outputs. Because the fold replays rows in trail order, at row
+ * *i* the state is byte-identical to what the live driver saw — so the fold
+ * verifies EVERY unit row against the recomputed expectation (strictly
+ * stronger than the old per-primitive half-guards). Drift (or a generator
+ * throw) does not refuse outright: the fold finishes applying so state is
+ * complete, and returns `drift` — `resumeWorkflow`'s entry thunk records the
+ * terminal failure with full lifecycle bracketing and zero dispatch.
  *
- * Folds `def.fanout` unit rows so fanout runs are resumable; this REQUIRES the
- * stage's FanoutFn to be deterministic w.r.t. its entry artifact (the resume
- * dispatch re-calls it and guards the unit prefix — see `resume-fanout.ts`). The
- * fold is generation-aware: a looped fanout records only the TRAILING generation's
- * unit prefix, so a second-pass resume compares against the right pass.
- * Folds `def.iterate` unit rows as full produces passes (each unit ran the
- * produces path on the live run, so its `Output` is persisted in the row): it
- * rolls the primary, appends to `state.named`, and rebuilds the trailing
- * generation's `accumulated` prefix + frozen entry artifact for the resume
- * dispatch. This REQUIRES the IterateFn to be deterministic w.r.t. its entry
- * artifact + accumulated outputs — `resume-iterate.ts` guards only the ONE
- * checkable boundary (the re-pulled next unit vs the failed trailer's recorded
- * decoration); the already-completed prefix is covered by that contract, not
- * replayed (the generator sees a mutating `state` per unit, so faithful
- * intermediate replay is infeasible).
- * Folds `def.assess` round rows — TWO per round (`r{n}·produce`, `r{n}·judge`) —
- * phase-aware: producer rows replay the produces pass (roll primary, publish, set
- * output); judge rows publish the verdict into its OWN named channel WITHOUT rolling
- * the primary or touching `state.output` (mirroring the live restore-after-judge), so
- * post-fold state holds the LAST producer's values, never a verdict. The trailing
- * generation's `AssessResumePoint` carries the next pending sub-step + the recovered
- * verdict so `resume-assess.ts` continues without re-grading.
+ * Generations: contiguous unit rows sharing a `parent`. A generation opens by
+ * freezing the entry pair from the replayed state (and, for fanout,
+ * recomputing the unit list ONCE against it); it closes when a non-unit row
+ * (or a different parent) appears — `projectResult` (the driver's own
+ * function) lands the declared result, exactly like the live loop advance.
+ * The TRAILING open generation is returned un-projected as a
+ * `LoopResumePoint` whose `cursor` is the driver's own `LoopCursor` —
+ * re-entry hands it straight back to `runLoop`.
  */
 
-import type { StageDef, Workflow } from "../api.js";
+import type { LoopDef, StageDef, Unit, Workflow } from "../api.js";
 import type { Artifact } from "../handle.js";
-import { applyCompletedStage, resolvePublishName } from "../internal-utils.js";
+import { applyCompletedStage } from "../internal-utils.js";
+import { freshCursor, judgeStageDef, type LoopCursor, projectResult, unitTagOf } from "../loop.js";
+import { ERR_RESUME_LOOP_MISMATCH } from "../messages.js";
 import type { Output } from "../output.js";
 import { readAllStages } from "../state/index.js";
 import type { WorkflowHeader, WorkflowStage } from "../state/state.js";
 import type { RunState } from "../types.js";
 
-// ---------------------------------------------------------------------------
-// Result type
-// ---------------------------------------------------------------------------
-
-/**
- * Per-fanout-parent record of the TRAILING generation's COMPLETED unit rows, in
- * trail order, as their decorated `WorkflowStage.stage` strings (`"impl (phase 1/4)"`).
- * Consumed by `resumeFanoutStage` to compute the resume point + guard FanoutFn
- * determinism by full-string comparison. A failed unit row is NOT recorded here
- * (it's the `k+1` that resume re-runs). On a looped fanout the array resets per
- * generation, so a second-pass resume compares only the second pass's prefix.
- */
-export type FanoutProgress = ReadonlyMap<string, readonly string[]>;
-
-/**
- * Per-iterate-parent resume point — the TRAILING contiguous generation's state.
- * Consumed by `resumeIterateStage` to re-enter the pull loop.
- *
- *   - `entryArtifact` — the primary FROZEN at the generation's first unit (units
- *     roll the primary forward, so the rebuilt `state.primaryArtifact` is the LAST
- *     unit's artifact, not this). `undefined` if the iterate stage was the entry.
- *   - `accumulated` — the completed `Output`s of the trailing generation, in order
- *     (the IterateFn pull prefix; `index` resumes at `accumulated.length`). A failed
- *     unit contributes nothing (it's the unit resume re-pulls + re-runs).
- *
- * Reset whenever a non-iterate row (or a different parent) breaks contiguity, so a
- * corrective-loop second pass overwrites the first pass's point. `state.named` still
- * accumulates across ALL generations — only this prefix resets.
- */
-export interface IterateResumePoint {
+/** Trailing open generation — everything `resume-loop.ts` needs to re-enter `runLoop`. */
+export interface LoopResumePoint {
+	parent: string;
 	entryArtifact: Artifact | undefined;
-	accumulated: Output[];
+	entryPair: { output: Output | undefined; primaryArtifact: Artifact | undefined };
+	/** The driver's own cursor, reconstructed: next (role, index), accumulated, lastProduce, lastVerdict. */
+	cursor: LoopCursor;
+	/** Fanout: the recomputed-and-verified unit list (re-entry reuses it — no second compute). */
+	units?: readonly Unit[];
 }
-export type IterateProgress = ReadonlyMap<string, IterateResumePoint>;
-
-/**
- * Per-assess-parent resume point — the TRAILING contiguous generation's state.
- * An assess loop records TWO rows per round (`r{n}·produce`, `r{n}·judge`), so
- * the point captures the next pending sub-step rather than a unit prefix.
- * Consumed by `resumeAssessStage` (Phase 4) to re-enter `runAssess`.
- *
- *   - `entryArtifact` — the primary FROZEN at the generation's first producer row
- *     (producer rounds roll the primary forward, so the rebuilt
- *     `state.primaryArtifact` is the LAST producer's artifact, not this). The
- *     frozen original ask handed to `AssessJudgeContext.entryArtifact`.
- *   - `round` — the round the pending sub-step belongs to (`phase` says which).
- *   - `lastProducerOutput` — the most-recently-completed producer `Output`
- *     (`feedForward` input; also the value `state.output` is restored to).
- *   - `lastVerdict` — the trailing judge row's verdict `Output`, so resume feeds
- *     it forward WITHOUT re-grading; undefined until a judge round completes.
- *   - `phase` — which sub-step is pending: `produce` (run the next producer round)
- *     or `judge` (grade the just-produced round). Computed from the trailing row:
- *     a completed produce → judge for that round; a completed judge → produce for
- *     the NEXT round (the shim re-checks `judge.done(lastVerdict)` to decide
- *     advance-vs-continue); a failed/aborted row → re-run that same sub-step.
- *
- * Reset whenever a non-assess row (or a different parent) breaks contiguity, so a
- * back-edge second generation overwrites the first pass's point. `state.named`
- * still accumulates across ALL generations — only this point resets.
- */
-export interface AssessResumePoint {
-	entryArtifact: Artifact | undefined;
-	round: number;
-	lastProducerOutput: Output | undefined;
-	lastVerdict: Output | undefined;
-	phase: "produce" | "judge";
-}
-export type AssessProgress = ReadonlyMap<string, AssessResumePoint>;
 
 export type ReconstructResult =
 	| {
@@ -115,117 +52,23 @@ export type ReconstructResult =
 			lastStageNumber: number;
 			visited: Set<string>;
 			rows: WorkflowStage[];
-			fanoutProgress: FanoutProgress;
-			iterateProgress: IterateProgress;
-			assessProgress: AssessProgress;
+			/** Open generation at trail end, un-projected (the driver projects at its advance). */
+			trailing?: LoopResumePoint;
+			/** Guard tripped mid-fold — the resume entry records this as a terminal failure. */
+			drift?: { parent: string; errMsg: string };
 	  }
 	| { ok: false; reason: "no-rows" | "stage-gone"; detail: string };
 
-// ---------------------------------------------------------------------------
-// Fanout-decoration helpers (shared with resumeWorkflow dispatch)
-// ---------------------------------------------------------------------------
-
-/** Stage record keys whose def opts into `fanout`. */
-export function fanoutStageNames(workflow: Workflow): ReadonlySet<string> {
-	const names = new Set<string>();
-	for (const [name, def] of Object.entries(workflow.stages)) {
-		if (def.fanout) names.add(name);
-	}
-	return names;
-}
-
-/** Stage record keys whose def opts into `iterate`. */
-export function iterateStageNames(workflow: Workflow): ReadonlySet<string> {
-	const names = new Set<string>();
-	for (const [name, def] of Object.entries(workflow.stages)) {
-		if (def.iterate) names.add(name);
-	}
-	return names;
-}
-
-/** Stage record keys whose def opts into `assess`. */
-export function assessStageNames(workflow: Workflow): ReadonlySet<string> {
-	const names = new Set<string>();
-	for (const [name, def] of Object.entries(workflow.stages)) {
-		if (def.assess) names.add(name);
-	}
-	return names;
-}
-
-/**
- * Parse the `r{round}·{phase}` tag out of an assess-decorated row key
- * (`assessRowStage`, audit.ts:117) — `"breakdown (r2·judge)"` →
- * `{ round: 2, phase: "judge" }`. The caller has already matched `parent` via
- * `matchFanoutParent` (prefix/suffix only); this splits INSIDE the parens, the
- * one place nothing else parses. Returns undefined on a malformed tag (defensive
- * — the runner only ever writes well-formed assess decorations).
- */
-function parseAssessTag(stageKey: string, parent: string): { round: number; phase: "produce" | "judge" } | undefined {
-	const prefix = `${parent} (`;
-	if (!stageKey.startsWith(prefix) || !stageKey.endsWith(")")) return undefined;
-	const tag = stageKey.slice(prefix.length, -1); // "r2·judge"
-	const match = /^r(\d+)·(produce|judge)$/.exec(tag);
-	if (!match) return undefined;
-	return { round: Number(match[1]), phase: match[2] as "produce" | "judge" };
-}
-
-/**
- * Recover the parent stage name from a decorated unit-row key. Matches the
- * `fanoutRowStage`/`iterateRowStage` projection (`${parent} (${id ?? label})`,
- * audit.ts:57,69) with an exact `${parent} (` prefix + `)` suffix. The space
- * before `(` disambiguates prefix-name collisions (`"build-extra (x)"` does NOT
- * start with `"build ("`); identifier-style stage names never contain `" ("`,
- * so at most one parent matches. Returns undefined for a non-decorated key.
- */
-export function matchFanoutParent(stageKey: string, parents: ReadonlySet<string>): string | undefined {
-	if (!stageKey.endsWith(")")) return undefined;
-	for (const parent of parents) {
-		if (stageKey.startsWith(`${parent} (`)) return parent;
-	}
-	return undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Reconstruction fold
-// ---------------------------------------------------------------------------
-
-/**
- * Rebuild `RunState` by folding over the completed stage rows in a run's
- * JSONL audit trail. Returns a discriminated result so the entry point
- * (`resumeWorkflow`) maps refusals to error envelopes.
- *
- * Rules:
- *   - A row whose `stage` is a real `workflow.stages` key → fold as a normal
- *     stage (completed rows seed via `applyCompletedStage`; non-completed rows
- *     bump counters only). A bare `def.iterate`-parent row is never written by
- *     the runner; should one exist it folds harmlessly here (iterate mandates
- *     `kind: "produces"`).
- *   - A row whose `stage` is NOT a key — a decorated unit row, a renamed
- *     stage, or a removed one:
- *       - matches a `def.fanout` parent → fold counters-only (mirror the
- *         live `recordFanoutSuccess`: bump `stagesCompleted` on a completed
- *         row, add parent to `visited`, advance `lastStageNumber`; NO
- *         `applyCompletedStage`, NO `state.output` write) + record the
- *         completed decorated string under the parent in `fanoutProgress`,
- *         resetting that prefix on a new generation (a looped fanout).
- *       - matches a `def.iterate` parent → fold as a full produces pass
- *         (`foldIterateUnit`): roll the primary, append to `state.named`, set
- *         `state.output`, bump counters, and track the trailing generation's
- *         `accumulated` + frozen entry artifact in `iterateProgress`.
- *       - no match → refuse `stage-gone`.
- */
-export function reconstructState(cwd: string, workflow: Workflow, header: WorkflowHeader): ReconstructResult {
+export async function reconstructState(
+	cwd: string,
+	workflow: Workflow,
+	header: WorkflowHeader,
+): Promise<ReconstructResult> {
 	const rows = readAllStages(cwd, header.runId);
-
-	if (rows.length === 0) {
-		return { ok: false, reason: "no-rows", detail: header.runId };
-	}
-
-	const fanoutNames = fanoutStageNames(workflow);
-	const iterateNames = iterateStageNames(workflow);
-	const assessNames = assessStageNames(workflow);
+	if (rows.length === 0) return { ok: false, reason: "no-rows", detail: header.runId };
 
 	const acc: FoldAcc = {
+		cwd,
 		state: {
 			originalInput: header.input,
 			primaryArtifact: undefined,
@@ -237,22 +80,26 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 			termination: { success: false, error: undefined },
 		},
 		visited: new Set<string>(),
-		fanoutProgress: new Map<string, string[]>(),
-		iterateProgress: new Map<string, IterateResumePoint>(),
-		assessProgress: new Map<string, AssessResumePoint>(),
-		lastFoldedUnitParent: undefined,
 		lastStageNumber: 0,
+		gen: undefined,
+		drift: undefined,
 	};
 
 	for (const row of rows) {
+		if (row.parent !== undefined) {
+			const refusal = await foldUnitRow(acc, workflow, row);
+			if (refusal) return refusal;
+			continue;
+		}
+		closeGeneration(acc);
 		const def = workflow.stages[row.stage];
-		const step = def
-			? foldKnownStage(acc, def, row)
-			: foldDecoratedRow(acc, workflow, row, fanoutNames, iterateNames, assessNames);
-		if (step.refuse) return { ok: false, reason: step.reason, detail: step.detail };
+		// Unknown key refuses — including LEGACY decorated rows (pre-redesign
+		// runs carry no `parent`, so their unit rows land here): stage-gone.
+		if (!def) return { ok: false, reason: "stage-gone", detail: row.stage };
+		foldKnownStage(acc, def, row);
 	}
 
-	acc.state.lastAllocatedStageNumber = acc.lastStageNumber; // allocator continues monotonically on append
+	acc.state.lastAllocatedStageNumber = acc.lastStageNumber; // allocator continues monotonically
 
 	return {
 		ok: true,
@@ -260,237 +107,191 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 		lastStageNumber: acc.lastStageNumber,
 		visited: acc.visited,
 		rows,
-		fanoutProgress: acc.fanoutProgress,
-		iterateProgress: acc.iterateProgress,
-		assessProgress: acc.assessProgress,
+		trailing: acc.gen ? toPoint(acc.gen) : undefined,
+		drift: acc.drift,
 	};
 }
 
 // ---------------------------------------------------------------------------
-// Per-row fold helpers
+// Fold internals
 // ---------------------------------------------------------------------------
 
-/** Mutable accumulator threaded through the per-row fold. */
+interface OpenGeneration {
+	parent: string;
+	loop: LoopDef;
+	/** Parent stage def — produce-row apply (judge rows apply via judgeStageDef). */
+	def: StageDef;
+	entryArtifact: Artifact | undefined;
+	entryPair: { output: Output | undefined; primaryArtifact: Artifact | undefined };
+	cursor: LoopCursor;
+	units?: readonly Unit[];
+	/**
+	 * Cached expected unit for the cursor's CURRENT index (iterate pulls once
+	 * per index — a failed row followed by its resumed re-run row re-checks
+	 * the same expectation without double-pulling the generator).
+	 */
+	expected?: { index: number; tag: string | undefined };
+}
+
 interface FoldAcc {
+	cwd: string;
 	state: RunState;
 	visited: Set<string>;
-	fanoutProgress: Map<string, string[]>;
-	iterateProgress: Map<string, IterateResumePoint>;
-	assessProgress: Map<string, AssessResumePoint>;
-	/** Parent of the immediately-preceding folded row IF it was a fanout, iterate, OR assess unit; else undefined. Drives generation reset for all three. */
-	lastFoldedUnitParent: string | undefined;
 	lastStageNumber: number;
+	gen: OpenGeneration | undefined;
+	drift: { parent: string; errMsg: string } | undefined;
 }
 
-/** A folded row either advanced the accumulator (`refuse: false`) or hit an unresumable trail. */
-type FoldStep = { refuse: false } | { refuse: true; reason: "stage-gone"; detail: string };
-
-const FOLD_OK: FoldStep = { refuse: false };
-const refuse = (reason: "stage-gone", detail: string): FoldStep => ({
-	refuse: true,
-	reason,
-	detail,
-});
-
-/**
- * Fold a row whose `stage` is a real `workflow.stages` key — a normal stage:
- * completed rows seed `state.output` + primary + named via `applyCompletedStage`;
- * non-completed rows bump `visited`/`lastStageNumber` only. A bare (undecorated)
- * iterate-parent or fanout-parent row is never written by the runner; should one
- * exist it folds harmlessly here — iterate mandates `kind: "produces"` so
- * `applyCompletedStage` runs, and fanout rows carry no output so the `!row.output`
- * guard skips it. A real-key row always breaks iterate contiguity (it is not a
- * decorated unit), so the generation cursor resets.
- */
-function foldKnownStage(acc: FoldAcc, def: StageDef, row: WorkflowStage): FoldStep {
-	acc.lastFoldedUnitParent = undefined;
+/** Normal-stage fold — unchanged semantics from today. */
+function foldKnownStage(acc: FoldAcc, def: StageDef, row: WorkflowStage): void {
 	acc.visited.add(row.stage);
 	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
-	if (row.status !== "completed") return FOLD_OK;
+	if (row.status !== "completed") return;
 	acc.state.stagesCompleted++;
-	if (!row.output) return FOLD_OK;
+	if (!row.output) return;
 	acc.state.output = row.output;
 	applyCompletedStage(acc.state, def, row.stage, row.output);
-	return FOLD_OK;
 }
 
-/**
- * Fold a row whose `stage` is NOT a key — a decorated unit row, a renamed stage,
- * or a removed one. A fanout-parent match folds counters-only; an iterate-parent
- * match folds a full produces pass (`foldIterateUnit`); an assess-parent match folds
- * one round sub-step (`foldAssessRound`); no match refuses `stage-gone`.
- */
-function foldDecoratedRow(
+/** Close the open generation: project the declared result — the live loop-advance, replayed. */
+function closeGeneration(acc: FoldAcc): void {
+	if (!acc.gen) return;
+	projectResult(acc.gen.loop, acc.gen.entryPair, acc.gen.cursor, acc.state);
+	acc.gen = undefined;
+}
+
+async function foldUnitRow(
 	acc: FoldAcc,
 	workflow: Workflow,
 	row: WorkflowStage,
-	fanoutNames: ReadonlySet<string>,
-	iterateNames: ReadonlySet<string>,
-	assessNames: ReadonlySet<string>,
-): FoldStep {
-	const fanoutParent = matchFanoutParent(row.stage, fanoutNames);
-	if (fanoutParent) {
-		foldFanoutUnit(acc, fanoutParent, row);
-		return FOLD_OK;
-	}
-	const iterateParent = matchFanoutParent(row.stage, iterateNames);
-	if (iterateParent) {
-		foldIterateUnit(acc, workflow.stages[iterateParent]!, iterateParent, row);
-		return FOLD_OK;
-	}
-	const assessParent = matchFanoutParent(row.stage, assessNames);
-	if (assessParent) {
-		foldAssessRound(acc, workflow.stages[assessParent]!, assessParent, row);
-		return FOLD_OK;
-	}
-	return refuse("stage-gone", row.stage);
-}
-
-/**
- * Counters-only fold for one decorated fanout-unit row — mirrors the live
- * `recordFanoutSuccess`: bump `stagesCompleted` on a completed row, add the
- * parent to `visited`, advance `lastStageNumber`; NO `applyCompletedStage`, NO
- * `state.output` write. The completed decorated string is recorded under the
- * parent in `fanoutProgress` (the resume point + determinism-guard input).
- *
- * Generation tracking: a row whose parent differs from the immediately-preceding
- * unit row STARTS a new fanout generation — reset `fanoutProgress[parent]` so a
- * looped fanout's trailing pass overwrites the prior pass's prefix. `stagesCompleted`
- * stays cumulative (it mirrors the live count); only the resume-point array resets.
- * Fanout units never roll the primary, so the reconstructed `state.primaryArtifact`
- * already sits on the trailing generation's entry — no entry-artifact capture (the
- * iterate asymmetry; see resume-iterate.ts).
- */
-function foldFanoutUnit(acc: FoldAcc, parent: string, row: WorkflowStage): void {
-	const newGeneration = acc.lastFoldedUnitParent !== parent;
-	acc.visited.add(parent);
-	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
-	acc.lastFoldedUnitParent = parent;
-	// New generation → fresh prefix; same generation → the array already exists (set on its first row).
-	if (newGeneration || !acc.fanoutProgress.has(parent)) acc.fanoutProgress.set(parent, []);
-	if (row.status !== "completed") return;
-	acc.state.stagesCompleted++;
-	acc.fanoutProgress.get(parent)!.push(row.stage); // trailing generation only
-}
-
-/**
- * Fold one decorated iterate-unit row as a full produces pass (mirrors the live
- * `recordStageSuccess` → `applyCompletedStage`): roll the primary, append to
- * `state.named[outcome.name]`, set `state.output`, bump `stagesCompleted`. The
- * decorated `row.stage` is SAFE for named keying — iterate mandates `outcome.name`,
- * so `resolvePublishName` ignores the decoration (audit.ts:104).
- *
- * Generation tracking: a row whose parent differs from the immediately-preceding
- * iterate row STARTS a new generation — snapshot the (pre-apply) primary as the
- * frozen `entryArtifact` and reset `accumulated`. Contiguous units append. This
- * keeps `iterateProgress` pointed at the TRAILING generation for a corrective loop,
- * while `state.named` accumulates every generation (matching the live run).
- *
- * `visited` records the PARENT (not the decorated key), mirroring the live
- * `advanceChain` visit + `foldFanoutUnit`. The generation cursor is shared with
- * fanout — a fanout parent and an iterate parent are always distinct keys, so a
- * row of the other kind always reads as a new generation here.
- */
-function foldIterateUnit(acc: FoldAcc, def: StageDef, parent: string, row: WorkflowStage): void {
-	const newGeneration = acc.lastFoldedUnitParent !== parent;
-	let point = acc.iterateProgress.get(parent);
-	if (newGeneration || !point) {
-		point = { entryArtifact: acc.state.primaryArtifact, accumulated: [] };
-		acc.iterateProgress.set(parent, point);
-	}
-	acc.visited.add(parent);
-	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
-	acc.lastFoldedUnitParent = parent;
-
-	if (row.status !== "completed") return; // failed/aborted/skipped — not accumulated (the unit resume re-runs)
-	acc.state.stagesCompleted++;
-	if (!row.output) return; // defensive — completed iterate rows always carry output
-	acc.state.output = row.output;
-	applyCompletedStage(acc.state, def, row.stage, row.output); // rolls primary + pushes named[outcome.name]
-	point.accumulated.push(row.output);
-}
-
-/**
- * Fold one decorated assess-round row — TWO rows per round (`r{n}·produce`,
- * `r{n}·judge`), so this is phase-aware (unlike the single-row fanout/iterate folds).
- *
- *   - **producer rows** mirror the live producer pass: set `state.output`, roll the
- *     primary, publish onto `state.named[outcome.name]` (`applyCompletedStage`). A
- *     completed producer makes the JUDGE the pending sub-step for that round.
- *   - **judge rows** mirror the live restore-after-judge: push the verdict onto its
- *     OWN `state.named[judge.outcome.name]` channel MANUALLY — NO `applyCompletedStage`
- *     (it would roll the primary to the verdict artifact) and NO `state.output` write
- *     (it must stay at the producer's value). A completed judge makes the NEXT round's
- *     PRODUCE the pending sub-step (the resume shim re-checks `judge.done(lastVerdict)`
- *     to choose advance-vs-continue); the verdict is stashed as `lastVerdict` so resume
- *     feeds it forward without re-grading.
- *
- * `stagesCompleted` bumps for every completed row of EITHER phase — both landed real
- * JSONL rows, so this matches the live counters. A failed/aborted/skipped row leaves
- * the pending sub-step on that same phase+round (resume re-runs it) and contributes
- * nothing to state.
- *
- * Generation tracking mirrors `foldIterateUnit`: a row whose parent differs from the
- * immediately-preceding unit row STARTS a new generation — snapshot the (pre-produce)
- * primary as the frozen `entryArtifact` and reset the round cursor. Both sub-steps of
- * every round share one generation (same parent, contiguous rows), so the entry freezes
- * at the FIRST producer row and `state.named` accumulates across every round; only a
- * back-edge re-entry (a non-assess row breaks contiguity) starts a fresh point.
- */
-function foldAssessRound(acc: FoldAcc, def: StageDef, parent: string, row: WorkflowStage): void {
-	const tag = parseAssessTag(row.stage, parent);
-	if (!tag) return; // defensive — the runner only writes well-formed assess decorations
-
-	const newGeneration = acc.lastFoldedUnitParent !== parent;
-	let point = acc.assessProgress.get(parent);
-	if (newGeneration || !point) {
-		point = {
+): Promise<Extract<ReconstructResult, { ok: false }> | undefined> {
+	// New generation: different parent (or first unit row / after a non-unit row).
+	if (!acc.gen || acc.gen.parent !== row.parent) {
+		closeGeneration(acc);
+		const def = workflow.stages[row.parent!];
+		if (!def?.loop) return { ok: false, reason: "stage-gone", detail: row.stage };
+		acc.gen = {
+			parent: row.parent!,
+			loop: def.loop,
+			def,
 			entryArtifact: acc.state.primaryArtifact,
-			round: 0,
-			lastProducerOutput: undefined,
-			lastVerdict: undefined,
-			phase: "produce",
+			entryPair: { output: acc.state.output, primaryArtifact: acc.state.primaryArtifact },
+			cursor: freshCursor(),
+			units: undefined,
 		};
-		acc.assessProgress.set(parent, point);
+		if (def.loop.kind === "fanout") {
+			acc.gen.units = await guarded(acc, acc.gen.parent, () =>
+				(def.loop as Extract<LoopDef, { kind: "fanout" }>).units({
+					cwd: acc.cwd,
+					artifact: acc.state.primaryArtifact,
+					state: acc.state,
+				}),
+			);
+		}
 	}
-	acc.visited.add(parent);
-	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
-	acc.lastFoldedUnitParent = parent;
 
-	if (tag.phase === "produce") {
-		// A non-completed producer re-runs as produce for this same round.
-		point.round = tag.round;
-		point.phase = "produce";
-		if (row.status !== "completed") return;
-		acc.state.stagesCompleted++;
-		if (!row.output) return; // defensive — completed produce rows always carry output
-		acc.state.output = row.output;
-		applyCompletedStage(acc.state, def, row.stage, row.output); // rolls primary + pushes named[outcome.name]
-		point.lastProducerOutput = row.output;
-		point.phase = "judge"; // produced → judge this round
+	const gen = acc.gen;
+	acc.visited.add(gen.parent);
+	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
+
+	if (!acc.drift) await guardRow(acc, gen, row);
+
+	if (row.status !== "completed") return undefined; // pending unit — cursor stays (resume re-runs it)
+	acc.state.stagesCompleted++;
+	if (!row.output) return undefined; // defensive — completed unit rows always carry output
+	acc.state.output = row.output;
+
+	if (row.role === "judge") {
+		// Apply-then-project: the verdict rolls the pair TRANSIENTLY (exactly
+		// like the live judge unit); projection at generation close restores.
+		// Replaces the old never-apply mirror + manual named push.
+		applyCompletedStage(
+			acc.state,
+			judgeStageDef((gen.loop as Extract<LoopDef, { kind: "assess" }>).judge),
+			row.stage,
+			row.output,
+		);
+		gen.cursor.lastVerdict = row.output;
+		gen.cursor.phase = "produce";
+		gen.cursor.index = (row.unitIndex ?? gen.cursor.index) + 1;
+		return undefined;
+	}
+
+	// produce row — fanout/iterate units and assess producers alike
+	applyCompletedStage(acc.state, gen.def, row.stage, row.output);
+	gen.cursor.accumulated.push(row.output);
+	gen.cursor.lastProduce = { output: row.output, artifact: row.output.artifacts[0] };
+	if (gen.loop.kind === "assess") gen.cursor.phase = "judge";
+	else gen.cursor.index++;
+	gen.expected = undefined; // consumed
+	return undefined;
+}
+
+/**
+ * The full-row determinism guard — every unit row is checked against the
+ * recomputed expectation at its boundary (the replayed state IS what the live
+ * driver saw). Drift marks `acc.drift` and stops guarding; applying continues
+ * so the failure can be recorded against complete state.
+ */
+async function guardRow(acc: FoldAcc, gen: OpenGeneration, row: WorkflowStage): Promise<void> {
+	const expectRole = gen.loop.kind === "assess" ? gen.cursor.phase : "produce";
+	if (row.role !== expectRole || row.unitIndex !== gen.cursor.index) return setDrift(acc, gen.parent);
+
+	if (gen.loop.kind === "fanout") {
+		if (!gen.units || gen.cursor.index >= gen.units.length) return setDrift(acc, gen.parent);
+		if (unitTagOf(gen.units[gen.cursor.index]!) !== row.unitId) return setDrift(acc, gen.parent);
 		return;
 	}
 
-	// judge phase — a non-completed judge re-runs as judge for this same round.
-	point.round = tag.round;
-	point.phase = "judge";
-	if (row.status !== "completed") return;
-	acc.state.stagesCompleted++;
-	if (!row.output) return; // defensive — completed judge rows always carry output
-	// Publish the verdict into its OWN channel manually. Distinct from the producer's
-	// outcome.name; NO applyCompletedStage (no primary roll), NO state.output write
-	// (stays at the producer's value) — exactly the live restore-after-judge.
-	const judgeDef: StageDef = { kind: "produces", outcome: def.assess!.judge.outcome, sessionPolicy: "fresh" };
-	const key = resolvePublishName(judgeDef, row.stage);
-	let slot = acc.state.named[key];
-	if (!slot) {
-		slot = [];
-		acc.state.named[key] = slot;
+	if (gen.loop.kind === "iterate") {
+		if (!gen.expected || gen.expected.index !== gen.cursor.index) {
+			const u = await guarded(acc, gen.parent, () =>
+				(gen.loop as Extract<LoopDef, { kind: "iterate" }>).next({
+					cwd: acc.cwd,
+					artifact: gen.entryArtifact,
+					state: acc.state,
+					accumulated: gen.cursor.accumulated,
+					index: gen.cursor.index,
+				}),
+			);
+			if (acc.drift) return;
+			gen.expected = { index: gen.cursor.index, tag: u ? unitTagOf(u) : undefined };
+		}
+		// `tag: undefined` = the generator now terminates here, but a row exists — drift.
+		if (gen.expected.tag !== row.unitId) return setDrift(acc, gen.parent);
+		return;
 	}
-	slot.push(row.output);
-	point.lastVerdict = row.output;
-	// Judged → next round's produce is pending. The shim re-checks judge.done(lastVerdict)
-	// to decide advance-downstream (done) vs run-produce (not-done).
-	point.round = tag.round + 1;
-	point.phase = "produce";
+
+	// assess: (role, unitIndex) arithmetic already matched above. Full-check
+	// extra: a produce row for round n>0 implies done(verdict n-1) was false
+	// on the live run — a now-true done means the predicate drifted.
+	if (row.role === "produce" && gen.cursor.lastVerdict !== undefined) {
+		const loop = gen.loop as Extract<LoopDef, { kind: "assess" }>;
+		const done = await guarded(acc, gen.parent, () => loop.done(gen.cursor.lastVerdict!));
+		if (!acc.drift && done) setDrift(acc, gen.parent);
+	}
+}
+
+function setDrift(acc: FoldAcc, parent: string): void {
+	acc.drift = { parent, errMsg: ERR_RESUME_LOOP_MISMATCH(parent) };
+}
+
+/** Run a user fn during the fold; a throw becomes drift with the thrown reason. */
+async function guarded<T>(acc: FoldAcc, parent: string, fn: () => T | Promise<T>): Promise<T | undefined> {
+	try {
+		return await fn();
+	} catch (e) {
+		acc.drift = { parent, errMsg: e instanceof Error ? e.message : String(e) };
+		return undefined;
+	}
+}
+
+function toPoint(gen: OpenGeneration): LoopResumePoint {
+	return {
+		parent: gen.parent,
+		entryArtifact: gen.entryArtifact,
+		entryPair: gen.entryPair,
+		cursor: gen.cursor,
+		units: gen.units,
+	};
 }

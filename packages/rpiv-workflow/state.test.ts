@@ -3,13 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	appendLoopCap,
 	appendStage,
 	generateRunId,
+	type LoopCapRow,
 	listArtifacts,
 	listRuns,
 	readAllStages,
 	readHeader,
 	readLastStage,
+	readLoopCaps,
 	runsDir,
 	stateFilePath,
 	type WorkflowHeader,
@@ -132,6 +135,77 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 		const last = readLastStage(tmpDir, runId);
 		expect(last).toEqual(failed);
 		expect(last?.output).toBeUndefined();
+	});
+});
+
+describe("loop-cap rows + unit-identity fields", () => {
+	it("round-trips a loop-cap row via appendLoopCap → readLoopCaps", () => {
+		const runId = "2026-05-20_15-30-45";
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
+		const row: LoopCapRow = { type: "loop-cap", stage: "breakdown", count: 5, max: 5, ts: "2026" };
+		expect(appendLoopCap(tmpDir, runId, row)).toBe(true);
+		expect(readLoopCaps(tmpDir, runId)).toEqual([row]);
+	});
+
+	it("stage readers skip loop-cap rows (shape-discriminated, not positional)", () => {
+		const runId = "skip-loop-cap";
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
+		const stage: WorkflowStage = {
+			stageNumber: 1,
+			stage: "breakdown",
+			skill: "breakdown",
+			status: "completed",
+			ts: "2026",
+		};
+		appendStage(tmpDir, runId, stage);
+		appendLoopCap(tmpDir, runId, { type: "loop-cap", stage: "breakdown", count: 8, max: 8, ts: "2026" });
+
+		// readAllStages / readLastStage skip the loop-cap row untouched.
+		expect(readAllStages(tmpDir, runId)).toEqual([stage]);
+		expect(readLastStage(tmpDir, runId)).toEqual(stage);
+		// readLoopCaps only sees the cap row, never the stage row.
+		expect(readLoopCaps(tmpDir, runId)).toEqual([
+			{ type: "loop-cap", stage: "breakdown", count: 8, max: 8, ts: "2026" },
+		]);
+	});
+
+	it("rows carrying the four unit-identity fields round-trip through readAllStages", () => {
+		const runId = "unit-fields";
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
+		const unitRow: WorkflowStage = {
+			stageNumber: 4,
+			stage: "implement (phase-2)",
+			skill: "implement",
+			status: "completed",
+			ts: "2026",
+			parent: "implement",
+			role: "produce",
+			unitId: "phase-2",
+			unitIndex: 1,
+		};
+		appendStage(tmpDir, runId, unitRow);
+		// isWorkflowStage filters on stageNumber + stage only, so the unit row passes
+		// through unchanged with all four structured fields intact.
+		expect(readAllStages(tmpDir, runId)).toEqual([unitRow]);
+	});
+
+	it("preserves unit-identity fields on a failure row", () => {
+		const runId = "unit-failure";
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
+		const failed: WorkflowStage = {
+			stageNumber: 2,
+			stage: "implement (phase-3)",
+			skill: "implement",
+			status: "failed",
+			ts: "2026",
+			errMsg: "implement failed",
+			parent: "implement",
+			role: "produce",
+			unitId: "phase-3",
+			unitIndex: 2,
+		};
+		appendStage(tmpDir, runId, failed);
+		expect(readLastStage(tmpDir, runId)).toEqual(failed);
 	});
 });
 

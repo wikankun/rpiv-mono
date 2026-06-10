@@ -166,10 +166,10 @@ describe("produces.script", () => {
 			sessionPolicy: "fresh",
 		});
 		expect(n.run).toBe(noopProducesScript);
-		// No skill / outcome / fanout on script stages.
+		// No skill / outcome / loop on script stages.
 		expect(n.skill).toBeUndefined();
 		expect(n.outcome).toBeUndefined();
-		expect(n.fanout).toBeUndefined();
+		expect(n.loop).toBeUndefined();
 	});
 
 	it("threads validation knobs through to the StageDef", () => {
@@ -202,7 +202,7 @@ describe("acts.script", () => {
 		expect(n.run).toBe(noopActsScript);
 		expect(n.skill).toBeUndefined();
 		expect(n.outcome).toBeUndefined();
-		expect(n.fanout).toBeUndefined();
+		expect(n.loop).toBeUndefined();
 	});
 
 	it("preserves inputSchema + inheritsArtifacts overrides", () => {
