@@ -303,6 +303,67 @@ describe("formatWorkflowDetails", () => {
 		expect(cLine).not.toContain("out-schema");
 	});
 
+	it("renders the judge mode for an assess stage — skill judge", () => {
+		const verdictSpec = { name: "verdicts", collector: { snapshot: false } } as never;
+		const assessWorkflow: Workflow = {
+			name: "assessed",
+			start: "breakdown",
+			stages: {
+				breakdown: produces({
+					assess: {
+						judge: { skill: "grade-breakdown", outcome: verdictSpec, done: () => true },
+						feedForward: () => "decompose further",
+						max: 5,
+					},
+				}),
+				commit: acts(),
+			},
+			edges: { breakdown: "commit", commit: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [assessWorkflow],
+			default: "assessed",
+			workflowSources: new Map([["assessed", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+			skillAliases: {},
+			skillContracts: new Map(),
+		};
+		const out = formatWorkflowDetails(loaded, "assessed");
+		const bdLine = out.split("\n").find((l) => /breakdown/.test(l)) ?? "";
+		expect(bdLine).toContain("assess(judge: skill:grade-breakdown)·max=5");
+	});
+
+	it("renders the judge mode for an assess stage — prompt judge with default max", () => {
+		const verdictSpec = { name: "verdicts", collector: { snapshot: false } } as never;
+		const assessWorkflow: Workflow = {
+			name: "assessed-prompt",
+			start: "breakdown",
+			stages: {
+				breakdown: produces({
+					assess: {
+						judge: { prompt: "Are all tasks atomic?", outcome: verdictSpec, done: () => true },
+						feedForward: () => "decompose further",
+					},
+				}),
+				commit: acts(),
+			},
+			edges: { breakdown: "commit", commit: "stop" },
+		};
+		const loaded: LoadedWorkflows = {
+			workflows: [assessWorkflow],
+			default: "assessed-prompt",
+			workflowSources: new Map([["assessed-prompt", "built-in"]]),
+			layers: ["built-in"],
+			issues: [],
+			skillAliases: {},
+			skillContracts: new Map(),
+		};
+		const out = formatWorkflowDetails(loaded, "assessed-prompt");
+		const bdLine = out.split("\n").find((l) => /breakdown/.test(l)) ?? "";
+		expect(bdLine).toContain("assess(judge: prompt)·max=8");
+	});
+
 	it("annotates aliased stages with (skill: <body>) when stage.skill differs from the stage id", () => {
 		const aliased: Workflow = {
 			name: "aliased",

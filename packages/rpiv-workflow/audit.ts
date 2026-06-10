@@ -104,6 +104,20 @@ export const fanoutRowStage = (s: FanoutSession): string => `${s.stageName} (${s
 export const iterateRowStage = (stageName: string, tag: string): string => `${stageName} (${tag})`;
 
 /**
+ * JSONL `WorkflowStage.stage` value for `assess`-round rows. Decorates the
+ * parent stage's record key with a two-part `r{round}·{phase}` tag
+ * (e.g. `"breakdown (r0·produce)"`, `"breakdown (r0·judge)"`) so resume can
+ * fold the two-rows-per-round shape: the tag carries both the 0-based round
+ * cursor and which sub-step the row recorded. Like `iterateRowStage`, the
+ * decoration is opaque to `resolvePublishName` — the producer keys on its
+ * `outcome.name` and the judge keys on `judge.outcome.name`, so the tag never
+ * splits either named slot. `matchFanoutParent` reverses it by prefix/suffix
+ * only, never parsing inside the parens, so the `·`-joined tag round-trips.
+ */
+export const assessRowStage = (stageName: string, round: number, phase: "produce" | "judge"): string =>
+	`${stageName} (r${round}·${phase})`;
+
+/**
  * Allocates the next `stageNumber`, attempts the append, and returns the
  * assigned number on success (or undefined on I/O failure). `lastAllocatedStageNumber`
  * advances monotonically — once per call — so a transient failure doesn't

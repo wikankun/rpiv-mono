@@ -273,3 +273,28 @@ export interface FanoutSession extends SessionContext {
 	stageIndex: number;
 	onSuccess: (ctx: WorkflowHostContext) => Promise<void>;
 }
+
+/**
+ * One sub-step of an `assess` round — either the **producer** session (runs
+ * the parent stage's skill/outcome) or the **judge** session (runs the
+ * synthetic `produces` def carrying `judge.outcome`). Mirrors `FanoutSession`:
+ * a `SessionContext` plus the loop cursor (`round`, `phase`), the audit label
+ * (`id`/`label`), the parent's `stageIndex`, and a continuation `onSuccess`.
+ *
+ * The JSONL row's `stage` value (built by `assessRowStage`) decorates the
+ * parent's `stageName` with `r{round}·{phase}` so resume can fold the
+ * two-rows-per-round shape.
+ */
+export interface AssessSession extends SessionContext {
+	/** 0-based round index. */
+	round: number;
+	/** Which sub-step this session is — drives the audit-row phase tag. */
+	phase: "produce" | "judge";
+	/** Disambiguating audit label woven into the status line (`r{round}·{phase}`). */
+	label: string;
+	/** Stable audit identifier preferred over `label` when set. */
+	id?: string;
+	/** Parent stage's 0-based index. */
+	stageIndex: number;
+	onSuccess: (ctx: WorkflowHostContext) => Promise<void>;
+}

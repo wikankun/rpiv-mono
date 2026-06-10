@@ -126,6 +126,30 @@ export const ERR_ITERATIONS_EXHAUSTED = (count: number, max: number) =>
 export const MSG_ITERATE_ZERO_UNITS = (skill: string) =>
 	`rpiv: ${skill} iterate produced zero units — nothing published, advancing`;
 
+/**
+ * Status line for an `assess` round sub-step. Same shape as
+ * `STATUS_ITERATE_UNIT`, but the disambiguator is the round/phase cursor
+ * (`r0·produce`, `r0·judge`, `r1·produce`, …) rather than a unit label. `skill`
+ * is the producer skill body on a produce sub-step and the judge skill (or the
+ * synthetic `<parent>-judge` label) on a judge sub-step.
+ */
+export const STATUS_ASSESS_ROUND = (
+	stage: number,
+	total: number,
+	skill: string,
+	round: number,
+	phase: "produce" | "judge",
+) => `rpiv: stage ${stage}/${total} — ${skill} (r${round}·${phase})`;
+
+/**
+ * An `assess` stage hit its round cap (`min(assess.max ?? 8, maxIterations)`)
+ * without the judge returning `done`. Soft-stop, NOT a terminal failure: warn,
+ * keep the last producer output as the stage result, and advance downstream
+ * (the locked design decision — no new error code).
+ */
+export const MSG_ASSESS_SOFTSTOP = (skill: string, max: number) =>
+	`rpiv: ${skill} assess reached the max round cap (${max}) — keeping the last producer output and advancing`;
+
 export const MSG_AUDIT_WRITE_FAILED = (skill: string) =>
 	`✗ ${skill} completed but audit row could not be written — stopping workflow`;
 export const ERR_AUDIT_WRITE_FAILED = (skill: string) =>
@@ -203,6 +227,11 @@ export const ERR_RESUME_ITERATE_MISMATCH = (stage: string) =>
 	`(the IterateFn must be deterministic w.r.t. its entry artifact + accumulated outputs; resume refuses rather than re-run the wrong unit)`;
 export const MSG_RESUME_ITERATE_MISMATCH = (stage: string) =>
 	`rpiv: iterate "${stage}" changed on resume — cannot safely continue`;
+export const ERR_RESUME_ASSESS_MISMATCH = (stage: string) =>
+	`rpiv: cannot resume — assess stage "${stage}" recomputed a different pending round/phase than the run recorded at the resume point ` +
+	`(feedForward + judge.done must be deterministic w.r.t. their inputs; resume refuses rather than re-run the wrong sub-step)`;
+export const MSG_RESUME_ASSESS_MISMATCH = (stage: string) =>
+	`rpiv: assess "${stage}" changed on resume — cannot safely continue`;
 
 // ---------------------------------------------------------------------------
 // Resume-refusal messages — resumeWorkflowByRef pre-resume guards (resolve →

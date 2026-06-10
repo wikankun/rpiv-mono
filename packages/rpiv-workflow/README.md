@@ -131,6 +131,59 @@ Branches are evaluated against `Number(output.data[field])` in declaration order
 
 `gate` is the numeric convenience only. String/enum, multi-field, or computed routing uses `defineRoute(targets, fn, opts?)` — the body is plain TS (e.g. `output.data.verdict === "approve" ? "commit" : "revise"`), so there's no separate string helper. By default `opts.readsData` is `true` (reads `output.data`, requires the source stage to declare an `outputSchema`); pass `{ readsData: false }` for a route that consults only `state` / `output.meta`.
 
+### Model-judged loops — `assess` (a.k.a. `untilDone`)
+
+`assess` is the third loop primitive, alongside `fanout` (breadth) and `iterate` (TS-judged depth). It's a **depth loop whose termination is decided by a separate model judge** — for when "are we done yet?" needs a model to read the work, not a synchronous TS predicate. Set it on a `produces()` stage; `untilDone` is a documentation alias for the same field (there is no separate factory).
+
+Each round runs **two** sessions:
+
+1. a **producer** — this stage's skill/outcome, emitting the work artifact;
+2. a **judge** — a separate session emitting a validated verdict `{ done, feedback }`.
+
+If `judge.done(verdict)` is `true`, the loop stops and the **producer** output (never the verdict) is the stage result. Otherwise `feedForward` builds the next producer prompt from the verdict's feedback, and the loop continues.
+
+```ts
+import { produces, directoryPathCollector, jsonBodyParser } from "@juicesharp/rpiv-workflow";
+
+// The judge's verdict outcome. The collector MUST materialize ≥1 artifact —
+// here a JSON file the parser reads into { done, feedback }. (See the
+// ≥1-artifact constraint below.) Its `name` is its OWN channel, distinct
+// from the producer outcome's name.
+const verdictSpec = {
+  name: "verdicts",
+  collector: directoryPathCollector({ dir: ".rpiv/artifacts/verdicts", ext: "json" }),
+  parser: jsonBodyParser, // output.data = { done: boolean, feedback?: string }
+};
+
+breakdown: produces({
+  outcome: taskListOutcome,                 // producer outcome (the task list)
+  assess: {
+    judge: {
+      skill: "grade-breakdown",             // skill judge — producer handle auto-injected
+      outcome: verdictSpec,
+      done: (v) => Boolean(v.data.done),    // sync TS reading the model-made verdict
+    },
+    feedForward: ({ verdict }) => `Decompose further. Notes: ${verdict.data.feedback}`,
+    max: 8,                                 // default 8, clamped by run.maxIterations
+  },
+}),
+```
+
+**Skill vs. prompt judge.** Exactly one of `judge.skill` / `judge.prompt` is the dispatch discriminator (validated at load — both or neither is an error):
+
+- **Skill judge** (`judge.skill` set): dispatched as `/skill:<judge.skill> <producerHandle>` — the latest producer artifact's handle is auto-injected as the input, exactly like any skill stage. `judge.prompt` is optional.
+- **Prompt judge** (`judge.skill` absent): the resolved `judge.prompt` text is sent verbatim, so `judge.prompt` is **required** — the author embeds the producer handle/output (and the frozen `entryArtifact`, if wanted) into the prompt themselves, since a dispatched session delivers only the prompt text.
+
+**≥1-artifact judge constraint.** The judge runs as a `produces`-kind session, so `enforceCompletionContract` makes a judge whose collector returns **zero** artifacts a **fatal halt** — no retry, no soft-stop. A judge that replies "not done" inline without writing anything *kills the run*. Always have the judge materialize its verdict (e.g. write a JSON file the collector enumerates and the parser reads), as `verdictSpec` does above.
+
+**Soft-stop at `max`.** When the round cap is hit without `done`, the loop **soft-stops**: it emits a warning, keeps the **last producer output** as the stage result, and advances downstream. No terminal failure, no new error code. `max` defaults to 8 and is clamped by `run.maxIterations`.
+
+**Judge sessions use framework defaults.** The judge runs on a synthetic `produces` def, so it does **not** inherit the parent stage's `onInvalid` / `maxRetries` / `outputSchema` / `validateTimeoutMs` — those apply to the **producer** sessions only; the judge gets framework defaults. (A skill judge still picks up its own declared skill-contract.) The producer and judge publish into **distinct** `state.named` channels (producer's `outcome.name` vs. `judge.outcome.name`), so verdicts never collide with producer outputs.
+
+**Determinism contract (for resume).** Like `iterate`, `feedForward` and `judge.done` must be **deterministic** w.r.t. their inputs. Each round persists two audit rows (`r{n}·produce`, `r{n}·judge`); the judge's verdict is recorded specifically so resume **trusts** it rather than re-grading a non-deterministic model. On resume only the pending sub-step re-runs; a boundary guard catches drift in `feedForward` / `judge.done` and fails terminally rather than re-running wrong work.
+
+`assess` is mutually exclusive with `fanout` / `iterate` / `run` / `prompt` / `reads`, requires `kind: "produces"`, and rejects `sessionPolicy: "continue"` (all enforced at load).
+
 ## Script stages (no Pi session)
 
 Some stages don't need an LLM — they merge two upstream artifacts, bump a version field, or fire a post-run notification. The `.script` accessor on each factory runs a pure TS function in place of a Pi skill body. No `/skill:<name>` dispatch, no session, no transcript scan: the function gets a `ScriptContext` (`cwd`, `input` — upstream `Output` envelope, `state` — `Readonly<RunState>`) and either returns the new envelope (`produces.script`) or returns `void` (`acts.script` / `terminal.script`).

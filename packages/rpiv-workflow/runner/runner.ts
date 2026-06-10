@@ -28,6 +28,7 @@
  */
 
 import type { Workflow } from "../api.js";
+import type { AssessDeps } from "../assess.js";
 import { auditCtxFor, notifyPartialArtifacts, nowIso, recordTerminalFailure } from "../audit.js";
 import type { FanoutDeps } from "../fanout.js";
 import { handleToString } from "../handle.js";
@@ -55,15 +56,23 @@ import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
 import type { RunContext, RunState } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
 import {
+	assessStageNames,
 	fanoutStageNames,
 	iterateStageNames,
 	matchFanoutParent,
 	type ReconstructResult,
 	reconstructState,
 } from "./resume.js";
+import { resumeAssessStage } from "./resume-assess.js";
 import { resumeFanoutStage } from "./resume-fanout.js";
 import { resumeIterateStage } from "./resume-iterate.js";
-import { captureStageSnapshot, haltIterations, runStage, StagePreflightError } from "./stage-lifecycle.js";
+import {
+	captureStageSnapshot,
+	haltIterations,
+	runStage,
+	StagePreflightError,
+	softStopAssess,
+} from "./stage-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Policy constants
@@ -411,14 +420,18 @@ function buildRunContext(
  *   - decorated iterate-unit trailer → re-enter the pull loop at the next unit
  *     (`resumeIterateStage`) — catches BOTH a completed and a failed iterate-unit
  *     trailer, since a completed unit may still have remaining units to pull;
+ *   - decorated assess-round trailer → re-enter the producer→judge loop at the
+ *     pending sub-step (`resumeAssessStage`) — also catches BOTH completed (a
+ *     producer awaiting its judge; a judge whose verdict drives advance-vs-continue)
+ *     and failed trailers;
  *   - completed normal trailer → route onward (a finished run hits stop ⇒ no-op);
  *   - failed/aborted trailer → re-run that stage.
  *
  * A decorated unit row has a `stage` key absent from `workflow.stages` matching a
- * fanout/iterate parent — meaning the run died inside that stage. The
+ * fanout/iterate/assess parent — meaning the run died inside that stage. The
  * `workflow.stages[last.stage] === undefined` outer guard keeps normal trailers on
- * the binary arms; a normal trailer after a fully-completed fanout/iterate falls
- * through to them.
+ * the binary arms; a normal trailer after a fully-completed fanout/iterate/assess
+ * falls through to them.
  */
 function selectResumeEntry(
 	ctx: WorkflowHostContext,
@@ -450,6 +463,27 @@ function selectResumeEntry(
 			const point = recon.iterateProgress.get(iterateParent) ?? { entryArtifact: undefined, accumulated: [] };
 			const pendingDecorated = last.status !== "completed" ? last.stage : undefined;
 			return () => resumeIterateStage(ctx, iterateParent, idx, point, pendingDecorated, run, iterateDeps);
+		}
+		const assessParent = matchFanoutParent(last.stage, assessStageNames(workflow));
+		if (assessParent) {
+			const assessDeps: AssessDeps = {
+				runStageSession,
+				advanceAfter: (freshCtx, name, completedIdx, r) => advanceChain(freshCtx, name, completedIdx, r),
+				captureSnapshot: (d, i, r) => captureStageSnapshot(d, i, r),
+				softStopAssess,
+			};
+			// Both completed and failed assess trailers route here (a completed producer
+			// awaits its judge; a completed judge drives advance-vs-continue). The guard
+			// only fires on a failed/aborted trailer, so `pendingDecorated` is failure-only.
+			const point = recon.assessProgress.get(assessParent) ?? {
+				entryArtifact: undefined,
+				round: 0,
+				lastProducerOutput: undefined,
+				lastVerdict: undefined,
+				phase: "produce" as const,
+			};
+			const pendingDecorated = last.status !== "completed" ? last.stage : undefined;
+			return () => resumeAssessStage(ctx, assessParent, idx, point, pendingDecorated, run, assessDeps);
 		}
 	}
 

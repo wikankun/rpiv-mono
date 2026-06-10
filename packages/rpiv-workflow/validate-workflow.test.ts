@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type ActsScriptFn,
+	type AssessConfig,
 	acts,
 	defineRoute,
 	defineWorkflow,
@@ -697,6 +698,119 @@ describe("validateWorkflow — iterate invariants", () => {
 			wf({ kind: "produces", sessionPolicy: "fresh", outcome: { collector: noopCollector }, iterate: iter }),
 		);
 		expect(e.some((i) => /iterate requires an `outcome` with a `name`/.test(i.message))).toBe(true);
+	});
+});
+
+describe("validateWorkflow — assess invariants", () => {
+	const producerOutcome = { name: "tasks", collector: noopCollector };
+	const verdictOutcome = { name: "verdict", collector: noopCollector };
+	const noopActsScript: ActsScriptFn = (_ctx: ScriptContext) => {};
+
+	// Well-formed skill-judge assess config; override the judge per-test.
+	const assessCfg = (judge: Partial<AssessConfig["judge"]> = {}): AssessConfig => ({
+		judge: { skill: "grade", outcome: verdictOutcome, done: () => true, ...judge },
+		feedForward: () => "decompose further",
+	});
+
+	const wf = (stage: StageDef): Workflow => ({
+		name: "assessing",
+		start: "s",
+		stages: { s: stage },
+		edges: { s: "stop" },
+	});
+
+	const base = (overrides: Partial<StageDef> = {}): StageDef => ({
+		kind: "produces",
+		sessionPolicy: "fresh",
+		outcome: producerOutcome,
+		assess: assessCfg(),
+		...overrides,
+	});
+
+	it("accepts a well-formed assess stage (produces + skill judge + fresh)", () => {
+		expect(errors(wf(base()))).toEqual([]);
+	});
+
+	it("accepts a well-formed assess stage with a prompt judge", () => {
+		const stage = base({ assess: assessCfg({ skill: undefined, prompt: "Are all tasks atomic?" }) });
+		expect(errors(wf(stage))).toEqual([]);
+	});
+
+	it("rejects assess alongside iterate (mutually exclusive)", () => {
+		const e = errors(wf(base({ iterate: () => null })));
+		expect(e.some((i) => /assess and iterate are mutually exclusive/.test(i.message))).toBe(true);
+	});
+
+	it("rejects assess alongside fanout (mutually exclusive)", () => {
+		const e = errors(wf(base({ fanout: () => [] })));
+		expect(e.some((i) => /assess and fanout are mutually exclusive/.test(i.message))).toBe(true);
+	});
+
+	it("rejects assess on a script stage (run set)", () => {
+		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopActsScript, assess: assessCfg() }));
+		expect(e.some((i) => /script stages cannot assess/.test(i.message))).toBe(true);
+	});
+
+	it("rejects assess alongside a raw prompt (mutually exclusive)", () => {
+		const e = errors(wf(base({ prompt: "x" })));
+		expect(e.some((i) => /assess and prompt are mutually exclusive/.test(i.message))).toBe(true);
+	});
+
+	it("rejects assess alongside reads (v1 restriction)", () => {
+		const e = errors(wf(base({ reads: ["tasks"] })));
+		expect(e.some((i) => /assess cannot set `reads` in v1/.test(i.message))).toBe(true);
+	});
+
+	it('rejects assess on a non-produces stage (kind: "side-effect")', () => {
+		const e = errors(wf(base({ kind: "side-effect" })));
+		expect(e.some((i) => /assess requires kind "produces"/.test(i.message))).toBe(true);
+	});
+
+	it('rejects assess with sessionPolicy: "continue"', () => {
+		const e = errors(wf(base({ sessionPolicy: "continue" })));
+		expect(e.some((i) => /cannot combine assess with sessionPolicy "continue"/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a judge whose outcome has no name", () => {
+		const stage = base({ assess: assessCfg({ outcome: { collector: noopCollector } }) });
+		const e = errors(wf(stage));
+		expect(e.some((i) => /assess requires `judge.outcome` with a `name`/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a judge with no done predicate", () => {
+		const stage = base({ assess: assessCfg({ done: undefined as unknown as AssessConfig["judge"]["done"] }) });
+		const e = errors(wf(stage));
+		expect(e.some((i) => /assess requires `judge.done`/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a judge that sets both skill and prompt", () => {
+		const stage = base({ assess: assessCfg({ prompt: "grade it" }) }); // skill already set by default
+		const e = errors(wf(stage));
+		expect(e.some((i) => /assess judge sets both `skill` and `prompt`/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a judge that sets neither skill nor prompt", () => {
+		const stage = base({ assess: assessCfg({ skill: undefined }) });
+		const e = errors(wf(stage));
+		expect(e.some((i) => /assess judge sets neither `skill` nor `prompt`/.test(i.message))).toBe(true);
+	});
+
+	it("rejects a judge outcome name that collides with the producer's publish name", () => {
+		const stage = base({ assess: assessCfg({ outcome: { name: "tasks", collector: noopCollector } }) });
+		const e = errors(wf(stage));
+		expect(e.some((i) => /collides with the producer's publish name/.test(i.message))).toBe(true);
+	});
+
+	it.each([0, -1, 1.5])("rejects assess.max: %s (must be an integer >= 1)", (max) => {
+		const stage = base();
+		const e = errors(wf({ ...stage, assess: { ...stage.assess!, max } }));
+		expect(e.some((i) => /assess\.max.*must be an integer >= 1/.test(i.message))).toBe(true);
+	});
+
+	it("accepts assess.max: 1 and an omitted max", () => {
+		const stage = base();
+		expect(errors(wf({ ...stage, assess: { ...stage.assess!, max: 1 } }))).toEqual([]);
+		expect(errors(wf(stage))).toEqual([]);
 	});
 });
 

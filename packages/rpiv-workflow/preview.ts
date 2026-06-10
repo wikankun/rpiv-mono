@@ -5,7 +5,8 @@
  * string that `command.ts` hands straight to `ctx.ui.notify(..., "info")`.
  */
 
-import type { StageDef, Workflow } from "./api.js";
+import type { AssessConfig, StageDef, Workflow } from "./api.js";
+import { DEFAULT_ASSESS_ROUNDS } from "./assess.js";
 import { type ConfigLayer, renderConfigLayer } from "./layers.js";
 import type { LoadedWorkflows } from "./load/index.js";
 import { CMD_USAGE_LIST, CMD_USAGE_PREVIEW, CMD_USAGE_RUN } from "./messages.js";
@@ -111,6 +112,7 @@ function formatStageRow(idx: number, stageName: string, stage: StageDef, workflo
 	const decorations = [stage.kind.padEnd(13), stage.sessionPolicy, outcomeTag(stage)];
 	if (stage.inputSchema) decorations.push("in-schema");
 	if (stage.outputSchema) decorations.push("out-schema");
+	if (stage.assess) decorations.push(assessTag(stage.assess));
 
 	const displayName = stage.skill && stage.skill !== stageName ? `${stageName} (skill: ${stage.skill})` : stageName;
 	const arrow = formatEdge(workflow, stageName);
@@ -137,6 +139,17 @@ function outcomeTag(stage: StageDef): string {
 		return tags.join("+");
 	}
 	return stage.kind === "produces" ? "???" : "side-effect";
+}
+
+/**
+ * Decoration for an `assess` (model-judged "until-done") stage, surfacing the
+ * otherwise-invisible judge: `assess(judge: skill:<name>)` for a skill judge,
+ * `assess(judge: prompt)` for an inline-prompt judge. The trailing `·max=N`
+ * shows the round cap (default 8) so a reader knows the loop's soft-stop bound.
+ */
+function assessTag(assess: AssessConfig): string {
+	const judge = assess.judge.skill ? `skill:${assess.judge.skill}` : "prompt";
+	return `assess(judge: ${judge})·max=${assess.max ?? DEFAULT_ASSESS_ROUNDS}`;
 }
 
 /** Render the outgoing edge as a human-readable trailer (string or predicate target set). */

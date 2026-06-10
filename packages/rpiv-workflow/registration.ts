@@ -9,6 +9,10 @@
 
 export {
 	type ActsScriptFn,
+	type AssessConfig,
+	type AssessFeedContext,
+	type AssessJudge,
+	type AssessJudgeContext,
 	acts,
 	type DefineRouteOptions,
 	defineRoute,

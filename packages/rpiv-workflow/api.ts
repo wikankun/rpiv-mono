@@ -181,6 +181,93 @@ export interface IterateContext {
 export type IterateUnit = FanoutUnit;
 
 // ===========================================================================
+// Assess primitive — model-judged "until-done" depth loop
+// ===========================================================================
+
+/**
+ * The separate model judge that decides a `assess` loop's termination. Unlike
+ * `iterate` (whose predicate is synchronous in-process TS), the judge is a
+ * dispatched session — a **skill** (`/skill:<judge.skill> <producerHandle>`,
+ * the latest producer artifact auto-injected as the input handle) or a raw
+ * **prompt** (the author embeds the handle/output themselves). Exactly one of
+ * `skill` / `prompt` is the dispatch discriminator (validated at load).
+ *
+ * The judge runs as a `produces`-kind session so its verdict is *validated* by
+ * `outcome` and published into its own dedicated `state.named[outcome.name]`
+ * channel — distinct from the producer's outcome name. The synchronous
+ * `done(verdict)` reads that model-made verdict.
+ */
+export interface AssessJudge {
+	/** Present → `/skill:<skill>` dispatch (producer handle auto-injected). Absent → raw-prompt dispatch. */
+	skill?: string;
+	/**
+	 * Judge prompt. REQUIRED for a prompt judge (no skill) — the author embeds
+	 * the producer handle/output themselves, since a dispatched session delivers
+	 * only the prompt text. Optional for a skill judge (the producer handle is
+	 * folded into `/skill:<skill> <handle>` automatically).
+	 */
+	prompt?: string | ((ctx: AssessJudgeContext) => string | Promise<string>);
+	/**
+	 * REQUIRED — validates the verdict and names its dedicated `state.named`
+	 * channel (its `.name` must differ from the producer outcome's).
+	 *
+	 * ≥1-ARTIFACT CONSTRAINT: the collector MUST materialize at least one
+	 * artifact (e.g. a JSON verdict file whose parser yields `{ done, feedback }`).
+	 * A judge session whose collector returns zero artifacts is a **fatal halt**
+	 * via `enforceCompletionContract` — no retry, no soft-stop. A judge that
+	 * replies "not done" inline without writing anything kills the run.
+	 */
+	outcome: OutputSpec;
+	/** Sync TS reading the model-made verdict. `true` → loop stops, producer output is the stage result. */
+	done: (verdict: Output) => boolean;
+}
+
+/** Context handed to a dynamic `AssessJudge.prompt`. */
+export interface AssessJudgeContext {
+	cwd: string;
+	/** Latest producer output (also the session's input handle). */
+	output: Output;
+	/** Frozen original ask, referenceable; the author embeds it if wanted. */
+	entryArtifact: import("./handle.js").Artifact | undefined;
+	state: Readonly<RunState>;
+	/** 0-based round index. */
+	round: number;
+}
+
+/**
+ * Opt-in model-judged depth loop — the third loop primitive alongside `fanout`
+ * (breadth) and `iterate` (TS-judged depth). Each round runs a **producer**
+ * session (this stage's skill/outcome) then a **judge** session
+ * (`AssessJudge`). On `done`, the producer output is the stage result;
+ * otherwise the verdict's feedback is fed forward into the next producer round
+ * via `feedForward`.
+ *
+ * Mutually exclusive with `fanout`/`iterate`/`run`/`prompt`/`reads`. Requires
+ * `kind: "produces"` and `sessionPolicy` other than `"continue"`. The `max`
+ * cap **soft-stops** (warn + advance with the last producer output — no
+ * terminal failure). (validated at load + at preflight.)
+ */
+export interface AssessConfig {
+	judge: AssessJudge;
+	/** Builds the next producer prompt arg from the just-judged round's output + verdict. */
+	feedForward: (ctx: AssessFeedContext) => string;
+	/** Default 8, clamped by `run.maxIterations`. */
+	max?: number;
+}
+
+/** Context handed to `AssessConfig.feedForward`. */
+export interface AssessFeedContext {
+	cwd: string;
+	/** Producer output just judged. */
+	output: Output;
+	/** Judge verdict (incl. feedback). */
+	verdict: Output;
+	/** 0-based round index of the round just judged. */
+	round: number;
+	state: Readonly<RunState>;
+}
+
+// ===========================================================================
 // Script-stage primitives — skillless TS functions in place of `/skill:<x>`
 // ===========================================================================
 
@@ -339,6 +426,20 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	 * (validated at load + at preflight.)
 	 */
 	iterate?: IterateFn;
+	/**
+	 * Opt-in model-judged "until-done" depth loop. When set, the runner runs
+	 * producer→judge rounds: the producer is this stage's skill/outcome; the
+	 * judge (`AssessConfig.judge`) is a separate model session whose validated
+	 * verdict decides termination. On `done` the producer output is the stage
+	 * result; otherwise `feedForward` carries the verdict's feedback into the
+	 * next producer round. A `max`-round cap soft-stops (warn + advance, last
+	 * producer output preserved — no terminal failure).
+	 *
+	 * Mutually exclusive with `fanout`/`iterate`/`run`/`prompt`/`reads`.
+	 * Requires `kind: "produces"` and `sessionPolicy` other than `"continue"`.
+	 * (validated at load + at preflight.)
+	 */
+	assess?: AssessConfig;
 	/**
 	 * Whether the stage inherits the chain's primary artifact from
 	 * upstream `produces` stages. Default `true`. Set to `false` on a

@@ -22,11 +22,18 @@
  * decoration); the already-completed prefix is covered by that contract, not
  * replayed (the generator sees a mutating `state` per unit, so faithful
  * intermediate replay is infeasible).
+ * Folds `def.assess` round rows — TWO per round (`r{n}·produce`, `r{n}·judge`) —
+ * phase-aware: producer rows replay the produces pass (roll primary, publish, set
+ * output); judge rows publish the verdict into its OWN named channel WITHOUT rolling
+ * the primary or touching `state.output` (mirroring the live restore-after-judge), so
+ * post-fold state holds the LAST producer's values, never a verdict. The trailing
+ * generation's `AssessResumePoint` carries the next pending sub-step + the recovered
+ * verdict so `resume-assess.ts` continues without re-grading.
  */
 
 import type { StageDef, Workflow } from "../api.js";
 import type { Artifact } from "../handle.js";
-import { applyCompletedStage } from "../internal-utils.js";
+import { applyCompletedStage, resolvePublishName } from "../internal-utils.js";
 import type { Output } from "../output.js";
 import { readAllStages } from "../state/index.js";
 import type { WorkflowHeader, WorkflowStage } from "../state/state.js";
@@ -67,6 +74,40 @@ export interface IterateResumePoint {
 }
 export type IterateProgress = ReadonlyMap<string, IterateResumePoint>;
 
+/**
+ * Per-assess-parent resume point — the TRAILING contiguous generation's state.
+ * An assess loop records TWO rows per round (`r{n}·produce`, `r{n}·judge`), so
+ * the point captures the next pending sub-step rather than a unit prefix.
+ * Consumed by `resumeAssessStage` (Phase 4) to re-enter `runAssess`.
+ *
+ *   - `entryArtifact` — the primary FROZEN at the generation's first producer row
+ *     (producer rounds roll the primary forward, so the rebuilt
+ *     `state.primaryArtifact` is the LAST producer's artifact, not this). The
+ *     frozen original ask handed to `AssessJudgeContext.entryArtifact`.
+ *   - `round` — the round the pending sub-step belongs to (`phase` says which).
+ *   - `lastProducerOutput` — the most-recently-completed producer `Output`
+ *     (`feedForward` input; also the value `state.output` is restored to).
+ *   - `lastVerdict` — the trailing judge row's verdict `Output`, so resume feeds
+ *     it forward WITHOUT re-grading; undefined until a judge round completes.
+ *   - `phase` — which sub-step is pending: `produce` (run the next producer round)
+ *     or `judge` (grade the just-produced round). Computed from the trailing row:
+ *     a completed produce → judge for that round; a completed judge → produce for
+ *     the NEXT round (the shim re-checks `judge.done(lastVerdict)` to decide
+ *     advance-vs-continue); a failed/aborted row → re-run that same sub-step.
+ *
+ * Reset whenever a non-assess row (or a different parent) breaks contiguity, so a
+ * back-edge second generation overwrites the first pass's point. `state.named`
+ * still accumulates across ALL generations — only this point resets.
+ */
+export interface AssessResumePoint {
+	entryArtifact: Artifact | undefined;
+	round: number;
+	lastProducerOutput: Output | undefined;
+	lastVerdict: Output | undefined;
+	phase: "produce" | "judge";
+}
+export type AssessProgress = ReadonlyMap<string, AssessResumePoint>;
+
 export type ReconstructResult =
 	| {
 			ok: true;
@@ -76,6 +117,7 @@ export type ReconstructResult =
 			rows: WorkflowStage[];
 			fanoutProgress: FanoutProgress;
 			iterateProgress: IterateProgress;
+			assessProgress: AssessProgress;
 	  }
 	| { ok: false; reason: "no-rows" | "stage-gone"; detail: string };
 
@@ -99,6 +141,32 @@ export function iterateStageNames(workflow: Workflow): ReadonlySet<string> {
 		if (def.iterate) names.add(name);
 	}
 	return names;
+}
+
+/** Stage record keys whose def opts into `assess`. */
+export function assessStageNames(workflow: Workflow): ReadonlySet<string> {
+	const names = new Set<string>();
+	for (const [name, def] of Object.entries(workflow.stages)) {
+		if (def.assess) names.add(name);
+	}
+	return names;
+}
+
+/**
+ * Parse the `r{round}·{phase}` tag out of an assess-decorated row key
+ * (`assessRowStage`, audit.ts:117) — `"breakdown (r2·judge)"` →
+ * `{ round: 2, phase: "judge" }`. The caller has already matched `parent` via
+ * `matchFanoutParent` (prefix/suffix only); this splits INSIDE the parens, the
+ * one place nothing else parses. Returns undefined on a malformed tag (defensive
+ * — the runner only ever writes well-formed assess decorations).
+ */
+function parseAssessTag(stageKey: string, parent: string): { round: number; phase: "produce" | "judge" } | undefined {
+	const prefix = `${parent} (`;
+	if (!stageKey.startsWith(prefix) || !stageKey.endsWith(")")) return undefined;
+	const tag = stageKey.slice(prefix.length, -1); // "r2·judge"
+	const match = /^r(\d+)·(produce|judge)$/.exec(tag);
+	if (!match) return undefined;
+	return { round: Number(match[1]), phase: match[2] as "produce" | "judge" };
 }
 
 /**
@@ -155,6 +223,7 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 
 	const fanoutNames = fanoutStageNames(workflow);
 	const iterateNames = iterateStageNames(workflow);
+	const assessNames = assessStageNames(workflow);
 
 	const acc: FoldAcc = {
 		state: {
@@ -170,6 +239,7 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 		visited: new Set<string>(),
 		fanoutProgress: new Map<string, string[]>(),
 		iterateProgress: new Map<string, IterateResumePoint>(),
+		assessProgress: new Map<string, AssessResumePoint>(),
 		lastFoldedUnitParent: undefined,
 		lastStageNumber: 0,
 	};
@@ -178,7 +248,7 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 		const def = workflow.stages[row.stage];
 		const step = def
 			? foldKnownStage(acc, def, row)
-			: foldDecoratedRow(acc, workflow, row, fanoutNames, iterateNames);
+			: foldDecoratedRow(acc, workflow, row, fanoutNames, iterateNames, assessNames);
 		if (step.refuse) return { ok: false, reason: step.reason, detail: step.detail };
 	}
 
@@ -192,6 +262,7 @@ export function reconstructState(cwd: string, workflow: Workflow, header: Workfl
 		rows,
 		fanoutProgress: acc.fanoutProgress,
 		iterateProgress: acc.iterateProgress,
+		assessProgress: acc.assessProgress,
 	};
 }
 
@@ -205,7 +276,8 @@ interface FoldAcc {
 	visited: Set<string>;
 	fanoutProgress: Map<string, string[]>;
 	iterateProgress: Map<string, IterateResumePoint>;
-	/** Parent of the immediately-preceding folded row IF it was a fanout OR iterate unit; else undefined. Drives generation reset for both. */
+	assessProgress: Map<string, AssessResumePoint>;
+	/** Parent of the immediately-preceding folded row IF it was a fanout, iterate, OR assess unit; else undefined. Drives generation reset for all three. */
 	lastFoldedUnitParent: string | undefined;
 	lastStageNumber: number;
 }
@@ -245,8 +317,8 @@ function foldKnownStage(acc: FoldAcc, def: StageDef, row: WorkflowStage): FoldSt
 /**
  * Fold a row whose `stage` is NOT a key — a decorated unit row, a renamed stage,
  * or a removed one. A fanout-parent match folds counters-only; an iterate-parent
- * match folds a full produces pass (`foldIterateUnit`); no match refuses
- * `stage-gone`.
+ * match folds a full produces pass (`foldIterateUnit`); an assess-parent match folds
+ * one round sub-step (`foldAssessRound`); no match refuses `stage-gone`.
  */
 function foldDecoratedRow(
 	acc: FoldAcc,
@@ -254,6 +326,7 @@ function foldDecoratedRow(
 	row: WorkflowStage,
 	fanoutNames: ReadonlySet<string>,
 	iterateNames: ReadonlySet<string>,
+	assessNames: ReadonlySet<string>,
 ): FoldStep {
 	const fanoutParent = matchFanoutParent(row.stage, fanoutNames);
 	if (fanoutParent) {
@@ -263,6 +336,11 @@ function foldDecoratedRow(
 	const iterateParent = matchFanoutParent(row.stage, iterateNames);
 	if (iterateParent) {
 		foldIterateUnit(acc, workflow.stages[iterateParent]!, iterateParent, row);
+		return FOLD_OK;
+	}
+	const assessParent = matchFanoutParent(row.stage, assessNames);
+	if (assessParent) {
+		foldAssessRound(acc, workflow.stages[assessParent]!, assessParent, row);
 		return FOLD_OK;
 	}
 	return refuse("stage-gone", row.stage);
@@ -330,4 +408,89 @@ function foldIterateUnit(acc: FoldAcc, def: StageDef, parent: string, row: Workf
 	acc.state.output = row.output;
 	applyCompletedStage(acc.state, def, row.stage, row.output); // rolls primary + pushes named[outcome.name]
 	point.accumulated.push(row.output);
+}
+
+/**
+ * Fold one decorated assess-round row — TWO rows per round (`r{n}·produce`,
+ * `r{n}·judge`), so this is phase-aware (unlike the single-row fanout/iterate folds).
+ *
+ *   - **producer rows** mirror the live producer pass: set `state.output`, roll the
+ *     primary, publish onto `state.named[outcome.name]` (`applyCompletedStage`). A
+ *     completed producer makes the JUDGE the pending sub-step for that round.
+ *   - **judge rows** mirror the live restore-after-judge: push the verdict onto its
+ *     OWN `state.named[judge.outcome.name]` channel MANUALLY — NO `applyCompletedStage`
+ *     (it would roll the primary to the verdict artifact) and NO `state.output` write
+ *     (it must stay at the producer's value). A completed judge makes the NEXT round's
+ *     PRODUCE the pending sub-step (the resume shim re-checks `judge.done(lastVerdict)`
+ *     to choose advance-vs-continue); the verdict is stashed as `lastVerdict` so resume
+ *     feeds it forward without re-grading.
+ *
+ * `stagesCompleted` bumps for every completed row of EITHER phase — both landed real
+ * JSONL rows, so this matches the live counters. A failed/aborted/skipped row leaves
+ * the pending sub-step on that same phase+round (resume re-runs it) and contributes
+ * nothing to state.
+ *
+ * Generation tracking mirrors `foldIterateUnit`: a row whose parent differs from the
+ * immediately-preceding unit row STARTS a new generation — snapshot the (pre-produce)
+ * primary as the frozen `entryArtifact` and reset the round cursor. Both sub-steps of
+ * every round share one generation (same parent, contiguous rows), so the entry freezes
+ * at the FIRST producer row and `state.named` accumulates across every round; only a
+ * back-edge re-entry (a non-assess row breaks contiguity) starts a fresh point.
+ */
+function foldAssessRound(acc: FoldAcc, def: StageDef, parent: string, row: WorkflowStage): void {
+	const tag = parseAssessTag(row.stage, parent);
+	if (!tag) return; // defensive — the runner only writes well-formed assess decorations
+
+	const newGeneration = acc.lastFoldedUnitParent !== parent;
+	let point = acc.assessProgress.get(parent);
+	if (newGeneration || !point) {
+		point = {
+			entryArtifact: acc.state.primaryArtifact,
+			round: 0,
+			lastProducerOutput: undefined,
+			lastVerdict: undefined,
+			phase: "produce",
+		};
+		acc.assessProgress.set(parent, point);
+	}
+	acc.visited.add(parent);
+	acc.lastStageNumber = Math.max(acc.lastStageNumber, row.stageNumber);
+	acc.lastFoldedUnitParent = parent;
+
+	if (tag.phase === "produce") {
+		// A non-completed producer re-runs as produce for this same round.
+		point.round = tag.round;
+		point.phase = "produce";
+		if (row.status !== "completed") return;
+		acc.state.stagesCompleted++;
+		if (!row.output) return; // defensive — completed produce rows always carry output
+		acc.state.output = row.output;
+		applyCompletedStage(acc.state, def, row.stage, row.output); // rolls primary + pushes named[outcome.name]
+		point.lastProducerOutput = row.output;
+		point.phase = "judge"; // produced → judge this round
+		return;
+	}
+
+	// judge phase — a non-completed judge re-runs as judge for this same round.
+	point.round = tag.round;
+	point.phase = "judge";
+	if (row.status !== "completed") return;
+	acc.state.stagesCompleted++;
+	if (!row.output) return; // defensive — completed judge rows always carry output
+	// Publish the verdict into its OWN channel manually. Distinct from the producer's
+	// outcome.name; NO applyCompletedStage (no primary roll), NO state.output write
+	// (stays at the producer's value) — exactly the live restore-after-judge.
+	const judgeDef: StageDef = { kind: "produces", outcome: def.assess!.judge.outcome, sessionPolicy: "fresh" };
+	const key = resolvePublishName(judgeDef, row.stage);
+	let slot = acc.state.named[key];
+	if (!slot) {
+		slot = [];
+		acc.state.named[key] = slot;
+	}
+	slot.push(row.output);
+	point.lastVerdict = row.output;
+	// Judged → next round's produce is pending. The shim re-checks judge.done(lastVerdict)
+	// to decide advance-downstream (done) vs run-produce (not-done).
+	point.round = tag.round + 1;
+	point.phase = "produce";
 }

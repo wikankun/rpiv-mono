@@ -201,6 +201,7 @@ function checkStageSemantics(w: Workflow, issues: WorkflowValidationIssue[]): vo
 		checkStageEnums(w, name, stage, issues);
 		checkFanoutContinueInvariant(w, name, stage, issues);
 		checkIterateInvariants(w, name, stage, issues);
+		checkAssessInvariants(w, name, stage, issues);
 		checkPromptInvariants(w, name, stage, issues);
 		checkInheritsArtifactsKind(w, name, stage, issues);
 		checkScriptStageInvariants(w, name, stage, issues);
@@ -337,6 +338,152 @@ function checkIterateInvariants(w: Workflow, name: string, stage: StageDef, issu
 				w.name,
 				name,
 				`stage "${name}": iterate requires an \`outcome\` with a \`name\` so accumulated units publish to a stable named slot`,
+			),
+		);
+	}
+}
+
+/**
+ * `assess` is the model-judged "until-done" depth loop — the producer→judge
+ * dual of `iterate`'s in-process predicate. Its invariants keep the
+ * two-sessions-per-round shape well-formed and the judge dispatch unambiguous:
+ *
+ *   - mutually exclusive with `fanout`/`iterate` (one loop primitive per stage)
+ *     and with `prompt`/`reads` (the round-0 producer prompt uses the simple
+ *     primary-handle projection; `reads` is a v1 restriction);
+ *   - requires `kind: "produces"` — the producer runs an outcome collector;
+ *   - requires a judge `outcome` (with a `name`) and a `done` predicate — the
+ *     verdict is validated and published to its own dedicated `state.named`
+ *     channel, which `done` reads;
+ *   - the judge `outcome.name` must differ from the producer's publish name —
+ *     the live restore-after-judge leaves the verdict in its own channel; a
+ *     collision would let the verdict overwrite the producer's history;
+ *   - judge dispatch is skill-XOR-prompt — exactly one of `judge.skill` /
+ *     `judge.prompt` (both is ambiguous; neither has nothing to dispatch);
+ *   - incompatible with `sessionPolicy: "continue"` — each session is isolated;
+ *   - `max`, when set, must be an integer >= 1 — `max < 1` would soft-stop at
+ *     round 0 and the stage would silently produce nothing.
+ *
+ * (`assess` + `run` is reported by `checkScriptStageInvariants`, mirroring
+ * `iterate` + `run`. The producer's own `outcome` requirement is covered by the
+ * produces-requires-outcome rule in `checkStageEnums`.)
+ */
+function checkAssessInvariants(w: Workflow, name: string, stage: StageDef, issues: WorkflowValidationIssue[]): void {
+	if (!stage.assess) return;
+	if (stage.fanout) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess and fanout are mutually exclusive (one loop primitive per stage)`,
+			),
+		);
+	}
+	if (stage.iterate) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess and iterate are mutually exclusive (one loop primitive per stage)`,
+			),
+		);
+	}
+	if (stage.prompt !== undefined) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess and prompt are mutually exclusive — the producer dispatches its own skill`,
+			),
+		);
+	}
+	if (stage.reads?.length) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess cannot set \`reads\` in v1 — the round-0 producer prompt uses the primary-handle projection`,
+			),
+		);
+	}
+	if (stage.kind !== "produces") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess requires kind "produces" — the producer runs an outcome collector`,
+			),
+		);
+	}
+	if (stage.sessionPolicy === "continue") {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}" cannot combine assess with sessionPolicy "continue" — each session requires isolation`,
+			),
+		);
+	}
+	// `max < 1` would pass load and soft-stop at round 0 — the stage silently
+	// produces nothing and downstream inherits the PRE-stage primary. Reject at
+	// load like `checkRetryBounds`; the runtime upper bound is `run.maxIterations`.
+	if (stage.assess.max !== undefined && (!Number.isInteger(stage.assess.max) || stage.assess.max < 1)) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess.max: ${stage.assess.max} — must be an integer >= 1 (the run-wide maxIterations caps the upper bound)`,
+			),
+		);
+	}
+
+	const judge = stage.assess.judge;
+	if (!judge) {
+		issues.push(error(w.name, name, `stage "${name}": assess requires a \`judge\``));
+		return;
+	}
+	if (!judge.outcome?.name) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess requires \`judge.outcome\` with a \`name\` so the verdict publishes to its own named slot`,
+			),
+		);
+	}
+	if (typeof judge.done !== "function") {
+		issues.push(
+			error(w.name, name, `stage "${name}": assess requires \`judge.done\` to decide termination from the verdict`),
+		);
+	}
+	const hasSkill = judge.skill !== undefined;
+	const hasPrompt = judge.prompt !== undefined;
+	if (hasSkill && hasPrompt) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess judge sets both \`skill\` and \`prompt\` — choose one dispatch (skill XOR prompt)`,
+			),
+		);
+	}
+	if (!hasSkill && !hasPrompt) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess judge sets neither \`skill\` nor \`prompt\` — one is required to dispatch the judge`,
+			),
+		);
+	}
+	// Restore-after-judge leaves the verdict in its own channel; a name collision
+	// with the producer's publish slot would overwrite producer history.
+	if (judge.outcome?.name && judge.outcome.name === (stage.outcome?.name ?? name)) {
+		issues.push(
+			error(
+				w.name,
+				name,
+				`stage "${name}": assess judge.outcome.name "${judge.outcome.name}" collides with the producer's publish name — give the verdict its own channel`,
 			),
 		);
 	}
@@ -493,6 +640,11 @@ function checkScriptStageInvariants(
 	if (stage.iterate) {
 		issues.push(
 			error(w.name, name, `stage "${name}": script stages cannot iterate — write a loop inside run() instead`),
+		);
+	}
+	if (stage.assess) {
+		issues.push(
+			error(w.name, name, `stage "${name}": script stages cannot assess — write a loop inside run() instead`),
 		);
 	}
 	if (stage.prompt !== undefined) {

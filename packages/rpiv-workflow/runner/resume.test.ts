@@ -603,6 +603,225 @@ describe("reconstructState", () => {
 		expect(result.fanoutProgress.get("build-extra")).toEqual(["build-extra (phase 1/1)"]);
 	});
 
+	// -------------------------------------------------------------------------
+	// Assess fold — two rows per round (`r{n}·produce`, `r{n}·judge`)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Minimal assess workflow: `breakdown` produces "tasks", its judge produces
+	 * "verdict". feedForward/done are never invoked by the fold (it replays rows),
+	 * so stubs suffice; only `judge.outcome.name` is read (for the verdict channel).
+	 */
+	const assessWf: Workflow = {
+		name: "test-wf",
+		start: "breakdown",
+		stages: {
+			breakdown: {
+				kind: "produces",
+				sessionPolicy: "fresh",
+				outcome: makeOutcome("tasks"),
+				assess: {
+					judge: { skill: "grade", outcome: makeOutcome("verdict"), done: () => false },
+					feedForward: () => "more",
+				},
+			},
+		},
+		edges: { breakdown: "stop" },
+	} as Workflow;
+
+	const produceRow = (n: number, num: number, art: Artifact, status: WorkflowStage["status"] = "completed") =>
+		({
+			stageNumber: num,
+			stage: `breakdown (r${n}·produce)`,
+			skill: "breakdown",
+			status,
+			ts: `t${num}`,
+			...(status === "completed" ? { output: fakeOutput([art]) } : {}),
+		}) as WorkflowStage;
+
+	const judgeRow = (n: number, num: number, art: Artifact, status: WorkflowStage["status"] = "completed") =>
+		({
+			stageNumber: num,
+			stage: `breakdown (r${n}·judge)`,
+			skill: "grade",
+			status,
+			ts: `t${num}`,
+			...(status === "completed" ? { output: fakeOutput([art]) } : {}),
+		}) as WorkflowStage;
+
+	it("assess: N complete rounds → round=N, channels separated, state holds last producer (never verdict)", () => {
+		const p0 = fakeArtifact("tasks/p0.md");
+		const v0 = fakeArtifact("verdicts/v0.json");
+		const p1 = fakeArtifact("tasks/p1.md");
+		const v1 = fakeArtifact("verdicts/v1.json");
+
+		writeRunStages([produceRow(0, 1, p0), judgeRow(0, 2, v0), produceRow(1, 3, p1), judgeRow(1, 4, v1)]);
+
+		const result = reconstructState(tmpDir, assessWf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		// Every completed row of EITHER phase bumps the counter (2 produce + 2 judge).
+		expect(result.state.stagesCompleted).toBe(4);
+		// Post-fold state holds the LAST producer's values — never a verdict.
+		expect(result.state.primaryArtifact).toStrictEqual(p1);
+		expect(result.state.output).toStrictEqual(fakeOutput([p1]));
+		// Producer outputs and verdicts live in distinct named channels.
+		expect(result.state.named.tasks?.map((o) => o.artifacts[0])).toEqual([p0, p1]);
+		expect(result.state.named.verdict?.map((o) => o.artifacts[0])).toEqual([v0, v1]);
+		// Parent visited; decorated keys are not.
+		expect(result.visited).toEqual(new Set(["breakdown"]));
+
+		const point = result.assessProgress.get("breakdown")!;
+		// After 2 complete rounds the next produce is round 2.
+		expect(point.round).toBe(2);
+		expect(point.phase).toBe("produce");
+		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([p1]));
+		expect(point.lastVerdict).toStrictEqual(fakeOutput([v1]));
+		// entryArtifact frozen at the first producer row (no upstream → undefined).
+		expect(point.entryArtifact).toBeUndefined();
+	});
+
+	it("assess: completed produce trailer → pending judge for that round", () => {
+		const p0 = fakeArtifact("tasks/p0.md");
+		writeRunStages([produceRow(0, 1, p0)]);
+
+		const result = reconstructState(tmpDir, assessWf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const point = result.assessProgress.get("breakdown")!;
+		expect(point.phase).toBe("judge");
+		expect(point.round).toBe(0);
+		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([p0]));
+		expect(point.lastVerdict).toBeUndefined();
+		// Producer published; no verdict yet.
+		expect(result.state.named.tasks).toHaveLength(1);
+		expect(result.state.named.verdict).toBeUndefined();
+		expect(result.state.stagesCompleted).toBe(1);
+	});
+
+	it("assess: failed produce trailer → re-run produce (not counted, no output seeded)", () => {
+		const p0 = fakeArtifact("tasks/p0.md");
+		const v0 = fakeArtifact("verdicts/v0.json");
+		writeRunStages([
+			produceRow(0, 1, p0),
+			judgeRow(0, 2, v0),
+			produceRow(1, 3, fakeArtifact("tasks/p1.md"), "failed"),
+		]);
+
+		const result = reconstructState(tmpDir, assessWf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const point = result.assessProgress.get("breakdown")!;
+		expect(point.phase).toBe("produce");
+		expect(point.round).toBe(1);
+		// The failed produce did not advance state — primary/output stay on round 0's producer.
+		expect(result.state.primaryArtifact).toStrictEqual(p0);
+		expect(result.state.output).toStrictEqual(fakeOutput([p0]));
+		// 1 produce + 1 judge completed; the failed produce excluded.
+		expect(result.state.stagesCompleted).toBe(2);
+	});
+
+	it("assess: failed judge trailer → re-run judge for that round (verdict not stashed)", () => {
+		const p0 = fakeArtifact("tasks/p0.md");
+		writeRunStages([produceRow(0, 1, p0), judgeRow(0, 2, fakeArtifact("verdicts/v0.json"), "failed")]);
+
+		const result = reconstructState(tmpDir, assessWf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const point = result.assessProgress.get("breakdown")!;
+		expect(point.phase).toBe("judge");
+		expect(point.round).toBe(0);
+		expect(point.lastVerdict).toBeUndefined();
+		// Judge failed → not published, not counted; producer state intact.
+		expect(result.state.named.verdict).toBeUndefined();
+		expect(result.state.primaryArtifact).toStrictEqual(p0);
+		expect(result.state.stagesCompleted).toBe(1);
+	});
+
+	it("assess: entryArtifact freezes at the first producer row when an upstream primary exists", () => {
+		const upstream = fakeArtifact("reqs/r1.md");
+		const p0 = fakeArtifact("tasks/p0.md");
+		// review (produces) -> breakdown (assess). The breakdown entry is the review artifact.
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "review",
+			stages: {
+				review: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("reviews") },
+				breakdown: assessWf.stages.breakdown,
+			},
+			edges: { review: "breakdown", breakdown: "stop" },
+		} as Workflow;
+		writeRunStages([
+			{
+				stageNumber: 1,
+				stage: "review",
+				skill: "review",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([upstream]),
+			},
+			produceRow(0, 2, p0),
+			judgeRow(0, 3, fakeArtifact("verdicts/v0.json")),
+		]);
+
+		const result = reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const point = result.assessProgress.get("breakdown")!;
+		// Frozen at the review artifact (the breakdown entry), not rolled to the producer.
+		expect(point.entryArtifact).toStrictEqual(upstream);
+		// But the rolled primary sits on the latest producer.
+		expect(result.state.primaryArtifact).toStrictEqual(p0);
+	});
+
+	it("assess: a back-edge second generation resets the point to the trailing pass; named keeps both", () => {
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "breakdown",
+			stages: {
+				breakdown: assessWf.stages.breakdown,
+				gate: { kind: "produces", sessionPolicy: "fresh", outcome: makeOutcome("gates") },
+			},
+			edges: { breakdown: "gate", gate: "breakdown" },
+		} as Workflow;
+		const gen2p0 = fakeArtifact("tasks/g2p0.md");
+		writeRunStages([
+			// gen 1
+			produceRow(0, 1, fakeArtifact("tasks/g1p0.md")),
+			judgeRow(0, 2, fakeArtifact("verdicts/g1v0.json")),
+			// a non-assess row breaks contiguity
+			{
+				stageNumber: 3,
+				stage: "gate",
+				skill: "gate",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput([fakeArtifact("gates/g1.md")]),
+			},
+			// gen 2 — fresh generation
+			produceRow(0, 4, gen2p0),
+		]);
+
+		const result = reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const point = result.assessProgress.get("breakdown")!;
+		// Trailing generation: only gen-2's pending judge for round 0.
+		expect(point.phase).toBe("judge");
+		expect(point.round).toBe(0);
+		expect(point.lastProducerOutput).toStrictEqual(fakeOutput([gen2p0]));
+		// entryArtifact reset to gen 2's entry (the gate loop-back primary).
+		expect(point.entryArtifact?.handle).toStrictEqual(fakeArtifact("gates/g1.md").handle);
+		// state.named.tasks accumulated BOTH generations' producers.
+		expect(result.state.named.tasks).toHaveLength(2);
+	});
+
 	it("named slot accumulates across completed rows for the same key (append order)", () => {
 		// Simulate a backward-jump loop: plan runs twice, producing two outputs.
 		const art1 = fakeArtifact("plans/p1.md");

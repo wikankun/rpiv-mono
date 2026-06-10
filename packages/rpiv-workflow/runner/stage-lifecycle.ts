@@ -10,6 +10,7 @@
  */
 
 import type { PromptFn, StageDef } from "../api.js";
+import { runAssess } from "../assess.js";
 import { auditCtxFor, notifyPartialArtifacts, recordTerminalFailure, runIdentityOf } from "../audit.js";
 import { runFanout } from "../fanout.js";
 import { handleToString } from "../handle.js";
@@ -21,6 +22,7 @@ import {
 	ERR_MISSING_ARTIFACT,
 	ERR_MISSING_NAMED_READ,
 	ERR_SKILL_NOT_REGISTERED,
+	MSG_ASSESS_SOFTSTOP,
 	MSG_ITERATIONS_EXHAUSTED,
 	MSG_MISSING_ARTIFACT,
 	MSG_MISSING_NAMED_READ,
@@ -162,6 +164,12 @@ function formatNamedInputs(names: ReadonlyArray<string>, run: RunContext): strin
  *   1b. tryIterate              — shortcut: the stage's IterateFn pulls units
  *                                  sequentially (each a produces pass);
  *                                  subsequent slots skipped for this stage.
+ *   1c. tryAssess               — shortcut: the stage's `assess` config runs
+ *                                  producer→judge rounds (model-judged depth
+ *                                  loop); bypasses PRE_PROMPT_CHECKS, so it
+ *                                  runs `ensureUpstreamArtifact` +
+ *                                  `ensureSkillRegistered` inline. Subsequent
+ *                                  slots skipped for this stage.
  *   2. PRE_PROMPT_CHECKS         — preflights that don't need prompt prep.
  *      a. ensureUpstreamArtifact — halt: missing inherited artifact.
  *      b. enforceSessionInvariants — invariant: authoring-time-knowable
@@ -187,6 +195,7 @@ export async function runStage(
 
 	if (await tryFanout(curCtx, stage, idx, run)) return;
 	if (await tryIterate(curCtx, stage, idx, run)) return;
+	if (await tryAssess(curCtx, stage, idx, run)) return;
 
 	// Script stages (`stage.def.run` set) skip the entire skill pipeline —
 	// no `/skill:<name>` prompt to build, no skill-registry check, no
@@ -341,6 +350,98 @@ async function tryIterate(
 		haltIterations,
 	});
 	return true;
+}
+
+/**
+ * A stage that opts into the model-judged loop via `StageDef.assess` runs
+ * producer→judge rounds — the third loop primitive alongside fanout (breadth)
+ * and iterate (TS-judged depth). Returns true iff this is an assess stage
+ * (always — even a soft-stop at the cap handles its own chain advance inside
+ * `runAssess`), so the caller returns without running the single-stage path.
+ *
+ * `assess` returns before `PRE_PROMPT_CHECKS` run (like `tryIterate` / the
+ * script branch), so the two preflights it depends on run inline here:
+ *   - the continue-policy guard (each round needs an isolated session);
+ *   - `ensureUpstreamArtifact` (the round-0 `inputForStage` projection relies
+ *     on the preflight-backed `!`);
+ *   - `ensureSkillRegistered` for the PRODUCER skill, plus a parallel inline
+ *     check for the JUDGE skill (`ensureSkillRegistered` only inspects
+ *     `stage.skill`; the judge skill lives at `assess.judge.skill`). Prompt
+ *     judges have no skill to verify. Both checks fail-soft when
+ *     `registeredSkills` is undefined (hostless embedder).
+ *
+ * `onStageStart` fires here, ONCE, matching the "stage expands to N rounds"
+ * mental model; `onStageEnd` fires per sub-step via `recordStageSuccess`. The
+ * stage-entry primary is frozen and threaded as `entryArtifact` so a dynamic
+ * `judge.prompt` keeps seeing its true source even as the rolling primary
+ * advances per producer round.
+ */
+async function tryAssess(
+	curCtx: WorkflowHostContext,
+	stage: ResolvedStage,
+	idx: number,
+	run: RunContext,
+): Promise<boolean> {
+	if (!stage.def.assess) return false;
+	// Runtime mirror of the load-time invariant — defense-in-depth for embedders
+	// that bypass validateWorkflow. Each round dispatches a fresh producer + judge
+	// session; a "continue" policy would replay the prior sub-step's branch.
+	if (stage.def.sessionPolicy === "continue") {
+		const reason =
+			`runStage: stage "${stage.name}" cannot combine assess with sessionPolicy "continue" — ` +
+			"each round requires an isolated session";
+		throw new StagePreflightError("invariant", stage.name, MSG_STAGE_THREW(stage.name, reason), reason, false);
+	}
+	// PRE_PROMPT_CHECKS are skipped on the assess shortcut; run the two it needs
+	// inline. `ensureUpstreamArtifact` guarantees the round-0 primary-handle
+	// projection's `!` is safe; `ensureSkillRegistered` covers the producer skill.
+	ensureUpstreamArtifact(stage, run);
+	ensureSkillRegistered(stage, run);
+	// `ensureSkillRegistered` only checks `stage.skill` (the producer). A skill
+	// judge dispatches `/skill:<judge.skill>`, so verify it the same way — but
+	// only when the host supplied a registry (fail-soft for hostless embedders,
+	// mirroring `ensureSkillRegistered`). Prompt judges dispatch raw text — skip.
+	const judge = stage.def.assess.judge;
+	if (judge.skill !== undefined && run.registeredSkills !== undefined && !run.registeredSkills.has(judge.skill)) {
+		throw new StagePreflightError(
+			"halt",
+			judge.skill,
+			MSG_SKILL_NOT_REGISTERED(judge.skill),
+			ERR_SKILL_NOT_REGISTERED(judge.skill, stage.stageNumber),
+			true,
+		);
+	}
+
+	// Round-0 producer arg, computed ONCE (module-local projection). Frozen entry
+	// primary threaded so a dynamic judge.prompt can re-embed the true source.
+	const entryArgs = inputForStage(stage, run);
+	const entryArtifact = currentPrimaryArtifact(run.state);
+	await run.lifecycle.fire(
+		curCtx,
+		"onStageStart",
+		skillStageRef(stage.name, stage.stageNumber, stage.skill),
+		lifecycleCtxFor(run),
+	);
+	await runAssess(curCtx, idx, stage.name, stage.skill, stage.def, entryArtifact, entryArgs, 0, undefined, run, {
+		runStageSession,
+		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
+		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
+		softStopAssess,
+	});
+	return true;
+}
+
+/**
+ * Emit the soft-stop warning when an assess stage hits its round cap without a
+ * `done` verdict. Unlike `haltIterations` (terminal failure), this is a warning
+ * only — `runAssess` advances the chain right after, keeping the last producer
+ * output as the stage result (the locked design decision).
+ *
+ * Exported so the resume dispatch arm (`selectResumeEntry`) can build the same
+ * `AssessDeps` the forward path injects — mirrors `haltIterations` for iterate.
+ */
+export function softStopAssess(curCtx: WorkflowHostContext, skill: string, max: number): void {
+	curCtx.ui.notify(MSG_ASSESS_SOFTSTOP(skill, max), "warning");
 }
 
 /**
