@@ -20,8 +20,8 @@ import { createMockSessionChain } from "@juicesharp/rpiv-test-utils";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, produces, type ScriptContext, terminal } from "./api.js";
+import type { LifecycleListeners } from "./events.js";
 import { fs as fsHandle } from "./handle.js";
-import type { LifecycleListeners } from "./lifecycle.js";
 import { runWorkflow } from "./runner/index.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 

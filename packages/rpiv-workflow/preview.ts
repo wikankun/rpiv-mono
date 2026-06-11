@@ -6,9 +6,9 @@
  */
 
 import { STOP, type StageDef } from "./api.js";
-import { describeFlow, type StageShape } from "./control-flow.js";
 import { type ConfigLayer, renderConfigLayer } from "./layers.js";
 import type { LoadedWorkflows } from "./load/index.js";
+import { describeFlow, type StageShape } from "./loop-constructors.js";
 import type { SkillContractMap } from "./skill-contract.js";
 
 /** No-args listing footer — generic usage hint. */
@@ -229,7 +229,7 @@ function formatContractsBanner(contracts: SkillContractMap): string | undefined 
 	let harvested = 0;
 	for (const c of contracts.values()) {
 		if (c.source === "declared") declared++;
-		else if (c.source === "harvested") harvested++;
+		else harvested++;
 	}
 	return `Skill contracts: ${declared} declared, ${harvested} harvested`;
 }

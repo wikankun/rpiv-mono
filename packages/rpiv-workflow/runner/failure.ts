@@ -1,6 +1,6 @@
 /**
  * Terminal-outcome translation for the chain walk — a LEAF imported downward
- * by runner.ts, chain-advance.ts, and stage-lifecycle.ts. Owns the ONE
+ * by runner.ts, chain-advance.ts, and run-stage.ts. Owns the ONE
  * "entry threw" → failure-row translation and the run-completion finalizer,
  * plus the `ChainOutcome` vocabulary the whole walk returns.
  */
@@ -37,7 +37,7 @@ import { StagePreflightError } from "./errors.js";
 export type ChainOutcome = "halted" | "completed" | "dispatched";
 
 /**
- * The composed chain-advance continuation (stage-lifecycle.ts wires it) —
+ * The composed chain-advance continuation (run-stage.ts wires it) —
  * injected into stage runners that advance the chain themselves (the script
  * path) so they never import the composition site back.
  */

@@ -23,8 +23,8 @@
 import type { StageDef, Unit } from "../api.js";
 import { failedArgs, notifyPartialArtifacts, runIdentityOf } from "../audit.js";
 import { currentPrimaryArtifact, resolveStagePrompt, stageEntryArgs } from "../chain-state.js";
+import { lifecycleCtxFor, skillStageRef } from "../events.js";
 import { formatError } from "../internal-utils.js";
-import { lifecycleCtxFor, skillStageRef } from "../lifecycle.js";
 import { announceLoopStart, type LoopDeps, runLoop } from "../loop.js";
 import { freshCursor, type LoopEntry } from "../loop-kinds.js";
 import { FAIL_LOOP_CAP_HALT, FAIL_VERIFY_FAILED, MSG_SNAPSHOT_FAILED, STATUS_KEY, STATUS_STAGE } from "../messages.js";

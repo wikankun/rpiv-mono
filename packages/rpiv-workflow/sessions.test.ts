@@ -22,8 +22,8 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StageDef, StageSchema } from "./api.js";
 import { currentPrimaryArtifact } from "./chain-state.js";
+import { LifecycleDispatcher } from "./events.js";
 import { fs as fsHandle } from "./handle.js";
-import { LifecycleDispatcher } from "./lifecycle.js";
 import {
 	FAIL_STAGE_ABORTED,
 	FAIL_STAGE_NO_RESPONSE,

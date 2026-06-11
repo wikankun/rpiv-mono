@@ -4,8 +4,8 @@
  * A contract declares what a skill consumes and produces, as data — the
  * keystone that lets an agent reason about composition without scanning prose.
  * The contract is the SKILL's property (declared once in its frontmatter),
- * injected into this framework via `registerSkillContracts` / a provider
- * (see `skill-contracts.ts`). This package never reads skill files or parses
+ * registered into this framework via `registerSkillContracts` / a provider
+ * (see `skill-contracts/`). This package never reads skill files or parses
  * YAML — the primary consumer (rpiv-pi) supplies already-parsed contracts.
  *
  * Three field tiers, by who understands them:
@@ -31,12 +31,13 @@ export type { SchemaCompatResult } from "./schema-compat.js";
 
 /**
  * Where a contract came from, in descending authority. `declared` = the skill's
- * own frontmatter (truth); `harvested` = derived from how workflow stages use
- * the skill (a cross-check / lint); `inferred` = future JSONL/LLM sources
- * (deferred). Absence (no contract at all) is modelled by the skill simply not
- * being present in the registry — there is no `missing` source.
+ * own frontmatter (truth) — every externally REGISTERED contract
+ * (`registerSkillContracts` / a provider) carries this source; `harvested` =
+ * derived from how workflow stages use the skill (a cross-check / lint).
+ * Absence (no contract at all) is modelled by the skill simply not being
+ * present in the registry — there is no `missing` source.
  */
-export type ContractSource = "declared" | "harvested" | "inferred";
+export type ContractSource = "declared" | "harvested";
 
 /**
  * A named-channel reference a skill reads (`reads:` / `state.named`). v1 records

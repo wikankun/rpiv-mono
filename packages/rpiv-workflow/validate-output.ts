@@ -127,7 +127,7 @@ export async function runValidationRetryLoop<T, H>(
  * to return synchronously or as a Promise; this function mirrors that —
  * callers must `await` the result. Both seams that drive validation
  * (`retryUntilValid` in extraction.ts and `ensureInputValid` in
- * stage-lifecycle.ts) are async, so awaiting a sync value is free (one
+ * run-stage.ts) are async, so awaiting a sync value is free (one
  * microtask) and async schemas (I/O-backed checks, async-by-default libs
  * like ArkType) round-trip without a sync-only escape hatch.
  */

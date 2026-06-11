@@ -26,7 +26,7 @@ import {
 	terminate,
 } from "../audit.js";
 import { persistStageSuccess } from "../audit-rows.js";
-import { lifecycleCtxFromSession, skillStageRef, type UnitEvent } from "../lifecycle.js";
+import { lifecycleCtxFromSession, skillStageRef, type UnitEvent } from "../events.js";
 import {
 	FAIL_AUDIT_WRITE,
 	FAIL_VALIDATION_EXHAUSTED,

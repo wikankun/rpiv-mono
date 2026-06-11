@@ -23,8 +23,8 @@
 
 import { marksReadsData, STOP, type Workflow } from "../api.js";
 import { isDispatchingStage, resolvePublishName, resolveSkill } from "../chain-state.js";
-import { judgeOf } from "../control-flow.js";
 import { extractJsonSchema } from "../json-schema.js";
+import { judgeOf } from "../loop-constructors.js";
 import type { ProducesSpec, SkillContractMap } from "../skill-contract.js";
 import { adjudicateChannel, compareDataChannel, getCompositionComparators } from "../skill-contracts/index.js";
 import type { IssueReporter } from "./issue.js";

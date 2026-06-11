@@ -7,10 +7,10 @@
  * prerequisites, and routing.
  *
  * Modules (imports point strictly downward — the walk's mutual recursion is
- * composed by injection in stage-lifecycle.ts, never as a module cycle):
+ * composed by injection in run-stage.ts, never as a module cycle):
  *  - runner.ts          — runWorkflow + resumeWorkflow + executeRun (shared
  *                         tail).
- *  - stage-lifecycle.ts — runStage (mode dispatch) + runStageOrRecordFailure
+ *  - run-stage.ts — runStage (mode dispatch) + runStageOrRecordFailure
  *                         (single catch site) + the walk composition.
  *  - chain-advance.ts   — advanceChain + routing audit + backward-jump
  *                         guard + halt-on-error (ChainDeps-injected).
@@ -40,10 +40,10 @@
 
 import type { Workflow } from "../api.js";
 import { currentPrimaryArtifact } from "../chain-state.js";
+import { type LifecycleListeners, lifecycleCtxFor } from "../events.js";
 import { handleToString } from "../handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "../host.js";
 import { nowIso } from "../internal-utils.js";
-import { type LifecycleListeners, lifecycleCtxFor } from "../lifecycle.js";
 import {
 	MSG_HEADER_WRITE_FAILED,
 	MSG_NAME_COLLISION,
@@ -64,7 +64,7 @@ import type { RunContext, RunWorkflowOptions, RunWorkflowResult } from "../types
 import { reconstructState } from "./resume.js";
 import { resumeRefusalError, selectResumeEntry } from "./resume-entry.js";
 import { buildRunContext, freshRunState } from "./run-context.js";
-import { runStageOrRecordFailure } from "./stage-lifecycle.js";
+import { runStageOrRecordFailure } from "./run-stage.js";
 
 // ---------------------------------------------------------------------------
 // Shared tail — executeRun
@@ -191,7 +191,7 @@ export interface ResumeWorkflowOptions {
 	host?: WorkflowHost;
 	/** Defaults to MAX_BACKWARD_JUMPS. */
 	maxBackwardJumps?: number;
-	/** Run-wide safety cap on iterate-stage units. Defaults to MAX_ITERATIONS. */
+	/** Run-wide safety cap on loop units (all kinds). Defaults to MAX_ITERATIONS. */
 	maxIterations?: number;
 	/** The user's `@<ref>` — surfaced in trigger.meta + refusal messages. */
 	ref: string;

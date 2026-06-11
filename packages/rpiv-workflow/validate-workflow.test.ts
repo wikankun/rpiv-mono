@@ -23,8 +23,8 @@ import {
 	type VerifySpec,
 	type Workflow,
 } from "./api.js";
-import { assess, fanout, iterate, verify } from "./control-flow.js";
 import { judge } from "./judge.js";
+import { assess, fanout, iterate, verify } from "./loop-constructors.js";
 import { noopCollector } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
 import type { CompositionComparator, SkillContractMap } from "./skill-contract.js";

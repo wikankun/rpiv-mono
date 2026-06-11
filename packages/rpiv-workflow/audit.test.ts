@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AuditCtx, decorateStage, recordCancellation, recordTerminalFailure, unitRowFields } from "./audit.js";
-import { LifecycleDispatcher } from "./lifecycle.js";
+import { LifecycleDispatcher } from "./events.js";
 import { MSG_FAILURE_ROW_DROPPED } from "./messages.js";
 import { readAllStages } from "./state/index.js";
 import type { RunState, UnitRef, WorkflowHostContext } from "./types.js";

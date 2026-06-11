@@ -72,7 +72,7 @@ export function isDispatchingStage(stage: StageDef): stage is SkillStage {
  * Resolve a stage's `prompt` dispatch text — the COMPLETE user message a
  * prompt stage sends (no `/skill:` prefix, no implicit arg). The dynamic form
  * receives the same `ScriptContext` script stages get. The ONE resolver for
- * every prompt-dispatch site: the single-shot path (stage-lifecycle) and the
+ * every prompt-dispatch site: the single-shot path (run-stage) and the
  * loop driver's round-0 producer (loop.ts) — resolved at dispatch time, never
  * persisted, so a `PromptFn` on a loop stage joins the loop determinism
  * contract (deterministic w.r.t. the fold-replayed state). Lives here (not

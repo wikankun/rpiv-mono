@@ -60,19 +60,14 @@ export { registerBuiltIns, registerBuiltInsProvider } from "./built-ins.js";
 // contract tooling) apply the same gate the loader/validator/harvest use.
 export { isDispatchingStage } from "./chain-state.js";
 export {
-	assess,
-	DEFAULT_ASSESS_MAX,
-	describeFlow,
-	fanout,
-	iterate,
-	type JudgeSpec,
-	judgeSpecOf,
-	type LoopSpec,
-	loopSpecOf,
-	type StageShape,
-	verify,
-	verifyShapeIssues,
-} from "./control-flow.js";
+	type LifecycleContext,
+	type LifecycleListeners,
+	type LoopCapInfo,
+	type LoopStartInfo,
+	registerLifecycle,
+	type StageRef,
+	type UnitEvent,
+} from "./events.js";
 export {
 	type Artifact,
 	type ArtifactHandle,
@@ -100,17 +95,22 @@ export {
 	type PromptJudge,
 	type SkillJudge,
 } from "./judge.js";
-export {
-	type LifecycleContext,
-	type LifecycleListeners,
-	type LoopCapInfo,
-	type LoopStartInfo,
-	registerLifecycle,
-	type StageRef,
-	type UnitEvent,
-} from "./lifecycle.js";
 export type { ConfigLayer, Issue, LoadedWorkflows, LoadIssue, OverlayPaths } from "./load/index.js";
 export { aliasSkills, loadWorkflows, projectOverlayPaths, userOverlayPaths } from "./load/index.js";
+export {
+	assess,
+	DEFAULT_ASSESS_MAX,
+	describeFlow,
+	fanout,
+	iterate,
+	type JudgeSpec,
+	judgeSpecOf,
+	type LoopSpec,
+	loopSpecOf,
+	type StageShape,
+	verify,
+	verifyShapeIssues,
+} from "./loop-constructors.js";
 export {
 	type DirectoryPathCollectorOpts,
 	directoryPathCollector,

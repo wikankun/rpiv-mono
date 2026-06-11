@@ -2,7 +2,7 @@
  * Input-validation preflights for the runner's per-stage pipeline.
  *
  * Two validators run after prompt prep in the single-stage pipeline
- * (`runSingleStage`, stage-lifecycle.ts):
+ * (`runSingleStage`, run-stage.ts):
  *   - `ensureInputValid` — validates upstream output against the stage's
  *     declared `inputSchema`.
  *   - `ensureContractInputValid` — validates upstream output against the

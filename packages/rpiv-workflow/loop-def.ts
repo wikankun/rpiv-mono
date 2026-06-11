@@ -1,6 +1,6 @@
 /**
  * Loop vocabulary — the data shapes behind `StageDef.loop` and
- * `StageDef.verify`, AS TYPES. Constructors live in control-flow.ts
+ * `StageDef.verify`, AS TYPES. Constructors live in loop-constructors.ts
  * (`fanout()` / `iterate()` / `assess()` / `verify()`); the per-kind runtime
  * strategy table lives in loop-kinds.ts. Split out of api.ts (M9) so the
  * loop concept has one home instead of accreting into the stage module.
@@ -113,7 +113,7 @@ export interface JudgedRepetition {
  * true → verified, the chain advances with the attempt's producer pair;
  * false → a fresh retry attempt (prompt arg built by `feedForward`) up to
  * `max` attempts, then a terminal "verification failed" halt. Author via the
- * `verify()` constructor (control-flow.ts), which validates at construction;
+ * `verify()` constructor (loop-constructors.ts), which validates at construction;
  * load-time validation re-checks hand-rolled literals through the same
  * `verifyShapeIssues` rule source.
  *
@@ -218,7 +218,7 @@ export interface AssessLoop extends LoopCommon, JudgedRepetition {
 /**
  * The single loop field's value — a DATA object with function-valued fields,
  * introspectable by construction (project with `loopSpecOf`). Author via the
- * `fanout()` / `iterate()` / `assess()` constructors (control-flow.ts), which
+ * `fanout()` / `iterate()` / `assess()` constructors (loop-constructors.ts), which
  * validate at construction and fill kind-specific defaults.
  */
 export type LoopDef = FanoutLoop | IterateLoop | AssessLoop;

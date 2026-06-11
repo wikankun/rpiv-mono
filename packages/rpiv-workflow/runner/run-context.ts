@@ -7,8 +7,8 @@
  */
 
 import type { Workflow } from "../api.js";
+import { LifecycleDispatcher, type LifecycleListeners } from "../events.js";
 import type { WorkflowHost } from "../host.js";
-import { LifecycleDispatcher, type LifecycleListeners } from "../lifecycle.js";
 import { getSkillContracts } from "../skill-contracts/index.js";
 import type { RunTrigger } from "../triggers.js";
 import type { RunContext, RunState } from "../types.js";

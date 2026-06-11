@@ -16,7 +16,7 @@ import type { RunContext, WorkflowHostContext } from "../types.js";
 import { recordEntryThrow } from "./failure.js";
 import type { ReconstructResult } from "./resume.js";
 import { recordLoopDriftFailure, resumeLoopStage } from "./resume-loop.js";
-import { advance, buildLoopDeps, runStageOrRecordFailure } from "./stage-lifecycle.js";
+import { advance, buildLoopDeps, runStageOrRecordFailure } from "./run-stage.js";
 
 /**
  * Pick the chain re-entry thunk from the trail trailer. Dispatch keys on the

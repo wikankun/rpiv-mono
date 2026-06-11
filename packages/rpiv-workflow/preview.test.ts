@@ -5,9 +5,9 @@
 
 import { describe, expect, it } from "vitest";
 import { acts, defineWorkflow, gate, produces, type StageDef, type Workflow } from "./api.js";
-import { assess, fanout, iterate } from "./control-flow.js";
 import { judge } from "./judge.js";
 import type { LoadedWorkflows } from "./load/index.js";
+import { assess, fanout, iterate } from "./loop-constructors.js";
 import { gitCommitOutcome } from "./outcomes/index.js";
 import { eq, gt } from "./predicates.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
@@ -464,18 +464,6 @@ describe("skill-contracts banner", () => {
 			}),
 		);
 		expect(out).toContain("Skill contracts: 3 declared, 2 harvested");
-	});
-
-	it("counts only the declared/harvested sources (ignores other provenance)", () => {
-		const out = formatWorkflowList(
-			baseLoaded({
-				skillContracts: new Map([
-					["research", contract("declared")],
-					["legacy", contract("inferred")],
-				]),
-			}),
-		);
-		expect(out).toContain("Skill contracts: 1 declared, 0 harvested");
 	});
 
 	it("omits the banner when no contracts are in effect", () => {

@@ -44,6 +44,12 @@ export type StageSchema<TIn = unknown, TOut = TIn> = StandardSchemaV1<TIn, TOut>
  * - `"side-effect"` — action skills (commit, implement) where the side effect IS
  *   the work; the chain inherits the prior `currentPrimaryArtifact(state)`.
  *
+ * Naming is DELIBERATELY split between data and authoring surface: the kind
+ * literal is descriptive (`"side-effect"` — what lands in rows and output
+ * envelopes) while its factory is a verb (`acts()` — what reads naturally in
+ * a stage record). `terminal()` is not a third kind: it builds
+ * `"side-effect"` + `inheritsArtifacts: false`. See the README glossary.
+ *
  * The `as const` array is the single source of truth: the literal-union type
  * is derived via `(typeof ARRAY)[number]`, and `validate-workflow.ts` consumes
  * the same array for the runtime enum check. Adding a variant updates both

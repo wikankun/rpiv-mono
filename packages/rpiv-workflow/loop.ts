@@ -27,7 +27,7 @@
  *   - snapshot captured per unit, immediately before its session;
  *   - the skill registry was snapshotted once at run start (RunContext).
  *
- * `runner/stage-lifecycle.ts` injects primitives through `LoopDeps` so this
+ * `runner/run-stage.ts` injects primitives through `LoopDeps` so this
  * module never imports the engine back (cycle-free).
  *
  * Resume re-enters `runLoop` with a fold-reconstructed cursor (see
@@ -38,8 +38,8 @@
 
 import type { LoopDef, StageDef } from "./api.js";
 import { decorateStage, runIdentityOf } from "./audit.js";
+import { lifecycleCtxFor, skillStageRef, type UnitEvent } from "./events.js";
 import { nowIso } from "./internal-utils.js";
-import { lifecycleCtxFor, skillStageRef, type UnitEvent } from "./lifecycle.js";
 import {
 	advanceCursor,
 	type LoopCursor,

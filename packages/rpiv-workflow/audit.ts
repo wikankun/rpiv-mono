@@ -5,15 +5,15 @@
  * status-line clear, the notify toast, the `terminate()` state write, and
  * the `onStageError` lifecycle fire.
  *
- * Depends on audit-rows + state + messages + lifecycle + handle. Shared by
+ * Depends on audit-rows + state + messages + events + handle. Shared by
  * the runner + sessions; neither imports back. Pure row persistence (the
  * allocator, `recordStage`, success persistence) lives in `audit-rows.ts`.
  */
 
 import { recordStage, unitRowFields } from "./audit-rows.js";
+import { lifecycleCtxFromSession, scriptStageRef, skillStageRef } from "./events.js";
 import { handleToString } from "./handle.js";
 import { assertNever, nowIso } from "./internal-utils.js";
-import { lifecycleCtxFromSession, scriptStageRef, skillStageRef } from "./lifecycle.js";
 import {
 	FAIL_STAGE_ABORTED,
 	FAIL_STAGE_NO_RESPONSE,

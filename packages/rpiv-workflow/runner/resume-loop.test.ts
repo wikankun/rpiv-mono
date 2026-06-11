@@ -31,9 +31,9 @@ import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-t
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acts, type FanoutFn, gate, type IterateFn, produces, type Workflow } from "../api.js";
-import { assess, fanout, iterate, verify } from "../control-flow.js";
 import { fs as fsHandle } from "../handle.js";
 import { judge } from "../judge.js";
+import { assess, fanout, iterate, verify } from "../loop-constructors.js";
 import type { Output } from "../output.js";
 import type { Outcome } from "../output-spec.js";
 import { eq, gt } from "../predicates.js";

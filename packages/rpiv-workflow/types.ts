@@ -5,10 +5,11 @@
  *    continueHost, registeredSkills, maxBackwardJumps). Read by every
  *    layer; mutated only by the runner.
  *  - `RunState` — mutable bookkeeping (output, counters, telemetry,
- *    termination). Read by every layer; mutated by the runner + the audit
- *    layer. Always read the chain's primary artifact via
- *    `currentPrimaryArtifact(state)` (internal-utils.ts) — it prefers
- *    `output.artifacts[0]` and falls back to `fallbackPrimaryArtifact`.
+ *    termination). Read by every layer; mutated through the chain-state
+ *    authorities (chain-state.ts) by the runner, the loop driver, the audit
+ *    layer, and the resume fold — external consumers get the deep-readonly
+ *    `RunView` projection instead. Always read the chain's primary artifact
+ *    via `currentPrimaryArtifact(state)` (chain-state.ts).
  *  - `WorkflowHostContext` — the host port (defined in `host.js`, re-exported
  *    here) threaded from `withSession` callbacks down through stage/phase
  *    helpers, so the runtime layers import all three nouns from one module.
@@ -23,9 +24,9 @@
  */
 
 import type { StageDef, Workflow } from "./api.js";
+import type { LifecycleDispatcher, LifecycleListeners } from "./events.js";
 import type { Artifact } from "./handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
-import type { LifecycleDispatcher, LifecycleListeners } from "./lifecycle.js";
 import type { Output } from "./output.js";
 import type { SkillContractMap } from "./skill-contract.js";
 import type { RunTrigger } from "./triggers.js";
@@ -131,7 +132,7 @@ export type RunTermination =
 // Public run envelope — options in, result out
 // ---------------------------------------------------------------------------
 // Lives here (the runtime-types leaf), NOT in runner/runner.ts: the result
-// envelope is public surface consumed by lifecycle.ts (`onWorkflowEnd`) and
+// envelope is public surface consumed by events.ts (`onWorkflowEnd`) and
 // every embedder — a base-layer module must not import the deepest engine
 // module to name it.
 
@@ -144,7 +145,7 @@ export interface RunWorkflowOptions {
 	host?: WorkflowHost;
 	/** Defaults to MAX_BACKWARD_JUMPS. */
 	maxBackwardJumps?: number;
-	/** Run-wide safety cap on iterate-stage units. Defaults to MAX_ITERATIONS. */
+	/** Run-wide safety cap on loop units (all kinds). Defaults to MAX_ITERATIONS. */
 	maxIterations?: number;
 	/**
 	 * What triggered this run. `/wf` sets `{ kind: "command", name: "wf" }`;
@@ -264,9 +265,9 @@ export interface RunContext {
 	 */
 	registeredSkills?: ReadonlySet<string>;
 	/**
-	 * Snapshot of the declared/injected skill-contract registry, taken once in
+	 * Snapshot of the registered skill-contract registry, taken once in
 	 * `buildRunContext` (mirrors `registeredSkills`). This is the
-	 * declared/injected registry — NOT the harvested-merged
+	 * registered (`declared`-source) registry — NOT the harvested-merged
 	 * `LoadedWorkflows.skillContracts` — because both runtime uses only add
 	 * value over a declared contract:
 	 *   - `ensureContractInputValid` mirrors a declared `consumes.data` that
@@ -300,16 +301,16 @@ export interface RunContext {
 	continueHost?: WorkflowHost;
 	maxBackwardJumps: number;
 	/**
-	 * Run-wide safety cap on `iterate`-stage units. The generator is
-	 * loop-terminated (returns `null`), not array-bounded like `fanout`, so the
-	 * runner backstops a runaway generator: when `accumulated.length` reaches
-	 * this, the stage halts with a terminal failure. Defaults to
-	 * `MAX_ITERATIONS`.
+	 * Run-wide safety cap on loop units — clamps the effective cap of EVERY
+	 * loop kind (`min(loop.max, run.maxIterations)`), the backstop for a
+	 * source that never terminates (a pull generator that never returns
+	 * `null`, an assess `done` that never trips). What happens at the cap is
+	 * the loop's `CapPolicy`. Defaults to `MAX_ITERATIONS`.
 	 */
 	maxIterations: number;
 	/** What triggered the run; defaulted at `runWorkflow` entry. */
 	trigger: RunTrigger;
-	/** Lifecycle event dispatcher — see `lifecycle.ts`. Threaded by reference. */
+	/** Lifecycle event dispatcher — see `events.ts`. Threaded by reference. */
 	lifecycle: LifecycleDispatcher;
 	/**
 	 * Optional cooperative-cancellation signal from `RunWorkflowOptions.signal`.
@@ -388,7 +389,7 @@ export interface UnitRef {
 export interface StageSession extends SessionContext {
 	stage: StageDef;
 	/**
-	 * Declared/injected skill-contract registry, threaded from
+	 * Registered skill-contract registry, threaded from
 	 * `RunContext.skillContracts` at session construction. Lets output
 	 * validation fall back to the dispatched skill's `produces.data` when the
 	 * stage carries no `outputSchema` of its own. Fail-soft: absent for

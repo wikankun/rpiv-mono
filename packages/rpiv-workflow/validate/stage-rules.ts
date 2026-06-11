@@ -13,8 +13,8 @@
 
 import { LOOP_KINDS, ON_INVALID_VALUES, SESSION_POLICIES, STAGE_KINDS, type StageDef, type Workflow } from "../api.js";
 import { resolvePublishName } from "../chain-state.js";
-import { judgeOf, loopSpecOf, verifyShapeIssues } from "../control-flow.js";
 import { judgeShapeIssues } from "../judge.js";
+import { judgeOf, loopSpecOf, verifyShapeIssues } from "../loop-constructors.js";
 import {
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,

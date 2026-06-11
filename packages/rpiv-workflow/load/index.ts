@@ -99,7 +99,7 @@ export interface LoadedWorkflows {
 	 */
 	skillAliases: Readonly<Record<string, string>>;
 	/**
-	 * Effective skill-contract registry: injected `declared` contracts merged
+	 * Effective skill-contract registry: registered (`declared`-source) contracts merged
 	 * OVER `harvested` ones (derived from stage usage). Required field, empty
 	 * `Map` when no contract was declared or harvestable.
 	 */

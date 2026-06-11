@@ -31,9 +31,9 @@
 import type { ScriptContext } from "../api.js";
 import { auditCtxFor, failedArgs, recordTerminalFailure, terminate } from "../audit.js";
 import { allocateStageNumber, persistStageSuccess } from "../audit-rows.js";
+import { lifecycleCtxFor, scriptStageRef } from "../events.js";
 import type { Artifact } from "../handle.js";
 import { formatError, nowIso } from "../internal-utils.js";
-import { lifecycleCtxFor, scriptStageRef } from "../lifecycle.js";
 import {
 	FAIL_AUDIT_WRITE,
 	FAIL_SCRIPT_THREW,

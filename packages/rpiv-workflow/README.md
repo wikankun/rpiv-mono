@@ -21,6 +21,8 @@ This package serves four overlapping audiences. Find yours, then jump to the mat
 - **I'm bundling workflows inside my own Pi extension.** → [Programmatic registration](#programmatic-registration).
 - **I'm embedding the runtime in a non-Pi host.** → [Host boundary](#host-boundary) + [`runWorkflow`](#programmatic-runner).
 
+Whatever the lane, the [Glossary](#glossary) at the bottom pins one name per concept.
+
 ## Install
 
 ```sh
@@ -133,9 +135,9 @@ Branches are evaluated against `Number(output.data[field])` in declaration order
 
 `gate` is the numeric convenience only. String/enum, multi-field, or computed routing uses `defineRoute(targets, fn, opts?)` — the body is plain TS (e.g. `output.data.verdict === "approve" ? "commit" : "revise"`), so there's no separate string helper. By default `opts.readsData` is `true` (reads `output.data`, requires the source stage to declare an `outputSchema`); pass `{ readsData: false }` for a route that consults only `state` / `output.meta`.
 
-### Model-judged loops — `assess` (a.k.a. `untilDone`)
+### Model-judged loops — `assess`
 
-`assess` is the third loop primitive, alongside `fanout` (breadth) and `iterate` (TS-judged depth). It's a **depth loop whose termination is decided by a separate model judge** — for when "are we done yet?" needs a model to read the work, not a synchronous TS predicate. Set it on a `produces()` stage; `untilDone` is a documentation alias for the same field (there is no separate factory).
+`assess` is the third loop primitive, alongside `fanout` (breadth) and `iterate` (TS-judged depth). It's a **depth loop whose termination is decided by a separate model judge** — for when "are we done yet?" needs a model to read the work, not a synchronous TS predicate. Set it on a `produces()` stage.
 
 Each round runs **two** sessions:
 
@@ -563,3 +565,19 @@ export default defineWorkflow({
 The contract is identical — author an async `~standard.validate` and the runner awaits it. A schema whose Promise never settles is bounded by the stage's `validateTimeoutMs` (default 5 min); a rejected Promise surfaces as a clean stage halt, attributed to the stage, with the same error class as a shape-failure halt. No opt-in flag, no parallel code path.
 
 > Keep validation separate from the collector + parser. The collector's job is "what did the agent produce?" (enumerate); the parser's job is "parse it into typed data" (shape). The validator's job is "is the result correct?" (check + verify). With async validators available you don't have to push I/O verification into a custom collector/parser — keep them pure and put correctness checks on `outputSchema`.
+
+## Glossary
+
+One canonical name per concept. Where two words exist for the same thing, the split is deliberate: one is the **authoring surface** (what you type in a workflow file), the other is the **data vocabulary** (what lands in rows, envelopes, and types).
+
+| Term | Meaning |
+|------|---------|
+| **Workflow** | The typed graph: a name, a `start` stage, a `stages` record, an `edges` table. Built with `defineWorkflow`, loaded from config layers or registered programmatically. |
+| **Stage** | One node of the graph — a unit of dispatch (skill session, prompt, or script). Two kinds: `"produces"` and `"side-effect"`. |
+| **Kind vs. factory** | `kind` is the persisted data discriminator (`"produces"` \| `"side-effect"`); the factories are authoring verbs: `produces()` → `"produces"`, `acts()` → `"side-effect"`, `terminal()` → `"side-effect"` + `inheritsArtifacts: false`. `acts` is a verb because it reads naturally in a stage record (`commit: acts()`); `"side-effect"` is descriptive because it reads naturally in rows and output envelopes. `terminal` is **not** a third kind — it's `acts` plus an artifact-isolation flag. |
+| **Run** | One execution of a workflow: a `runId`, an append-only JSONL run file (the system of record for resume), and the in-memory state the runner threads. |
+| **Chain** | The path a run walks through the graph — stage activations following `edges` from `start` until `"stop"` or a halt. Loops add generations *within* one chain position. |
+| **Output** | The envelope one stage activation hands downstream: `{ kind, data, meta, artifacts }` (`Output<K, D>`, `output.ts`). What predicates, routes, downstream prompts, and the audit log see. |
+| **Outcome** | The producer-side declaration of *how* a stage's Output gets built from a session: `{ collector, parser? }` (`Outcome`, `output-spec.ts`). The collector enumerates artifacts; the parser interprets them into `data`. |
+| **Verdict** | A judge's Output (`type Verdict = Output`). In `assess` / `verify` loops the judge emits a verdict that `done` reads; verdicts are recorded for resume but never become the stage result. |
+| **Contract** | A skill contract — what a skill `consumes` / `produces`. Declared by the skill's owner or harvested from stage declarations; adjudicated at load time (`canCompose`, the validator) to check composition. |

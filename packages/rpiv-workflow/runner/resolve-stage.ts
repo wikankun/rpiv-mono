@@ -8,7 +8,7 @@
 
 import type { LoopDef, StageDef } from "../api.js";
 import { resolveSkill } from "../chain-state.js";
-import { effectiveLoopOf } from "../control-flow.js";
+import { effectiveLoopOf } from "../loop-constructors.js";
 import type { RunContext } from "../types.js";
 
 /**

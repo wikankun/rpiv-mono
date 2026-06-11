@@ -3,7 +3,7 @@
  * "no artifacts produced" primitive.
  *
  * Collector always returns `{ kind: "ok", artifacts: [] }`. The chain
- * semantics (see `runner/stage-lifecycle.ts:inputForStage`) then
+ * semantics (see `runner/run-stage.ts:inputForStage`) then
  * inherit the upstream artifact list forward — an action skill
  * between two produces skills doesn't need its own collector.
  *

@@ -19,8 +19,8 @@
 
 import { auditCtxFor, failedArgs, recordTerminalFailure } from "../audit.js";
 import { resolveSkill } from "../chain-state.js";
-import { effectiveLoopOf } from "../control-flow.js";
 import { announceLoopStart, type LoopDeps, runLoop } from "../loop.js";
+import { effectiveLoopOf } from "../loop-constructors.js";
 import { type LoopEntry, loopStrategyOf } from "../loop-kinds.js";
 import { FAIL_MISSING_ARTIFACT, MSG_RESUME_LOOP_MISMATCH } from "../messages.js";
 import type { RunContext, WorkflowHostContext } from "../types.js";

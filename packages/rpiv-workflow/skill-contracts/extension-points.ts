@@ -1,5 +1,5 @@
 /**
- * Composition comparator and outcome deriver registries.
+ * Extension points — composition comparator and outcome deriver registries.
  *
  * Per-channel `CompositionComparator` and `OutcomeDeriverFn` registries,
  * both anchored on `Symbol.for` global slots (same pattern as `registry.ts`).
@@ -87,9 +87,9 @@ export function getOutcomeDerivers(): OutcomeDeriverFn[] {
 
 /**
  * Partial reset (comparator + deriver registries). The barrel's
- * `__resetSkillContracts` calls `__resetRegistry` plus this.
+ * `__resetSkillContracts` calls `__resetContractRegistry` plus this.
  */
-export function __resetRegistries(): void {
+export function __resetExtensionPoints(): void {
 	getCompositionComparators().clear();
 	getDerivers().length = 0;
 }

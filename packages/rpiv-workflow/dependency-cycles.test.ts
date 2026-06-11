@@ -2,14 +2,14 @@
  * Cycle guard — asserts ZERO value-import cycles across the package's
  * production modules. Locks in the Phase-3 SCC dissolution: the engine's
  * mutual recursions (runStage ↔ advanceChain, the loop driver) are composed
- * by injection (`ChainDeps` / `LoopDeps` in runner/stage-lifecycle.ts), never
+ * by injection (`ChainDeps` / `LoopDeps` in runner/run-stage.ts), never
  * as module cycles, and a regression here is a structural bug even when ESM
  * hoisting happens to make it run.
  *
  * Type-only imports (`import type … from`, `export type { … } from`, and
  * brace lists where EVERY specifier is `type`-prefixed) are excluded — they
  * are erased at runtime and cannot cause initialization-order failures. The
- * known remaining type-only back-edges (types.ts ⇄ lifecycle.ts) are
+ * known remaining type-only back-edges (types.ts ⇄ events.ts) are
  * documented in those files.
  */
 

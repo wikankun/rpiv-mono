@@ -17,7 +17,7 @@
  *                      factories
  *   ./loop-def.ts    — the loop vocabulary (LoopDef kinds, JudgedRepetition,
  *                      VerifySpec, Unit, contexts, LOOP_KINDS); constructors
- *                      stay in control-flow.ts
+ *                      stay in loop-constructors.ts
  *   ./routing-dsl.ts — EdgeFn/EdgeTarget/STOP, defineRoute, gate, the
  *                      READS_DATA / ROUTE_NOTE markers
  */

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Phase 5 — naming + documentation alignment
+
+#### Changed
+- **BREAKING — `ContractSource` is now `"declared" | "harvested"`.** The `"inferred"` member was produced by nothing and silently dropped by the contracts banner; it's removed rather than left as a trap. Externally supplied contracts (`registerSkillContracts` / a provider) carry source `"declared"` — JSDoc now uses one term ("registered") for the act of supplying them.
+- Internal module renames (no import-path impact — deep imports are unsupported): `runner/stage-lifecycle.ts` → `runner/run-stage.ts`, `lifecycle.ts` → `events.ts`, `control-flow.ts` → `loop-constructors.ts`, `skill-contracts/registries.ts` → `skill-contracts/extension-points.ts` (reset fns → `__resetContractRegistry` / `__resetExtensionPoints`, both private to `__resetSkillContracts`).
+- README gains a **Glossary** pinning one name per concept (workflow / stage / kind-vs-factory / run / chain / output / outcome / verdict / contract); the `untilDone` documentation alias for `assess` is dropped. `index.ts`'s drift-prone symbol catalog is replaced by an audience map — `registration.ts` is the single public-surface enumeration.
+
 ### Phase 2 — public-surface decisions (pre-release freeze)
 
 #### Added

@@ -7,15 +7,15 @@
  * instead of catching. The injected runner owns the catch for
  * downstream-stage throws — the `ChainDeps` injection (the `LoopDeps`
  * pattern) keeps this module's imports strictly downward: the chain walk's
- * runStage ↔ advanceChain recursion is composed in stage-lifecycle.ts, not
+ * runStage ↔ advanceChain recursion is composed in run-stage.ts, not
  * spelled as a module cycle.
  */
 
 import { takeRouteNote } from "../api.js";
 import { auditCtxFor, failedArgs, recordTerminalFailure } from "../audit.js";
 import { resolveSkill } from "../chain-state.js";
+import { lifecycleCtxFor, skillStageRef } from "../events.js";
 import { nowIso } from "../internal-utils.js";
-import { lifecycleCtxFor, skillStageRef } from "../lifecycle.js";
 import { FAIL_BACKWARD_JUMP_EXHAUSTED, MSG_CHAIN_ADVANCE_FAILED, MSG_ROUTING_AUDIT_DROPPED } from "../messages.js";
 import { edgeIsDecision, nextStage } from "../routing.js";
 import { appendRoutingDecision } from "../state/index.js";
@@ -24,7 +24,7 @@ import { type ChainOutcome, finalizeWorkflow } from "./failure.js";
 
 /**
  * The walk continuation injected by the composition site
- * (stage-lifecycle.ts): run the routed next stage through the single catch
+ * (run-stage.ts): run the routed next stage through the single catch
  * site. Injected so this module never imports the per-stage pipeline back —
  * the mutual recursion of the chain walk lives in ONE composing module.
  */

@@ -27,10 +27,10 @@
 import type { LoopDef, StageDef, Unit, Workflow } from "../api.js";
 import { applyStageSuccess } from "../audit-rows.js";
 import { stageEntryArgs } from "../chain-state.js";
-import { effectiveLoopOf } from "../control-flow.js";
 import type { Artifact } from "../handle.js";
 import { formatError } from "../internal-utils.js";
 import { projectResult } from "../loop.js";
+import { effectiveLoopOf } from "../loop-constructors.js";
 import { advanceCursor, freshCursor, judgeStageDef, type LoopCursor, loopStrategyOf } from "../loop-kinds.js";
 import { ERR_RESUME_LOOP_MISMATCH } from "../messages.js";
 import type { Output } from "../output.js";

@@ -76,6 +76,14 @@ export interface WorkflowHostContext {
 		setStatus(key: string, text: string | undefined): void;
 	};
 	sessionManager: {
+		/**
+		 * The session transcript (Pi: a message-union array with private
+		 * discriminators). DELIBERATELY `unknown` — naming a workflow-domain
+		 * type here would break the no-cast structural pass-through of Pi's
+		 * ctx. The runtime never calls this directly: `readBranch(ctx)`
+		 * (transcript.ts) is the single boundary that narrows the value to
+		 * `BranchEntry[]`, the workflow-domain transcript shape.
+		 */
 		getBranch(): unknown;
 	};
 	waitForIdle(): Promise<void>;

@@ -9,7 +9,7 @@
  * Companion modules:
  *   - harvest.ts     — harvestStageContracts + buildEffectiveContracts.
  *   - composition.ts — canCompose + legalNextSkills.
- *   - registries.ts  — CompositionComparator + OutcomeDeriver registries.
+ *   - extension-points.ts — CompositionComparator + OutcomeDeriver registries (consumer extension points).
  */
 
 import { deepEqual, globalSlot, lazyProviderRegistry } from "../internal-utils.js";
@@ -131,9 +131,9 @@ export function getSkillContracts(): SkillContractMap {
 
 /**
  * Partial reset (registry + providers + collision state). The barrel's
- * `__resetSkillContracts` calls this plus `registries.__resetRegistries`.
+ * `__resetSkillContracts` calls this plus `extension-points.__resetExtensionPoints`.
  */
-export function __resetRegistry(): void {
+export function __resetContractRegistry(): void {
 	getRegistry().clear();
 	providers.reset();
 	getFailures().length = 0;

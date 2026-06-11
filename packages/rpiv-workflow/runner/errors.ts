@@ -2,7 +2,7 @@
  * The runner's typed-throw vocabulary — a leaf module so every layer of the
  * per-stage pipeline (preflights, input validation, the loop shortcut) can
  * throw it and the single catch site (`runStageOrRecordFailure`,
- * stage-lifecycle.ts) can catch it without any module importing back up.
+ * run-stage.ts) can catch it without any module importing back up.
  */
 
 /**

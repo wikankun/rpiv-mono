@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EdgeTarget, FanoutFn, ScriptContext, StageDef, StageKind, StageSchema, Workflow } from "./api.js";
 import { defineRoute, defineWorkflow, gate, produces, terminal } from "./api.js";
 import { registerBuiltIns } from "./built-ins.js";
-import { fanout } from "./control-flow.js";
 import { fs as fsHandle } from "./handle.js";
+import { fanout } from "./loop-constructors.js";
 import type { Outcome } from "./output-spec.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
@@ -2841,7 +2841,7 @@ describe("runWorkflow", () => {
 			};
 
 			it("two registered bundles both receive every event in registration order", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const order: string[] = [];
 				const bundleA = { onStageEnd: () => void order.push("A") };
 				const bundleB = { onStageEnd: () => void order.push("B") };
@@ -2858,7 +2858,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("registerLifecycle returns a disposer that removes the bundle", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				const dispose = registerLifecycle({ onStageEnd: () => void seen.push("registered") });
 				dispose();
@@ -2868,7 +2868,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("per-call options.lifecycle fires AFTER globally-registered bundles", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const order: string[] = [];
 				const disposeGlobal = registerLifecycle({ onStageEnd: () => void order.push("global") });
 				try {
@@ -2885,7 +2885,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("a throw in one bundle doesn't stop other bundles or the run", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				const dispose = registerLifecycle({
 					onStageEnd: () => {
@@ -2910,7 +2910,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("registration made mid-run does NOT receive the in-flight event but DOES receive the next", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				let lateDispose: (() => void) | undefined;
 				const dispose = registerLifecycle({

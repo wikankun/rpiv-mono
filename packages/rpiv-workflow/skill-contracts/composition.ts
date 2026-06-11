@@ -17,7 +17,7 @@ import type {
 	SchemaCompatResult,
 	SkillContractMap,
 } from "../skill-contract.js";
-import { getCompositionComparators } from "./registries.js";
+import { getCompositionComparators } from "./extension-points.js";
 
 /**
  * THE single data-channel comparison core — shared by `canCompose` and the
@@ -78,12 +78,12 @@ export function adjudicateChannel(
  * schema is absent/opaque (not provably incompatible).
  *
  * `contracts` is REQUIRED (T12): the old zero-arg default silently consulted
- * the GLOBAL registry, which holds only `declared` + `injected` contracts —
+ * the GLOBAL registry, which holds only registered (`declared`-source) contracts —
  * NOT the `harvested` ones, which exist solely on
  * `LoadedWorkflows.skillContracts` (built per load, never written back to the
  * global) — so the convenient call was the wrong one for any harvest-only
  * skill. Pass `loaded.skillContracts` for the effective (declared ⊕
- * harvested) view, or `getSkillContracts()` when the declared/injected slice
+ * harvested) view, or `getSkillContracts()` when the registered slice
  * is genuinely what you mean.
  */
 export function canCompose(

@@ -17,6 +17,7 @@ import {
 	type VerifySpec,
 	type Workflow,
 } from "./api.js";
+import { type Judge, judge } from "./judge.js";
 import {
 	assess,
 	DEFAULT_ASSESS_MAX,
@@ -28,8 +29,7 @@ import {
 	loopSpecOf,
 	synthesizeVerifyLoop,
 	verify,
-} from "./control-flow.js";
-import { type Judge, judge } from "./judge.js";
+} from "./loop-constructors.js";
 import type { Output } from "./output.js";
 import { eq, gt } from "./predicates.js";
 

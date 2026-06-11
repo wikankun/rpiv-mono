@@ -65,7 +65,7 @@ export function harvestStageContracts(workflows: readonly Workflow[]): Map<strin
 
 /**
  * Build the effective registry the loader hands to validation + the runner:
- * `harvested` gap-fill first, then `declared`/injected contracts override per
+ * `harvested` gap-fill first, then registered (`declared`-source) contracts override per
  * skill (declared outranks harvested). Returns a NEW map — never mutates the
  * shared global registry returned by `getSkillContracts()`. Co-located with
  * `harvestStageContracts` because the merge precedence is contract-domain logic,

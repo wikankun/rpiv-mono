@@ -6,7 +6,7 @@
  */
 
 export { registerBuiltIns, registerBuiltInsProvider } from "./built-ins.js";
-export { registerLifecycle } from "./lifecycle.js";
+export { registerLifecycle } from "./events.js";
 export {
 	registerCompositionComparator,
 	registerOutcomeDeriver,

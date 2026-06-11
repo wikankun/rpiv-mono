@@ -141,8 +141,8 @@ export function resolveUnderCwd(cwd: string, p: string): string {
 
 /**
  * Structural (key-order-independent) deep equality. Used by the
- * cross-owner collision check in `skill-contracts.ts` (later
- * `skill-contracts/registry.ts`) so two semantically-identical contracts
+ * cross-owner collision check in `skill-contracts/registry.ts`
+ * so two semantically-identical contracts
  * built by different code paths (or with different YAML key order) don't
  * read as divergent — `JSON.stringify` is insertion-order dependent and
  * would raise a spurious collision warning. Contracts are plain JSON data

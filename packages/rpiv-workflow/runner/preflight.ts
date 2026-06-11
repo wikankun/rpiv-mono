@@ -1,7 +1,7 @@
 /**
  * Runtime preflights for the per-stage pipeline — every check that gates a
  * stage BEFORE its body dispatches. Each check throws `StagePreflightError`
- * on failure; `runStageOrRecordFailure` (stage-lifecycle.ts) catches and
+ * on failure; `runStageOrRecordFailure` (run-stage.ts) catches and
  * records the JSONL row. Schema-backed input validation (the two POST-prompt
  * checks) lives beside this in `input-validation.ts`.
  *
