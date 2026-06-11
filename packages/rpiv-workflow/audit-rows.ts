@@ -13,7 +13,7 @@ import type { StageDef } from "./api.js";
 import { applyCompletedStage } from "./chain-state.js";
 import { nowIso } from "./internal-utils.js";
 import type { Output } from "./output.js";
-import { appendStage, type WorkflowStage } from "./state/index.js";
+import { appendStage, type SessionRef, type WorkflowStage } from "./state/index.js";
 import type { RunState, UnitRef } from "./types.js";
 
 /**
@@ -104,6 +104,11 @@ export function persistStageSuccess(
 		/** Omitted on script-stage rows — JSON.stringify drops `undefined`. */
 		skill?: string;
 		output: Output;
+		/**
+		 * REQUIRED: the Pi session that backed the activation, or `null` for
+		 * sessionless paths (script stages) — the row serializes it verbatim.
+		 */
+		session: SessionRef | null;
 		unit?: UnitRef;
 		/** The activation's pre-allocated number (output-producing paths). */
 		preAllocated?: number;
@@ -119,6 +124,7 @@ export function persistStageSuccess(
 			status: "completed",
 			ts: nowIso(),
 			output: row.output,
+			session: row.session,
 			...unitRowFields(row.unit),
 		},
 		state,

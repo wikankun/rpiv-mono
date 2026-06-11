@@ -95,6 +95,21 @@ const isWorkflowStage = (row: unknown): row is WorkflowStage => {
 	return true;
 };
 
+/**
+ * Resume-only `session` guard: the key must be PRESENT and be either `null`
+ * (explicit "no session involved") or an object carrying `id: string`.
+ * Lives apart from `isWorkflowStage` so DISPLAY readers stay lenient —
+ * pre-feature rows (no `session` key) still render in lists/inspect UIs;
+ * only the resume fold refuses them (`malformed-row`; the dev remedy is
+ * wiping `.rpiv/workflows/runs/` — v1 never shipped).
+ */
+const hasValidSessionRef = (row: object): boolean => {
+	if (!("session" in row)) return false;
+	const s = (row as { session: unknown }).session;
+	if (s === null) return true;
+	return typeof s === "object" && typeof (s as { id?: unknown }).id === "string";
+};
+
 const isRoutingDecision = (row: unknown): row is RoutingDecision =>
 	!!row && (row as { type?: unknown }).type === "routing";
 
@@ -135,7 +150,7 @@ export function readAllStagesForResume(
 ): { ok: true; rows: WorkflowStage[] } | { ok: false; detail: string } {
 	const rows: WorkflowStage[] = [];
 	for (const parsed of readParsedRows(cwd, runId)) {
-		if (isWorkflowStage(parsed)) {
+		if (isWorkflowStage(parsed) && hasValidSessionRef(parsed)) {
 			rows.push(parsed);
 			continue;
 		}

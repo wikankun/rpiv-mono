@@ -10,6 +10,7 @@ export type {
 	NamesIndex,
 	RoutingDecision,
 	RunSummary,
+	SessionRef,
 	StageStatus,
 	WorkflowHeader,
 	WorkflowStage,

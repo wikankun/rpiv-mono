@@ -32,6 +32,33 @@ import type { RunTrigger } from "../triggers.js";
 export type StageStatus = "completed" | "failed" | "skipped" | "aborted";
 
 /**
+ * The Pi session that backed a stage activation — a value object the row
+ * serializes verbatim (wire shape = domain shape). Produced by
+ * `readSessionRef` (transcript.ts — the reader produces the value the row
+ * stores; one definition, no parallel type).
+ *
+ *  - `id`           — session identity. Forever.
+ *  - `file`         — `getSessionFile()` at capture time; a location HINT.
+ *                     Absent for non-persisting (in-memory) sessions. A stale
+ *                     path is recoverable: resume falls back to searching its
+ *                     dirname for `*_<id>.jsonl`, then to a header scan, then
+ *                     to cold re-run (see `sessions/locate.ts`).
+ *  - `branchOffset` — the offset the activation ran under (continue-policy
+ *                     stages only); promotion/reattach scope extraction with
+ *                     it, exactly as the live path did.
+ *
+ * Nested deliberately — unlike `parent`/`role`/`unitId`/`unitIndex`
+ * (independent dispatch keys, hence flat), `file`/`branchOffset` are
+ * meaningless without `id` and are always consumed together; nesting makes
+ * the invalid states unrepresentable.
+ */
+export interface SessionRef {
+	id: string;
+	file?: string;
+	branchOffset?: number;
+}
+
+/**
  * One stage activation's row. DISPLAY readers shape-filter on `stageNumber`
  * and silently skip rows that don't satisfy the current shape; the RESUME
  * reader (`readAllStagesForResume`) refuses instead — the fold replays these
@@ -73,6 +100,16 @@ export interface WorkflowStage {
 	 * JSONL alone, without depending on a transient `ctx.ui.notify` toast.
 	 */
 	errMsg?: string;
+	/**
+	 * REQUIRED: the Pi session that backed this activation, or `null` as an
+	 * explicit statement that no session was involved (script stages,
+	 * preflight halts, seam aborts, drift failures, pre-open cancellations) —
+	 * writers cannot forget the decision, and an orphan `file`/`branchOffset`
+	 * without an `id` is unrepresentable. The resume reader refuses rows
+	 * missing the key (pre-feature files land in the `malformed-row` arm);
+	 * display readers stay lenient and never touch it.
+	 */
+	session: SessionRef | null;
 	parent?: string;
 	role?: UnitRole;
 	unitId?: string;

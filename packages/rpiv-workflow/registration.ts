@@ -180,10 +180,11 @@ export {
 	readLastStage,
 	readLoopCaps,
 	resolveRun,
-	// Storage layout stays private (M14): `runFileFor` is the one OPAQUE path
+	// Storage layout stays private: `runFileFor` is the one OPAQUE path
 	// projection; `runsDir`/`stateFilePath` moved to the test-only internal
 	// subpath so external code can't synthesize layout-coupled paths.
 	runFileFor,
+	type SessionRef,
 	STATE_SCHEMA_VERSION,
 	type WorkflowHeader,
 	type WorkflowStage,

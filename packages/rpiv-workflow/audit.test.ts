@@ -87,6 +87,7 @@ describe("recordTerminalFailure", () => {
 	};
 
 	const auditFor = (cwd: string, state: RunState): AuditCtx => ({
+		session: null,
 		cwd,
 		runId: "run-1",
 		state,

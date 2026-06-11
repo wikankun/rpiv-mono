@@ -90,6 +90,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 		});
 
 		const stage1: WorkflowStage = {
+			session: null,
 			stageNumber: 1,
 			stage: "discover",
 			skill: "discover",
@@ -97,6 +98,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 			ts: "2026-05-20T15:31:00-0400",
 		};
 		const stage2: WorkflowStage = {
+			session: null,
 			stageNumber: 2,
 			stage: "research",
 			skill: "research",
@@ -125,6 +127,7 @@ describe("writeHeader + readAllStages + readLastStage", () => {
 		});
 
 		const failed: WorkflowStage = {
+			session: null,
 			stageNumber: 3,
 			stage: "design",
 			skill: "design",
@@ -152,6 +155,7 @@ describe("loop-cap rows + unit-identity fields", () => {
 		const runId = "skip-loop-cap";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
 		const stage: WorkflowStage = {
+			session: null,
 			stageNumber: 1,
 			stage: "breakdown",
 			skill: "breakdown",
@@ -174,6 +178,7 @@ describe("loop-cap rows + unit-identity fields", () => {
 		const runId = "unit-fields";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
 		const unitRow: WorkflowStage = {
+			session: null,
 			stageNumber: 4,
 			stage: "implement (phase-2)",
 			skill: "implement",
@@ -194,6 +199,7 @@ describe("loop-cap rows + unit-identity fields", () => {
 		const runId = "unit-failure";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
 		const failed: WorkflowStage = {
+			session: null,
 			stageNumber: 2,
 			stage: "implement (phase-3)",
 			skill: "implement",
@@ -233,6 +239,7 @@ describe("fail-soft I/O", () => {
 	it("appendStage does not throw on impossible path", () => {
 		expect(() =>
 			appendStage("/dev/null/impossible", "test", {
+				session: null,
 				stageNumber: 1,
 				stage: "discover",
 				skill: "discover",
@@ -247,6 +254,7 @@ describe("fail-soft I/O", () => {
 		try {
 			expect(
 				appendStage("/dev/null/impossible", "test", {
+					session: null,
 					stageNumber: 1,
 					stage: "discover",
 					skill: "discover",
@@ -256,6 +264,7 @@ describe("fail-soft I/O", () => {
 			).toBe(false);
 			expect(
 				appendStage(tmpDir, "ok-run", {
+					session: null,
 					stageNumber: 1,
 					stage: "discover",
 					skill: "discover",
@@ -283,7 +292,7 @@ describe("fail-soft I/O", () => {
 	});
 
 	it("a corrupt trailing line does NOT erase prior rows (per-line resilience)", () => {
-		// Closes I1: pre-fix, a single malformed line at the tail (truncated
+		// Previously, a single malformed line at the tail (truncated
 		// `appendFileSync`, ENOSPC, network FS hiccup) made readJsonlRows
 		// swallow the entire parse error in its outer try/catch and return
 		// []. Every successfully-written prior row vanished from the reader's
@@ -291,13 +300,21 @@ describe("fail-soft I/O", () => {
 		const runId = "partial-write";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "test", ts: "2026" });
 		appendStage(tmpDir, runId, {
+			session: null,
 			stageNumber: 1,
 			stage: "research",
 			skill: "research",
 			status: "completed",
 			ts: "2026",
 		});
-		appendStage(tmpDir, runId, { stageNumber: 2, stage: "design", skill: "design", status: "completed", ts: "2026" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 2,
+			stage: "design",
+			skill: "design",
+			status: "completed",
+			ts: "2026",
+		});
 		// Simulate a truncated trailing line (e.g. process killed mid-append).
 		appendFileSync(stateFilePath(tmpDir, runId), '{"stageNumber":3,"skill":"impl', "utf-8");
 
@@ -381,6 +398,7 @@ describe("readHeader", () => {
 		const runId = "bad-first-line";
 		// Skip writeHeader — append a stage row first so the first line lacks header fields.
 		appendStage(tmpDir, runId, {
+			session: null,
 			stageNumber: 1,
 			stage: "research",
 			skill: "research",
@@ -463,6 +481,7 @@ describe("listArtifacts", () => {
 		const runId = "artifacts-run";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
 		appendStage(tmpDir, runId, {
+			session: null,
 			stageNumber: 1,
 			stage: "research",
 			skill: "research",
@@ -471,8 +490,16 @@ describe("listArtifacts", () => {
 			output: mkOutput([{ kind: "fs", path: ".rpiv/artifacts/research/r.md" }]),
 		});
 		// Stage without artifacts — should NOT appear in the list.
-		appendStage(tmpDir, runId, { stageNumber: 2, stage: "commit", skill: "commit", status: "completed", ts: "2026" });
 		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 2,
+			stage: "commit",
+			skill: "commit",
+			status: "completed",
+			ts: "2026",
+		});
+		appendStage(tmpDir, runId, {
+			session: null,
 			stageNumber: 3,
 			stage: "design",
 			skill: "design",
@@ -498,7 +525,14 @@ describe("listArtifacts", () => {
 	it("returns an empty array when no stage row carries an artifact", () => {
 		const runId = "no-artifacts";
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
-		appendStage(tmpDir, runId, { stageNumber: 1, stage: "commit", skill: "commit", status: "completed", ts: "2026" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 1,
+			stage: "commit",
+			skill: "commit",
+			status: "completed",
+			ts: "2026",
+		});
 		expect(listArtifacts(tmpDir, runId)).toEqual([]);
 	});
 });
@@ -511,7 +545,14 @@ describe("deep stage guard + readAllStagesForResume (T9)", () => {
 	const runId = "t9-run";
 	const seed = () => {
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
-		appendStage(tmpDir, runId, { stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 1,
+			stage: "plan",
+			skill: "plan",
+			status: "completed",
+			ts: "t1",
+		});
 	};
 	const appendRaw = (row: Record<string, unknown>) =>
 		appendFileSync(stateFilePath(tmpDir, runId), `${JSON.stringify(row)}\n`, "utf-8");
@@ -551,9 +592,59 @@ describe("deep stage guard + readAllStagesForResume (T9)", () => {
 		expect(strict.rows.map((s) => s.stage)).toEqual(["plan"]);
 	});
 
+	it("REFUSES a pre-feature row missing the session key; readAllStages stays lenient", () => {
+		seed();
+		// A row written before session provenance existed — no `session` key.
+		appendRaw({ stageNumber: 2, stage: "build", skill: "build", status: "completed", ts: "t2" });
+
+		// Display reader keeps rendering the row (shape-filter on stageNumber).
+		expect(readAllStages(tmpDir, runId).map((s) => s.stage)).toEqual(["plan", "build"]);
+		// Resume reader refuses — the fold must not replay provenance-less rows.
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(false);
+		if (strict.ok) return;
+		expect(strict.detail).toContain('stage row 2 ("build")');
+	});
+
+	it("refuses a session object missing its id; accepts null and { id }", () => {
+		seed();
+		appendStage(tmpDir, runId, {
+			stageNumber: 2,
+			stage: "build",
+			skill: "build",
+			status: "completed",
+			ts: "t2",
+			session: { id: "sess-1", file: "/tmp/x.jsonl", branchOffset: 4 },
+		});
+		expect(readAllStagesForResume(tmpDir, runId).ok).toBe(true);
+
+		// An orphan file/branchOffset without an id is malformed.
+		appendRaw({ stageNumber: 3, stage: "deploy", status: "completed", ts: "t3", session: { file: "/tmp/x.jsonl" } });
+		expect(readAllStagesForResume(tmpDir, runId).ok).toBe(false);
+	});
+
+	it("round-trips the SessionRef value verbatim (wire shape = domain shape)", () => {
+		seed();
+		const ref = { id: "sess-1", file: "/tmp/sessions/a_sess-1.jsonl", branchOffset: 7 };
+		appendStage(tmpDir, runId, {
+			stageNumber: 2,
+			stage: "build",
+			skill: "build",
+			status: "completed",
+			ts: "t2",
+			session: ref,
+		});
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(true);
+		if (!strict.ok) return;
+		expect(strict.rows[1]?.session).toEqual(ref);
+		expect(strict.rows[0]?.session).toBeNull();
+	});
+
 	it("a clean trail round-trips identically through both readers", () => {
 		seed();
 		appendStage(tmpDir, runId, {
+			session: null,
 			stageNumber: 2,
 			stage: "build (u1)",
 			skill: "build",

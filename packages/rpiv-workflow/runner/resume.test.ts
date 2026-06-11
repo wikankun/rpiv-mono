@@ -153,6 +153,7 @@ const fanoutUnitRow = (
 	output: Output | undefined,
 	status: WorkflowStage["status"] = "completed",
 ): WorkflowStage => ({
+	session: null,
 	stageNumber: num,
 	stage: `${parent} (${unitId})`,
 	skill: parent,
@@ -167,6 +168,7 @@ const fanoutUnitRow = (
 });
 
 const assessProduceRow = (parent: string, round: number, num: number, output: Output): WorkflowStage => ({
+	session: null,
 	stageNumber: num,
 	stage: `${parent} (r${round}·produce)`,
 	skill: parent,
@@ -185,6 +187,7 @@ const assessJudgeRow = (
 	num: number,
 	output: Output,
 ): WorkflowStage => ({
+	session: null,
 	stageNumber: num,
 	stage: `${parent} (r${round}·judge)`,
 	skill: judgeSkill,
@@ -209,6 +212,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -217,6 +221,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -250,6 +255,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -258,6 +264,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "commit",
 				skill: "commit",
@@ -289,6 +296,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -297,6 +305,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "cleanup",
 				status: "completed",
@@ -322,6 +331,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -330,6 +340,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -378,7 +389,15 @@ describe("reconstructState", () => {
 		// fold replayed the run as if `build` never ran — a resume would route
 		// onward past the stage that actually failed.
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
 		]);
 		appendFileSync(
 			stateFilePath(tmpDir, baseHeader.runId),
@@ -393,9 +412,46 @@ describe("reconstructState", () => {
 		expect(result.detail).toContain('stage row 2 ("build")');
 	});
 
+	it("REFUSES (malformed-row) a pre-session-provenance row — no `session` key", async () => {
+		// A dev-local file written before session provenance landed: stage rows
+		// carry no `session` key. v1 never shipped, so the shape was redefined
+		// in place — the strict guard refuses; the remedy is wiping
+		// `.rpiv/workflows/runs/`.
+		writeRunStages([
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
+		]);
+		appendFileSync(
+			stateFilePath(tmpDir, baseHeader.runId),
+			`${JSON.stringify({ stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "x" })}\n`,
+			"utf-8",
+		);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toBe("malformed-row");
+		expect(result.detail).toContain('stage row 2 ("build")');
+	});
+
 	it("REFUSES (version-mismatch) a header written under an unknown schema version (T5)", async () => {
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, { ...baseHeader, v: 2 });
@@ -410,7 +466,15 @@ describe("reconstructState", () => {
 		// field existed must keep resuming.
 		expect(baseHeader.v).toBeUndefined();
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
@@ -424,6 +488,7 @@ describe("reconstructState", () => {
 	it("row whose stage is not in workflow.stages: returns stage-gone refusal", async () => {
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -431,6 +496,7 @@ describe("reconstructState", () => {
 				ts: "2026-06-03T07:31:00Z",
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "renamed-away",
 				skill: "renamed-away",
@@ -473,10 +539,19 @@ describe("reconstructState", () => {
 		} as Workflow;
 
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput([planArt]) },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([planArt]),
+			},
 			fanoutUnitRow("build", "phase-1", 0, 2, fakeOutput([u1])),
 			fanoutUnitRow("build", "phase-2", 1, 3, fakeOutput([u2])),
 			{
+				session: null,
 				stageNumber: 4,
 				stage: "deploy",
 				skill: "deploy",
@@ -526,7 +601,9 @@ describe("reconstructState", () => {
 	});
 
 	it("legacy decorated row without `parent` refuses stage-gone (pre-redesign run, no migration)", async () => {
-		writeRunStages([{ stageNumber: 1, stage: "build (phase 1/2)", skill: "build", status: "completed", ts: "t1" }]);
+		writeRunStages([
+			{ session: null, stageNumber: 1, stage: "build (phase 1/2)", skill: "build", status: "completed", ts: "t1" },
+		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
 		expect(result.ok).toBe(false);
@@ -553,6 +630,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "review",
 				skill: "review",
@@ -606,7 +684,15 @@ describe("reconstructState", () => {
 			assessJudgeRow("breakdown", "grade", 0, 2, fakeOutput([v0])),
 			assessProduceRow("breakdown", 1, 3, fakeOutput([p1])),
 			assessJudgeRow("breakdown", "grade", 1, 4, fakeOutput([v1])),
-			{ stageNumber: 5, stage: "gate", skill: "gate", status: "completed", ts: "t5", output: fakeOutput([g1]) },
+			{
+				session: null,
+				stageNumber: 5,
+				stage: "gate",
+				skill: "gate",
+				status: "completed",
+				ts: "t5",
+				output: fakeOutput([g1]),
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, wf, baseHeader);
@@ -700,6 +786,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -708,6 +795,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "plan",
 				skill: "plan",
@@ -735,6 +823,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -743,6 +832,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -769,6 +859,7 @@ describe("reconstructState", () => {
 
 		writeRunStages([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -777,6 +868,7 @@ describe("reconstructState", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -852,6 +944,7 @@ const twoStageWf: Workflow = {
 // --- verify row builders (siblings of assessProduceRow/assessJudgeRow) ---
 
 const verifyAttemptRow = (parent: string, attempt: number, num: number, output: Output): WorkflowStage => ({
+	session: null,
 	stageNumber: num,
 	stage: `${parent} (a${attempt}·attempt)`,
 	skill: parent,
@@ -870,6 +963,7 @@ const verifyVerdictRow = (
 	num: number,
 	output: Output,
 ): WorkflowStage => ({
+	session: null,
 	stageNumber: num,
 	stage: `${parent} (a${attempt}·verify)`,
 	skill: judgeSkill,
@@ -913,7 +1007,15 @@ describe("reconstructState — verify generations", () => {
 			verifyVerdictRow("build", "grade", 0, 2, fakeOutput([v0])),
 			verifyAttemptRow("build", 1, 3, fakeOutput([a1])),
 			verifyVerdictRow("build", "grade", 1, 4, fakeOutput([v1])),
-			{ stageNumber: 5, stage: "gate", skill: "gate", status: "completed", ts: "t5", output: fakeOutput([g1]) },
+			{
+				session: null,
+				stageNumber: 5,
+				stage: "gate",
+				skill: "gate",
+				status: "completed",
+				ts: "t5",
+				output: fakeOutput([g1]),
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, wf, baseHeader);
@@ -990,7 +1092,15 @@ describe("reconstructState — verify generations", () => {
 		} as Workflow;
 
 		writeRunStages([
-			{ stageNumber: 1, stage: "design", skill: "design", status: "completed", ts: "t1", output: fakeOutput([d0]) },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "design",
+				skill: "design",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput([d0]),
+			},
 			verifyAttemptRow("build", 0, 2, fakeOutput([a0])),
 			verifyVerdictRow("build", "grade", 0, 3, fakeOutput([v0])), // fail verdict — generation still open
 		]);
@@ -1033,8 +1143,16 @@ describe("reconstructState — verify generations", () => {
 describe("reconstructState — lastChainIndex", () => {
 	it("linear trail: one activation per row", async () => {
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
-			{ stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
+			{ session: null, stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
 		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
@@ -1061,11 +1179,27 @@ describe("reconstructState — lastChainIndex", () => {
 		} as Workflow;
 
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
 			fanoutUnitRow("build", "phase-1", 0, 2, fakeOutput()),
 			fanoutUnitRow("build", "phase-2", 1, 3, fakeOutput()),
 			fanoutUnitRow("build", "phase-3", 2, 4, fakeOutput()),
-			{ stageNumber: 5, stage: "deploy", skill: "deploy", status: "failed", ts: "t5", errMsg: "boom" },
+			{
+				session: null,
+				stageNumber: 5,
+				stage: "deploy",
+				skill: "deploy",
+				status: "failed",
+				ts: "t5",
+				errMsg: "boom",
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, wf, baseHeader);
@@ -1078,11 +1212,35 @@ describe("reconstructState — lastChainIndex", () => {
 
 	it("a resume re-run of a failed stage keeps its activation index", async () => {
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
-			{ stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
+			{ session: null, stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
 			// resumed: build re-ran (same activation), then deploy failed
-			{ stageNumber: 3, stage: "build", skill: "build", status: "completed", ts: "t3", output: fakeOutput() },
-			{ stageNumber: 4, stage: "deploy", skill: "deploy", status: "failed", ts: "t4", errMsg: "boom" },
+			{
+				session: null,
+				stageNumber: 3,
+				stage: "build",
+				skill: "build",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput(),
+			},
+			{
+				session: null,
+				stageNumber: 4,
+				stage: "deploy",
+				skill: "deploy",
+				status: "failed",
+				ts: "t4",
+				errMsg: "boom",
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
@@ -1094,10 +1252,34 @@ describe("reconstructState — lastChainIndex", () => {
 
 	it("a backward-jump revisit of a COMPLETED stage is a new activation", async () => {
 		writeRunStages([
-			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
-			{ stageNumber: 2, stage: "build", skill: "build", status: "completed", ts: "t2", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 1,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t1",
+				output: fakeOutput(),
+			},
+			{
+				session: null,
+				stageNumber: 2,
+				stage: "build",
+				skill: "build",
+				status: "completed",
+				ts: "t2",
+				output: fakeOutput(),
+			},
 			// decision edge routed back to plan (retry loop) — distinct activation
-			{ stageNumber: 3, stage: "plan", skill: "plan", status: "completed", ts: "t3", output: fakeOutput() },
+			{
+				session: null,
+				stageNumber: 3,
+				stage: "plan",
+				skill: "plan",
+				status: "completed",
+				ts: "t3",
+				output: fakeOutput(),
+			},
 		]);
 
 		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
@@ -1144,6 +1326,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1152,6 +1335,7 @@ describe("resumeWorkflow", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -1201,6 +1385,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1243,6 +1428,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1251,6 +1437,7 @@ describe("resumeWorkflow", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -1312,6 +1499,7 @@ describe("resumeWorkflow", () => {
 	it("stage-gone refusal: returns error envelope, no self-notify", async () => {
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1319,6 +1507,7 @@ describe("resumeWorkflow", () => {
 				ts: "2026-06-03T07:31:00Z",
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "removed-stage",
 				skill: "removed-stage",
@@ -1352,6 +1541,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1393,6 +1583,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",
@@ -1401,6 +1592,7 @@ describe("resumeWorkflow", () => {
 				output: out1,
 			},
 			{
+				session: null,
 				stageNumber: 2,
 				stage: "build",
 				skill: "build",
@@ -1436,6 +1628,7 @@ describe("resumeWorkflow", () => {
 
 		writeRun(resumeHeader, [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "plan",
 				skill: "plan",

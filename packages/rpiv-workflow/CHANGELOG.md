@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Session-backed stage rows + fine-grained resume (issue #70)
+
+#### Added
+- **Session provenance on every stage row.** `WorkflowStage` gains a REQUIRED `session: SessionRef | null` — the Pi session that backed the activation (`{ id, file?, branchOffset? }`, captured via the new `readSessionRef`), or `null` as an explicit "no session involved" (script stages, preflight halts, seam aborts, drift failures, pre-open cancellations). The `SessionRef` type is exported from the public barrel.
+- **Promotion on resume.** `/wf @id` over a failed/aborted session-backed stage now adopts the interrupted session's branch (`switchSession`) and runs the existing collector → parser → contract pipeline over it — if the artifact already landed, the stage completes WITHOUT re-running and the chain advances. Closes issue #70 with zero user input.
+- **Reattach on promotion miss.** If the adopted branch carries no artifact, the stage continues inside its original session from the leaf (full prior context) via a nudge prompt (`REATTACH_PROMPT`), then the standard post-session pipeline. A second failure writes a session-backed failure row, so the run stays resumable.
+- **Graceful fallback ladder.** Every precondition miss (sessionless row, host without `switchSession`, session file gone/different machine) notifies (`MSG_RESUME_SESSION_FALLBACK`) and degrades to today's cold re-run. `sessions/locate.ts` resolves id → file with a three-rung fallback (exact hint → `*_<id>.jsonl` filename search → bounded header scan).
+- **Port widenings (type-only; Pi already satisfies them):** `WorkflowHostContext.sessionManager` picks up `getSessionId`/`getSessionFile`; optional `switchSession` added beside `newSession`. Tripwire extended.
+
+#### Changed
+- **BREAKING (dev-local only — v1 never shipped):** the resume reader refuses stage rows missing the `session` key (`malformed-row`). Pre-feature dev-local run files can't be resumed; wipe `.rpiv/workflows/runs/` to clear. Display readers stay lenient and render old rows unchanged.
+
 ### Post-review hardening (remediation review I6/Q1)
 
 #### Fixed

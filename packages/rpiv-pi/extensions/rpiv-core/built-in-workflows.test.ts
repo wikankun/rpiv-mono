@@ -289,7 +289,7 @@ describe("recordStage signals success and advances stageNumber monotonically", (
 		const assigned = recordStage(
 			tmpDir,
 			"run-1",
-			{ stage: "research", skill: "research", status: "completed", ts: "2026-05-23T00:00:00Z" },
+			{ session: null, stage: "research", skill: "research", status: "completed", ts: "2026-05-23T00:00:00Z" },
 			state,
 		);
 		expect(assigned).toBe(1);
@@ -302,7 +302,7 @@ describe("recordStage signals success and advances stageNumber monotonically", (
 		const failedAssignment = recordStage(
 			"/dev/null/impossible",
 			"run-1",
-			{ stage: "research", skill: "research", status: "completed", ts: "2026-05-23T00:00:00Z" },
+			{ session: null, stage: "research", skill: "research", status: "completed", ts: "2026-05-23T00:00:00Z" },
 			state,
 		);
 		expect(failedAssignment).toBeUndefined();
@@ -311,7 +311,7 @@ describe("recordStage signals success and advances stageNumber monotonically", (
 		const nextAssignment = recordStage(
 			tmpDir,
 			"run-1",
-			{ stage: "design", skill: "design", status: "completed", ts: "2026-05-23T00:00:01Z" },
+			{ session: null, stage: "design", skill: "design", status: "completed", ts: "2026-05-23T00:00:01Z" },
 			state,
 		);
 		expect(nextAssignment).toBe(2);

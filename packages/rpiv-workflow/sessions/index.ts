@@ -4,4 +4,6 @@
  * barrel re-exports only the symbols the rest of the package consumes.
  */
 
+export { locateSessionFile } from "./locate.js";
+export { reattachStageSession } from "./reattach.js";
 export { runStageSession } from "./sessions.js";

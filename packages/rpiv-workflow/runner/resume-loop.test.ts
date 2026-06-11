@@ -148,6 +148,7 @@ describe("loop-resume — fanout", () => {
 	}
 
 	const unitRow = (n: number, num: number, status: "completed" | "failed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `impl (phase-${n})`,
 		skill: "impl",
@@ -331,6 +332,7 @@ describe("loop-resume — iterate", () => {
 	});
 
 	const reviewRow: WorkflowStage = {
+		session: null,
 		stageNumber: 1,
 		stage: "review",
 		skill: "review",
@@ -341,6 +343,7 @@ describe("loop-resume — iterate", () => {
 
 	/** A recorded blueprint iterate-unit row. `phase` is the unit's phase number (== its id). */
 	const planRow = (phase: number, num: number, status: "completed" | "failed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `blueprint (phase-${phase})`,
 		skill: "blueprint",
@@ -488,6 +491,7 @@ describe("loop-resume — iterate corrective back-edge", () => {
 	});
 
 	const planRow = (phase: number, num: number, rel: string, status: "completed" | "failed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `blueprint (phase-${phase})`,
 		skill: "blueprint",
@@ -506,6 +510,7 @@ describe("loop-resume — iterate corrective back-edge", () => {
 		writeHeader(tmpDir, header);
 		const rows: WorkflowStage[] = [
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "review",
 				skill: "review",
@@ -516,6 +521,7 @@ describe("loop-resume — iterate corrective back-edge", () => {
 			planRow(1, 2, ".rpiv/artifacts/plans/g1p1.md", "completed"),
 			planRow(2, 3, ".rpiv/artifacts/plans/g1p2.md", "completed"),
 			{
+				session: null,
 				stageNumber: 4,
 				stage: "code-review",
 				skill: "code-review",
@@ -630,6 +636,7 @@ describe("loop-resume — assess", () => {
 	});
 
 	const produceRow = (round: number, num: number, status: WorkflowStage["status"] = "completed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `breakdown (r${round}·produce)`,
 		skill: "breakdown",
@@ -642,6 +649,7 @@ describe("loop-resume — assess", () => {
 	});
 
 	const judgeRow = (round: number, num: number, isDone: boolean): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `breakdown (r${round}·judge)`,
 		skill: "grade",
@@ -749,6 +757,7 @@ describe("loop-resume — assess", () => {
 	});
 
 	const reviewRow = (num: number): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: "review",
 		skill: "review",
@@ -895,6 +904,7 @@ describe("loop-resume — verify", () => {
 	});
 
 	const attemptRow = (attempt: number, num: number, status: WorkflowStage["status"] = "completed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `build (a${attempt}·attempt)`,
 		skill: "build",
@@ -907,6 +917,7 @@ describe("loop-resume — verify", () => {
 	});
 
 	const verdictRow = (attempt: number, num: number, isDone: boolean): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `build (a${attempt}·verify)`,
 		skill: "grade",
@@ -1038,6 +1049,7 @@ describe("loop-resume — verify", () => {
 		} as Workflow;
 		writeRun([
 			{
+				session: null,
 				stageNumber: 1,
 				stage: "design",
 				skill: "design",
@@ -1117,6 +1129,7 @@ describe("loop-resume — prompt dispatch", () => {
 	};
 
 	const kickoffRow = (): WorkflowStage => ({
+		session: null,
 		stageNumber: 1,
 		stage: "kickoff",
 		skill: "kickoff",
@@ -1131,6 +1144,7 @@ describe("loop-resume — prompt dispatch", () => {
 	});
 
 	const attemptRow = (attempt: number, num: number, status: WorkflowStage["status"] = "completed"): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `build (a${attempt}·attempt)`,
 		skill: "build",
@@ -1152,6 +1166,7 @@ describe("loop-resume — prompt dispatch", () => {
 	});
 
 	const verdictRow = (attempt: number, num: number, isDone: boolean): WorkflowStage => ({
+		session: null,
 		stageNumber: num,
 		stage: `build (a${attempt}·verify)`,
 		skill: "grade",

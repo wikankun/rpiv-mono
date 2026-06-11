@@ -1357,7 +1357,7 @@ describe("sessions — contract-sourced output validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loop-unit session coverage (Phase 3 — runStageSession with `unit` set)
+// Loop-unit session coverage (runStageSession with `unit` set)
 // ---------------------------------------------------------------------------
 
 describe("sessions — loop unit session", () => {
@@ -1455,5 +1455,89 @@ describe("sessions — loop unit session", () => {
 		expect(completed).not.toHaveProperty("role");
 		expect(completed).not.toHaveProperty("unitId");
 		expect(completed).not.toHaveProperty("unitIndex");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Session provenance capture (readSessionRef → WorkflowStage.session)
+// ---------------------------------------------------------------------------
+
+describe("sessions — session provenance capture", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-sessions-provenance-"));
+	});
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	// The chain fixture's sessionManager reports id "test-session" and file
+	// "/tmp/test-session.jsonl" (createMockSessionManager defaults).
+	const MOCK_REF = { id: "test-session", file: "/tmp/test-session.jsonl" };
+
+	it("fresh success row carries the backing SessionRef (no branchOffset)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+
+		await runStageSession(chain.ctx as WorkflowHostContext, stageSession({ cwd: tmpDir, state: freshRunState() }));
+
+		const completed = readStageRows(tmpDir).find((r) => r.status === "completed")!;
+		expect(completed.session).toEqual(MOCK_REF);
+	});
+
+	it("continue success row carries the captured branchOffset on the SessionRef", async () => {
+		const mockPi = createMockPi().pi;
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [],
+			outerBranch: [mockAssistantMessage("prior"), mockAssistantMessage("done")],
+			pi: mockPi,
+		});
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state: freshRunState(),
+				stage: stage({ sessionPolicy: "continue" }),
+				branchOffset: 1,
+				continueHost: mockPi,
+			}),
+		);
+
+		const completed = readStageRows(tmpDir).find((r) => r.status === "completed")!;
+		expect(completed.session).toEqual({ ...MOCK_REF, branchOffset: 1 });
+	});
+
+	it("stop-failure row is session-backed too (aborted stage stays resumable)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("partial", "aborted")] }],
+		});
+		const onFailure = vi.fn();
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({ cwd: tmpDir, state: freshRunState(), onFailure }),
+		);
+
+		expect(onFailure).toHaveBeenCalledTimes(1);
+		const failed = readStageRows(tmpDir).find((r) => r.status === "aborted")!;
+		expect(failed.session).toEqual(MOCK_REF);
+	});
+
+	it("pre-open cancellation row records session: null (no session ever backed it)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ cancelled: true }],
+		});
+
+		await runStageSession(chain.ctx as WorkflowHostContext, stageSession({ cwd: tmpDir, state: freshRunState() }));
+
+		const skipped = readStageRows(tmpDir).find((r) => r.status === "skipped")!;
+		expect(skipped.session).toBeNull();
 	});
 });

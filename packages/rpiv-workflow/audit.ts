@@ -26,7 +26,7 @@ import {
 	MSG_WORKFLOW_CANCELLED,
 	STATUS_KEY,
 } from "./messages.js";
-import { listArtifacts } from "./state/index.js";
+import { listArtifacts, type SessionRef } from "./state/index.js";
 import type { StopSignal } from "./transcript.js";
 import type { RunContext, RunState, RunTermination, SessionContext, UnitRef, WorkflowHostContext } from "./types.js";
 
@@ -59,11 +59,17 @@ export function terminate(state: RunState, outcome: Exclude<RunTermination, { st
  * `unit` is present iff the failure/cancellation belongs to a loop unit — its
  * identity is spread into the JSONL row so failed trailers carry the
  * structured fields the resume guard consumes.
+ *
+ * `session` is REQUIRED (`null` = explicitly sessionless) — the compiler
+ * forces every audit-row writer to make the provenance decision; the value
+ * lands verbatim on the JSONL row (`WorkflowStage.session`), which is what
+ * session-backed resume dispatches on.
  */
 export type AuditCtx = Pick<
 	SessionContext,
 	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity" | "allocatedStageNumber"
 > & {
+	session: SessionRef | null;
 	isScript?: boolean;
 	unit?: UnitRef;
 };
@@ -84,6 +90,12 @@ export function runIdentityOf(run: RunContext): SessionContext["runIdentity"] {
  * resume-time refusals). One source for the shape so every halt path records
  * a uniform row. `isScript: true` drops the `skill` field from the JSONL row
  * and switches `onStageError` to `scriptStageRef`.
+ *
+ * `session` is pinned to `null` here BY CONSTRUCTION: every caller of this
+ * builder records a failure that escaped (or never reached) a session —
+ * preflight halts, seam aborts, entry throws, routing errors, resume drift,
+ * script halts. In-session writers build their `AuditCtx` via `auditFor`
+ * (sessions/sessions.ts), which threads the captured `SessionRef`.
  */
 export function auditCtxFor(
 	run: RunContext,
@@ -97,6 +109,7 @@ export function auditCtxFor(
 		state: run.state,
 		stageName,
 		skill,
+		session: null,
 		lifecycle: run.lifecycle,
 		runIdentity: runIdentityOf(run),
 		...(opts?.isScript ? { isScript: true } : {}),
@@ -179,6 +192,7 @@ export async function recordTerminalFailure(
 			status: args.status,
 			ts: nowIso(),
 			errMsg: args.errMsg,
+			session: audit.session,
 			...unitRowFields(audit.unit),
 		},
 		audit.state,
@@ -252,6 +266,7 @@ export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): v
 			status: "skipped",
 			ts: nowIso(),
 			errMsg,
+			session: audit.session,
 			...unitRowFields(audit.unit),
 		},
 		audit.state,

@@ -16,7 +16,7 @@ import type { RunContext, WorkflowHostContext } from "../types.js";
 import { recordEntryThrow } from "./failure.js";
 import type { ReconstructResult } from "./resume.js";
 import { recordLoopDriftFailure, resumeLoopStage } from "./resume-loop.js";
-import { advance, buildLoopDeps, runStageOrRecordFailure } from "./run-stage.js";
+import { advance, buildLoopDeps, resumeStageWithSession, runStageOrRecordFailure } from "./run-stage.js";
 
 /**
  * Pick the chain re-entry thunk from the trail trailer. Dispatch keys on the
@@ -25,7 +25,10 @@ import { advance, buildLoopDeps, runStageOrRecordFailure } from "./run-stage.js"
  *     (zero dispatch; lifecycle bracketing identical to every other entry);
  *   - trailing unit row → re-enter the loop with the fold's cursor;
  *   - completed normal trailer → route onward (finished run hits stop ⇒ no-op);
- *   - failed/aborted trailer → re-run that stage.
+ *   - failed/aborted trailer → session-backed rows try promotion/reattach
+ *     (`resumeStageWithSession`); sessionless rows re-run cold (today's
+ *     behavior). Dispatch keys on the STRUCTURED `session` field, mirroring
+ *     the `parent !== undefined` arm.
  */
 export function selectResumeEntry(
 	ctx: WorkflowHostContext,
@@ -56,7 +59,11 @@ export function selectResumeEntry(
 		// route onward; finished run ⇒ hits stop ⇒ no-op
 		return () => guardResumeEntry(ctx, last.stage, run, () => advance(ctx, last.stage, idx, run));
 	}
-	return () => runStageOrRecordFailure(ctx, last.stage, idx, run); // re-run the failed/aborted stage
+	// failed/aborted trailer — session-backed rows try promotion/reattach,
+	// sessionless rows re-run cold (today's behavior).
+	return last.session !== null
+		? () => resumeStageWithSession(ctx, last, idx, run)
+		: () => runStageOrRecordFailure(ctx, last.stage, idx, run);
 }
 
 /**

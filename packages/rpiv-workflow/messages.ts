@@ -5,7 +5,7 @@
  *   Pi's session transition (the status line is the durable channel).
  * - `FAIL_*` — structured terminal-failure descriptors (see `FailureText`).
  *
- * Audience split (M8): this module is the UI/runtime constants. The
+ * Audience split: this module is the UI/runtime constants. The
  * model-facing validation-retry prompt lives beside its only consumer
  * (sessions/extraction.ts); legacy-migration notices live in load/legacy.ts;
  * `/wf` usage strings live in command.ts / preview.ts.
@@ -297,6 +297,34 @@ export const ERR_RESUME_LOOP_MISMATCH = (stage: string) =>
 	`resume refuses rather than re-run the wrong units)`;
 export const MSG_RESUME_LOOP_MISMATCH = (stage: string) =>
 	`rpiv: loop "${stage}" changed on resume — cannot safely continue`;
+
+// ---------------------------------------------------------------------------
+// Session-backed resume (promotion + reattach) — notify-only progress toasts
+// + the fallback-ladder notice, plus the one model-facing reattach prompt
+// ---------------------------------------------------------------------------
+
+export const MSG_RESUME_PROMOTED = (skill: string) =>
+	`✓ ${skill}: interrupted session already produced the artifact — stage promoted to completed`;
+
+export const MSG_RESUME_REATTACHED = (skill: string) => `↻ ${skill}: reattached to interrupted session`;
+
+/**
+ * One ladder-rung notice before a session-backed resume degrades to today's
+ * cold re-run. `why` is a short human clause — "session file not found",
+ * "host cannot switch sessions" — not a dispatch key (nothing parses it).
+ */
+export const MSG_RESUME_SESSION_FALLBACK = (skill: string, why: string) =>
+	`rpiv: ${skill} — ${why}; re-running the stage from scratch`;
+
+/**
+ * Sent to the AGENT when a stage reattaches to its interrupted session
+ * (model-facing prompt text — promotion already missed, so the artifact
+ * was not announced or not written).
+ */
+export const REATTACH_PROMPT = (skill: string) =>
+	`The previous run of /skill:${skill} in this session was interrupted. ` +
+	"Review the conversation above. If the work is already complete, announce the artifact path. " +
+	"Otherwise finish the remaining work and announce the artifact path when done.";
 
 // ---------------------------------------------------------------------------
 // Resume-refusal messages — resumeWorkflowByRef pre-resume guards (resolve →

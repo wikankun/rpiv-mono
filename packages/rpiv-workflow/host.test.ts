@@ -22,6 +22,9 @@ import type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "
 // on Pi's private export surface.
 type WithSessionParam<T> = T extends { withSession?: (ctx: infer C) => Promise<void> } ? C : never;
 type PiReplacedSessionContext = WithSessionParam<Parameters<ExtensionCommandContext["newSession"]>[0]>;
+// Same derivation off `switchSession` — the session-backed-resume port
+// (promotion/reattach adopts an interrupted session through it).
+type PiSwitchedSessionContext = WithSessionParam<NonNullable<Parameters<ExtensionCommandContext["switchSession"]>[1]>>;
 
 // Each `Satisfies` evaluates to `true` iff the LHS is assignable to the
 // RHS. The `const _foo: true = ...` line is what triggers the type
@@ -36,10 +39,14 @@ const _sessionOk: Satisfies<PiReplacedSessionContext, WorkflowHostContext> = tru
 // the withSession ctx, this fails — and the `FRESH_HANDLER.spawn` guard we
 // removed would need restoring.
 const _sessionSenderOk: Satisfies<PiReplacedSessionContext, WorkflowSessionContext> = true;
+// `switchSession`'s replacement ctx must satisfy the same stronger session
+// port — `reattachStageSession` calls `sendUserMessage` on it unguarded.
+const _switchedSessionOk: Satisfies<PiSwitchedSessionContext, WorkflowSessionContext> = true;
 
 void _hostOk;
 void _cmdOk;
 void _sessionOk;
 void _sessionSenderOk;
+void _switchedSessionOk;
 
 it("host ports are structurally satisfied by pi-coding-agent types (see compile-time asserts above)", () => {});

@@ -133,9 +133,10 @@ export async function runScript(
 	const output = result.value;
 	// `skill` is intentionally absent on script-stage rows — JSON.stringify
 	// drops `undefined` so the JSONL row carries no skill field at all.
+	// `session: null` is explicit: script stages never open a Pi session.
 	const persisted = persistStageSuccess(
 		run.state,
-		{ cwd: run.cwd, runId: run.runId, stage: stage.name, output, preAllocated: stageNumber },
+		{ cwd: run.cwd, runId: run.runId, stage: stage.name, output, session: null, preAllocated: stageNumber },
 		stage.def,
 	);
 	if (!persisted) {
