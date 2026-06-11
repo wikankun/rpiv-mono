@@ -1,5 +1,5 @@
 /**
- * Named-publish registry tests — `state.named`, `OutputSpec.name`,
+ * Named-publish registry tests — `state.named`, `Outcome.name`,
  * `reads:`, the labelled-flag prompt format, accumulation across loops,
  * and the validator's catch for unresolved reads.
  *
@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, gate, produces, type StageDef, type Workflow } from "./api.js";
 import { fs as fsHandle } from "./handle.js";
-import type { OutputSpec } from "./output.js";
+import type { Outcome } from "./output-spec.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow } from "./runner/index.js";
 import { typeboxSchema } from "./typebox-adapter.js";
@@ -28,7 +28,7 @@ import { validateWorkflow } from "./validate-workflow.js";
 const PATTERN = /\.rpiv\/artifacts\/[\w.-]+\/[\w.-]+\.md/g;
 
 /** Outcome that scans the assistant transcript for `.rpiv/artifacts/<bucket>/<file>.md` paths. */
-const makeOutcome = (name?: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+const makeOutcome = (name?: string): Outcome<unknown, "artifact-md", Record<string, unknown>> => ({
 	...(name !== undefined ? { name } : {}),
 	collector: {
 		collect: (ctx) => {
@@ -140,7 +140,7 @@ describe("state.named — publish key resolution + accumulation", () => {
 		writeArtifact(tmpDir, ".rpiv/artifacts/plans/p3.md", "---\nblockers_count: 0\n---\n");
 
 		// Use a frontmatter-reading outcome so the gate routes deterministically.
-		const fmOutcome: OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+		const fmOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 			name: "plans",
 			collector: makeOutcome("plans").collector,
 			parser: {
@@ -179,7 +179,7 @@ describe("state.named — publish key resolution + accumulation", () => {
 				done: acts(),
 			},
 			edges: {
-				produce: gate("blockers_count", { produce: gt(0), done: eq(0) }),
+				produce: gate("blockers_count", { produce: gt(0), done: eq(0) }, "done"),
 				done: "stop",
 			},
 		});
@@ -284,7 +284,7 @@ describe("reads: prompt format", () => {
 		writeArtifact(tmpDir, ".rpiv/artifacts/plans/p1.md", "---\nblockers_count: 1\n---\n");
 		writeArtifact(tmpDir, ".rpiv/artifacts/plans/p2.md", "---\nblockers_count: 0\n---\n");
 
-		const fmOutcome: OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+		const fmOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 			name: "plans",
 			collector: makeOutcome("plans").collector,
 			parser: {
@@ -322,7 +322,7 @@ describe("reads: prompt format", () => {
 				consume: acts({ reads: ["plans"] }),
 			},
 			edges: {
-				produce: gate("blockers_count", { produce: gt(0), consume: eq(0) }),
+				produce: gate("blockers_count", { produce: gt(0), consume: eq(0) }, "consume"),
 				consume: "stop",
 			},
 		});

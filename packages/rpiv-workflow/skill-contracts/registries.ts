@@ -13,7 +13,7 @@ const COMPARATORS_KEY = Symbol.for("@juicesharp/rpiv-workflow:composition-compar
 const DERIVERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:outcome-derivers");
 
 /**
- * A callback that derives `OutputSpec` outcomes for `produces` stages from the
+ * A callback that derives `Outcome` outcomes for `produces` stages from the
  * skill contract registry. Registered by a consumer (e.g. rpiv-pi) that owns
  * the ontology (the `artifactKind → bucket` normalization table). The loader
  * invokes drained derivers after `buildEffectiveContracts` and before the
@@ -56,7 +56,7 @@ export function registerCompositionComparator(channelName: string, comparator: C
 const getDerivers = globalSlot(DERIVERS_KEY, () => [] as OutcomeDeriverFn[]);
 
 /**
- * Register an outcome deriver — a callback that auto-wires `OutputSpec`
+ * Register an outcome deriver — a callback that auto-wires `Outcome`
  * outcomes onto `produces` stages from the skill contract registry. The
  * loader drains and invokes all registered derivers after
  * `buildEffectiveContracts` and before the validation loop. Register before

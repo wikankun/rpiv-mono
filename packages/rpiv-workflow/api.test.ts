@@ -16,10 +16,11 @@ import {
 	type EdgeFn,
 	gate,
 	marksReadsData,
-	type OutputSpec,
+	type Outcome,
 	type ProducesScriptFn,
 	produces,
 	type ScriptContext,
+	takeRouteNote,
 	terminal,
 	type Workflow,
 } from "./api.js";
@@ -107,8 +108,8 @@ describe("acts", () => {
 		expect(n.skill).toBeUndefined();
 	});
 
-	it("attaches an OutputSpec when supplied (commit-style stages)", () => {
-		const outcome: OutputSpec = {
+	it("attaches an Outcome when supplied (commit-style stages)", () => {
+		const outcome: Outcome = {
 			collector: {
 				snapshot: () => "pre-state",
 				collect: () => ({ kind: "ok", artifacts: [] }),
@@ -238,7 +239,7 @@ describe("terminal.script", () => {
 // ---------------------------------------------------------------------------
 
 describe("gate", () => {
-	const pick: EdgeFn = gate("severeIssueCount", { revise: gt(0), commit: eq(0) });
+	const pick: EdgeFn = gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit");
 
 	const ctxWithCount = (n: number) =>
 		({
@@ -296,7 +297,47 @@ describe("gate", () => {
 	});
 
 	it("throws when branches is an empty object", () => {
-		expect(() => gate("count", {})).toThrow(/at least one possible return value/);
+		expect(() => gate("count", {}, "x")).toThrow(/at least one possible return value/);
+	});
+
+	it("throws when `otherwise` is missing or empty — the fallback must be deliberate (C12)", () => {
+		// Hand-rolled literals (jiti configs) bypass TS, so the runtime guard matters.
+		expect(() => (gate as unknown as (f: string, b: object) => unknown)("count", { a: gt(0) })).toThrow(
+			/explicit `otherwise`/,
+		);
+		expect(() => gate("count", { a: gt(0) }, "")).toThrow(/explicit `otherwise`/);
+	});
+
+	it("throws on integer-like branch keys — JS reorders them ahead of declaration order (C12)", () => {
+		expect(() => gate("count", { "2": eq(2), other: gt(0) }, "other")).toThrow(/integer-like/);
+	});
+
+	it("includes `otherwise` in .targets when it is not also a branch (C12)", () => {
+		const fn = gate("count", { high: gt(10) }, "low");
+		expect(fn.targets).toEqual(["high", "low"]);
+	});
+
+	it("records a fallback note readable via takeRouteNote — and only on no-match (C12)", () => {
+		const fn = gate("count", { high: gt(10) }, "low");
+		const ctx = (n: unknown) =>
+			({
+				output: {
+					kind: "x",
+					artifacts: [],
+					data: { count: n },
+					meta: { stage: "s", stageNumber: 1, ts: "", runId: "" },
+				},
+				state: {} as never,
+			}) as const;
+
+		// Matched branch: no note.
+		expect(fn(ctx(11))).toBe("high");
+		expect(takeRouteNote(fn)).toBeUndefined();
+
+		// No match: fallback + note; takeRouteNote clears it.
+		expect(fn(ctx(3))).toBe("low");
+		expect(takeRouteNote(fn)).toMatch(/no branch matched value 3.*"low"/);
+		expect(takeRouteNote(fn)).toBeUndefined();
 	});
 });
 
@@ -372,7 +413,7 @@ describe("composition smoke", () => {
 			},
 			edges: {
 				research: "code-review",
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},

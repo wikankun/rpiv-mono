@@ -298,7 +298,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["design", stringConsumer],
 			]);
-			expect(canCompose("research", "design")).toEqual({ ok: true });
+			expect(canCompose("research", "design", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:false for incompatible schemas", () => {
@@ -306,7 +306,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["design", numberConsumer],
 			]);
-			const result = canCompose("research", "design");
+			const result = canCompose("research", "design", getSkillContracts());
 			expect(result.ok).toBe(false);
 			expect(result.reason).toContain("name");
 		});
@@ -316,7 +316,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["side-effect", noDataConsumer],
 			]);
-			expect(canCompose("research", "side-effect")).toEqual({ ok: true });
+			expect(canCompose("research", "side-effect", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:true when producer has no produces.data (degrade)", () => {
@@ -324,11 +324,11 @@ describe("skill-contracts", () => {
 				["research", { source: "declared", produces: { kind: "produces" } }],
 				["design", numberConsumer],
 			]);
-			expect(canCompose("research", "design")).toEqual({ ok: true });
+			expect(canCompose("research", "design", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:true when neither skill is in the registry (unknown)", () => {
-			expect(canCompose("unknown-a", "unknown-b")).toEqual({ ok: true });
+			expect(canCompose("unknown-a", "unknown-b", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("accepts an explicit contracts map", () => {
@@ -368,7 +368,7 @@ describe("skill-contracts", () => {
 				["design", stringConsumer],
 				["validate", numberConsumer],
 			]);
-			const next = legalNextSkills("research");
+			const next = legalNextSkills("research", getSkillContracts());
 			expect(next).toContain("design");
 			expect(next).not.toContain("validate");
 		});
@@ -379,7 +379,7 @@ describe("skill-contracts", () => {
 				["alpha", stringConsumer],
 				["zeta", stringConsumer],
 			]);
-			const next = legalNextSkills("research");
+			const next = legalNextSkills("research", getSkillContracts());
 			expect(next).toEqual(["alpha", "research", "zeta"]);
 		});
 

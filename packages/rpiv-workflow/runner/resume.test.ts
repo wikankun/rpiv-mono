@@ -60,11 +60,11 @@ const fakeOutput = (artifacts: readonly Artifact[] = []): Output => ({
 /**
  * Minimal named outcome for fold tests. The collector is never invoked — the
  * reconstruct fold replays persisted rows, not live sessions — so a stub that
- * satisfies `OutputSpec` is sufficient. `name` drives `resolvePublishName`.
+ * satisfies `Outcome` is sufficient. `name` drives `resolvePublishName`.
  */
 const makeOutcome = (
 	name: string,
-): import("../output.js").OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+): import("../output-spec.js").Outcome<unknown, "artifact-md", Record<string, unknown>> & { name: string } => ({
 	name,
 	collector: { collect: () => ({ kind: "ok", artifacts: [] }) },
 });
@@ -391,6 +391,34 @@ describe("reconstructState", () => {
 		if (result.ok) return;
 		expect(result.reason).toBe("malformed-row");
 		expect(result.detail).toContain('stage row 2 ("build")');
+	});
+
+	it("REFUSES (version-mismatch) a header written under an unknown schema version (T5)", async () => {
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+		]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, { ...baseHeader, v: 2 });
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toBe("version-mismatch");
+		expect(result.detail).toContain("schema v2");
+	});
+
+	it("treats an absent header `v` as version 1 and resumes (T5 back-compat rule)", async () => {
+		// baseHeader deliberately carries no `v` — files written before the
+		// field existed must keep resuming.
+		expect(baseHeader.v).toBeUndefined();
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+		]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(true);
+
+		// An explicit v: 1 resumes identically.
+		const explicit = await reconstructState(tmpDir, linearWorkflow, { ...baseHeader, v: 1 });
+		expect(explicit.ok).toBe(true);
 	});
 
 	it("row whose stage is not in workflow.stages: returns stage-gone refusal", async () => {
@@ -775,7 +803,7 @@ describe("reconstructState", () => {
 const RPIV_ARTIFACT_PATTERN = /\.rpiv\/artifacts\/[\w.-]+\/[\w.-]+\.md/g;
 
 /** Minimal outcome that scans assistant text for .rpiv/artifacts paths. */
-const artifactOutcome: import("../output.js").OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+const artifactOutcome: import("../output-spec.js").Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 	collector: {
 		collect: (ctx) => {
 			let lastMatch: string | undefined;
@@ -855,13 +883,13 @@ const verifyVerdictRow = (
 
 describe("reconstructState — verify generations", () => {
 	const pass = (v: Output) => Boolean((v.data as { done?: boolean }).done);
-	const gateVerify = () => verify({ judge: judge({ skill: "grade", outcome: makeOutcome("verdict") }), pass });
+	const gateVerify = () => verify({ judge: judge({ skill: "grade", outcome: makeOutcome("verdict") }), done: pass });
 	const retryVerify = () =>
 		verify({
 			judge: judge({ skill: "grade", outcome: makeOutcome("verdict") }),
-			pass,
+			done: pass,
 			feedForward: () => "again",
-			maxAttempts: 3,
+			max: 3,
 		});
 
 	it("closed verify generation: attempts + verdicts publish to separate channels; close restores the producer pair", async () => {

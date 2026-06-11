@@ -47,7 +47,7 @@ const freshState = (): RunState => ({
 	stagesCompleted: 0,
 	lastAllocatedStageNumber: 0,
 	telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
-	termination: { success: false, error: undefined },
+	termination: { status: "running" },
 });
 
 /** Minimal produces stage def — `applyCompletedStage` only reads `kind` and `outcome?.name`. */

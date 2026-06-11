@@ -217,7 +217,6 @@ describe("runScript", () => {
 	it("terminal.script — clears inherited artifact; downstream stage sees ctx.input.artifacts empty", async () => {
 		const handle = fsHandle("/tmp/upstream.md");
 		let observedArtifactsLen: number | undefined;
-		let observedPrimary: unknown;
 
 		const workflow = defineWorkflow({
 			name: "terminal-clears",
@@ -230,7 +229,6 @@ describe("runScript", () => {
 				downstream: acts.script({
 					run: (ctx: ScriptContext) => {
 						observedArtifactsLen = ctx.input?.artifacts?.length;
-						observedPrimary = ctx.state.primaryArtifact;
 					},
 				}),
 			},
@@ -244,8 +242,8 @@ describe("runScript", () => {
 		expect(result.stagesCompleted).toBe(3);
 		// `ctx.input` for the downstream stage IS the cleanup row's output (kind: "side-effect", artifacts: []).
 		expect(observedArtifactsLen).toBe(0);
-		// `state.primaryArtifact` was cleared by terminal.script (inheritsArtifacts: false).
-		expect(observedPrimary).toBeUndefined();
+		// The cleared rolling primary is observable only via the inherited
+		// envelope — `RunView` (T3) no longer leaks the `primaryArtifact` slot.
 	});
 
 	// 7. Async script function awaited correctly.

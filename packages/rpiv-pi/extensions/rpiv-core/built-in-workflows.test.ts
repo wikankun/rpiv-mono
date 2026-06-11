@@ -30,13 +30,12 @@ import {
 	fanout,
 	type Output,
 	produces,
-	type RunState,
-	runsDir,
+	type RunView,
 	runWorkflow,
-	stateFilePath,
 	validateWorkflow,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow";
+import { type RunState, runsDir, stateFilePath } from "@juicesharp/rpiv-workflow/internal";
 import { describeFlow, fs as fsHandle, loopSpecOf } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rpivArtifactMdOutcome } from "./artifact-collector.js";
@@ -281,10 +280,7 @@ describe("recordStage signals success and advances stageNumber monotonically", (
 			droppedRoutingRows: [],
 			droppedFailureRows: [],
 		},
-		termination: {
-			success: false,
-			error: undefined,
-		},
+		termination: { status: "running" },
 	});
 
 	it("returns the assigned stageNumber on a successful write", async () => {
@@ -470,7 +466,7 @@ describe("vet workflow", () => {
 				data: { blockers_count },
 				meta: { stage: "code-review", skill: "code-review", stageNumber: 1, ts: "", runId: "" },
 			},
-			state: {} as RunState,
+			state: {} as RunView,
 		}) as const;
 
 	// --- Unit tests: routing predicate ---
@@ -497,7 +493,7 @@ describe("vet workflow", () => {
 			// rejects a missing field before routing. If it somehow reaches the gate,
 			// Number(undefined)=NaN satisfies neither gt(0) nor eq(0) → fallback (commit).
 			const edge = findEdge();
-			expect(edge({ output: undefined, state: {} as RunState })).toBe("commit");
+			expect(edge({ output: undefined, state: {} as RunView })).toBe("commit");
 		});
 	});
 
@@ -949,7 +945,7 @@ describe("ship workflow", () => {
 				artifact: undefined,
 				state: {
 					named: { plans: [{ artifacts: [{ handle: fsHandle(rel) }], data: undefined, kind: "", meta: {} }] },
-				} as unknown as RunState,
+				} as unknown as RunView,
 			});
 
 		it("reads phases from frontmatter and dispatches one title-enriched unit per phase", async () => {
@@ -982,7 +978,7 @@ describe("ship workflow", () => {
 			const units = await fanout()({
 				cwd: tmpDir,
 				artifact: undefined,
-				state: { named: {} } as unknown as RunState,
+				state: { named: {} } as unknown as RunView,
 			});
 			expect(units).toEqual([]);
 		});
@@ -1153,7 +1149,7 @@ describe("polish — REVIEW_PHASE_ITERATE (frontmatter-driven)", () => {
 			artifact,
 			state: {
 				named: { "architecture-reviews": [{ artifacts: [artifact], data: undefined, kind: "", meta: {} }] },
-			} as unknown as RunState,
+			} as unknown as RunView,
 		};
 	};
 	const out = () => ({ artifacts: [], data: undefined, kind: "", meta: {} }) as unknown as Output;

@@ -34,7 +34,8 @@ import { acts, type FanoutFn, gate, type IterateFn, produces, type Workflow } fr
 import { assess, fanout, iterate, verify } from "../control-flow.js";
 import { fs as fsHandle } from "../handle.js";
 import { judge } from "../judge.js";
-import type { Output, OutputSpec } from "../output.js";
+import type { Output } from "../output.js";
+import type { Outcome } from "../output-spec.js";
 import { eq, gt } from "../predicates.js";
 import { appendStage, readAllStages, type WorkflowHeader, type WorkflowStage, writeHeader } from "../state/index.js";
 import { typeboxSchema } from "../typebox-adapter.js";
@@ -61,7 +62,7 @@ const writeFile = (rel: string, content = "") => {
 };
 
 /** Collect EVERY `.rpiv/artifacts/.../*.md` match across the branch as artifacts. */
-const transcriptOutcome = (name: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+const transcriptOutcome = (name: string): Outcome<unknown, "artifact-md", Record<string, unknown>> => ({
 	name,
 	collector: {
 		collect: (ctx) => {
@@ -86,7 +87,7 @@ const transcriptOutcome = (name: string): OutputSpec<unknown, "artifact-md", Rec
 });
 
 /** Verdict outcome: scan for the last `.rpiv/verdicts/*.json`, parse to `{ done, feedback }`. */
-const verdictOutcome = (name: string): OutputSpec<unknown, "verdict", Record<string, unknown>> => ({
+const verdictOutcome = (name: string): Outcome<unknown, "verdict", Record<string, unknown>> & { name: string } => ({
 	name,
 	collector: {
 		collect: (ctx) => {
@@ -459,7 +460,7 @@ describe("loop-resume — iterate corrective back-edge", () => {
 		};
 	};
 
-	const blockersOutcome = (name: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+	const blockersOutcome = (name: string): Outcome<unknown, "artifact-md", Record<string, unknown>> => ({
 		name,
 		collector: transcriptOutcome(name).collector,
 		parser: {
@@ -557,7 +558,7 @@ describe("loop-resume — iterate corrective back-edge", () => {
 			edges: {
 				review: "blueprint",
 				blueprint: "code-review",
-				"code-review": gate("blockers_count", { blueprint: gt(0), consume: eq(0) }),
+				"code-review": gate("blockers_count", { blueprint: gt(0), consume: eq(0) }, "consume"),
 				consume: "stop",
 			},
 		} as Workflow;
@@ -851,7 +852,7 @@ describe("loop-resume — verify", () => {
 	const vFeedForward = ({ verdict, round }: { verdict: Output; round: number }) =>
 		`fix round=${round} fb=${(verdict.data as { feedback?: string }).feedback}`;
 
-	const gatedWf = (maxAttempts = 3): Workflow =>
+	const gatedWf = (max = 3): Workflow =>
 		({
 			name: "gated",
 			start: "build",
@@ -859,13 +860,13 @@ describe("loop-resume — verify", () => {
 				build: produces({
 					outcome: transcriptOutcome("impl"),
 					verify:
-						maxAttempts === 1
-							? verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), pass })
+						max === 1
+							? verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), done: pass })
 							: verify({
 									judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }),
-									pass,
+									done: pass,
 									feedForward: vFeedForward,
-									maxAttempts,
+									max,
 								}),
 				}),
 				consume: acts(),
@@ -987,9 +988,9 @@ describe("loop-resume — verify", () => {
 					outcome: transcriptOutcome("impl"),
 					verify: verify({
 						judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }),
-						pass: () => true, // drifted — the run recorded a retry after this verdict
+						done: () => true, // drifted — the run recorded a retry after this verdict
 						feedForward: vFeedForward,
-						maxAttempts: 3,
+						max: 3,
 					}),
 				}),
 				consume: acts(),
@@ -1007,7 +1008,7 @@ describe("loop-resume — verify", () => {
 		expect(chain.sentMessages).toEqual([]);
 	});
 
-	it("gate-only recovered fail: maxAttempts 1 + a failing verdict trailer → verification-failed halt, zero dispatch", async () => {
+	it("gate-only recovered fail: max 1 + a failing verdict trailer → verification-failed halt, zero dispatch", async () => {
 		writeRun([attemptRow(0, 1), verdictRow(0, 2, false)]);
 		const chain = createMockSessionChain({ cwd: tmpDir, steps: [] });
 
@@ -1029,7 +1030,7 @@ describe("loop-resume — verify", () => {
 				build: produces({
 					outcome: transcriptOutcome("impl"),
 					reads: ["design"],
-					verify: verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), pass }),
+					verify: verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), done: pass }),
 				}),
 				consume: acts(),
 			},
@@ -1086,7 +1087,7 @@ describe("loop-resume — prompt dispatch", () => {
 
 	const pass = (v: Output) => Boolean((v.data as { done?: boolean }).done);
 
-	const promptWf = (maxAttempts = 3): Workflow =>
+	const promptWf = (max = 3): Workflow =>
 		({
 			name: "gated-prompt",
 			start: "kickoff",
@@ -1096,14 +1097,14 @@ describe("loop-resume — prompt dispatch", () => {
 					outcome: transcriptOutcome("impl"),
 					prompt: "draft the impl",
 					verify:
-						maxAttempts === 1
-							? verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), pass })
+						max === 1
+							? verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), done: pass })
 							: verify({
 									judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }),
-									pass,
+									done: pass,
 									feedForward: ({ verdict, round }) =>
 										`rewrite attempt=${round + 1} fb=${(verdict.data as { feedback?: string }).feedback}`,
-									maxAttempts,
+									max,
 								}),
 				}),
 				consume: acts(),

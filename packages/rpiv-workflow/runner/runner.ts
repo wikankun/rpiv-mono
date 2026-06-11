@@ -28,7 +28,7 @@
  */
 
 import type { Workflow } from "../api.js";
-import { auditCtxFor, notifyPartialArtifacts, nowIso, recordTerminalFailure } from "../audit.js";
+import { auditCtxFor, notifyPartialArtifacts, nowIso, recordTerminalFailure, terminate } from "../audit.js";
 import { handleToString } from "../handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "../host.js";
 import { currentPrimaryArtifact, formatError } from "../internal-utils.js";
@@ -37,6 +37,7 @@ import {
 	ERR_RESUME_MALFORMED_ROW,
 	ERR_RESUME_NO_ROWS,
 	ERR_RESUME_STAGE_GONE,
+	ERR_RESUME_VERSION_MISMATCH,
 	ERR_WORKFLOW_ABORTED,
 	MSG_HEADER_WRITE_FAILED,
 	MSG_NAME_COLLISION,
@@ -48,10 +49,17 @@ import {
 	STATUS_KEY,
 } from "../messages.js";
 import { getSkillContracts } from "../skill-contracts/index.js";
-import { type ClaimResult, claimName, generateRunId, releaseName, writeHeader } from "../state/index.js";
+import {
+	type ClaimResult,
+	claimName,
+	generateRunId,
+	releaseName,
+	STATE_SCHEMA_VERSION,
+	writeHeader,
+} from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
-import type { RunContext, RunState } from "../types.js";
+import type { RunContext, RunState, RunTermination } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
 import { freshRunState, type ReconstructResult, reconstructState } from "./resume.js";
 import { recordLoopDriftFailure, resumeLoopStage } from "./resume-loop.js";
@@ -151,6 +159,17 @@ export interface RunWorkflowResult {
 	lastArtifact?: string;
 	error?: string;
 	/**
+	 * Discriminated termination outcome — the full-fidelity form behind the
+	 * `success`/`error` projections above (which can't represent "cancelled"
+	 * vs "aborted" vs "failed"). `{ status: "running" }` means the runner
+	 * unwound without reaching any terminal write — callers treat it as
+	 * failure, same as the `success: false` projection does.
+	 *
+	 * Undefined ONLY for pre-flight rejections (no run was constructed) —
+	 * same rule as `runId`.
+	 */
+	termination?: RunTermination;
+	/**
 	 * Routing decisions made in memory but whose JSONL audit row failed to
 	 * persist. Empty in the common case. Surfaced so consumers reading the
 	 * run's JSONL can disambiguate a missing routing row ("deterministic
@@ -193,12 +212,13 @@ async function executeRun(
 	const result: RunWorkflowResult = {
 		runId: run.runId,
 		stagesCompleted: state.stagesCompleted,
-		success: state.termination.success,
+		success: state.termination.status === "completed",
 		lastArtifact: (() => {
 			const a = currentPrimaryArtifact(state);
 			return a ? handleToString(a.handle) : undefined;
 		})(),
 		error: state.termination.error,
+		termination: state.termination,
 		...(state.telemetry.droppedRoutingRows.length > 0
 			? { droppedRoutingRows: state.telemetry.droppedRoutingRows }
 			: {}),
@@ -266,6 +286,7 @@ export async function runWorkflow(ctx: WorkflowHostContext, options: RunWorkflow
 		workflow: workflow.name,
 		input: options.input,
 		ts: nowIso(),
+		v: STATE_SCHEMA_VERSION,
 		trigger,
 		name: options.name,
 	});
@@ -474,6 +495,8 @@ function resumeRefusalError(recon: Extract<ReconstructResult, { ok: false }>, wo
 			return ERR_RESUME_STAGE_GONE(recon.detail, workflow);
 		case "malformed-row":
 			return ERR_RESUME_MALFORMED_ROW(recon.detail);
+		case "version-mismatch":
+			return ERR_RESUME_VERSION_MISMATCH(recon.detail, STATE_SCHEMA_VERSION);
 	}
 }
 
@@ -588,7 +611,7 @@ async function recordEntryThrow(curCtx: WorkflowHostContext, name: string, run: 
 export function finalizeWorkflow(curCtx: WorkflowHostContext, run: RunContext): void {
 	curCtx.ui.setStatus(STATUS_KEY, undefined);
 	curCtx.ui.notify(MSG_WORKFLOW_COMPLETE(run.state.stagesCompleted), "info");
-	run.state.termination.success = true;
+	terminate(run.state, { status: "completed" });
 }
 
 /**

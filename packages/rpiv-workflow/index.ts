@@ -18,7 +18,7 @@
  *      `verify()` attaches a per-stage post-condition judge (gate or retry-with-feedback);
  *      `STOP` (terminal-edge sentinel; `"stop"` literal also valid),
  *      `Workflow`, `StageDef`, `EdgeFn`, `EdgeTarget`, `EdgeContext`,
- *      `StageSchema`, `StageKind`, `SessionPolicy`, `OutputSpec`,
+ *      `StageSchema`, `StageKind`, `SessionPolicy`, `Outcome`,
  *      `READS_DATA`, the runtime-mirror `*_VALUES` arrays, the
  *      `gt`/`gte`/`lt`/`lte`/`eq` predicate helpers, and `typeboxSchema`
  *      (the TypeBox adapter).
@@ -55,7 +55,7 @@
  *      `opaque`/`inline`/`handleToString`) + bundled outcomes
  *      (`sideEffectOutcome`, `gitCommitOutcome`, `GitCommitData`,
  *      `gitHeadSnapshot`, `GitHeadSnapshot`) + the bundled
- *      collector/parser catalog wireable into any custom `OutputSpec`:
+ *      collector/parser catalog wireable into any custom `Outcome`:
  *        - collectors: `transcriptPathCollector` (regex over assistant
  *          text), `toolCallCollector` (universal tool_use observer),
  *          `workspaceDiffCollector` (git status diff pre/post),
@@ -70,7 +70,7 @@
  *      rpiv conventions, not framework defaults.
  *
  *   6. Custom-outcome authoring surface — `./output.js`
- *      `OutputSpec<Snapshot, Kind, Data>` (collector + optional parser),
+ *      `Outcome<Snapshot, Kind, Data>` (collector + optional parser),
  *      `ArtifactCollector`, `ArtifactParser`, `CollectCtx`,
  *      `CollectResult`, `ParseCtx`, `ParseResult`, `SnapshotCtx`.
  *      Sugar: `defineCollector` / `defineParser`.
@@ -84,8 +84,8 @@
  *      Read past runs at `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`:
  *      `listRuns`, `readHeader`, `resolveRun` (run-id → header; today an
  *      alias of `readHeader`), `readLastStage`, `listArtifacts`,
- *      `stateFilePath`, `runsDir`, `RunSummary`,
- *      `WorkflowHeader`, `WorkflowStage`. `recordStage` lives on
+ *      `runFileFor` (opaque display path — the layout itself is private),
+ *      `RunSummary`, `WorkflowHeader`, `WorkflowStage`. `recordStage` lives on
  *      `@juicesharp/rpiv-workflow/internal` (test-only — rpiv-pi's
  *      `[I3]` regression test pokes it directly; runner owns row
  *      writes, embedders never need it).

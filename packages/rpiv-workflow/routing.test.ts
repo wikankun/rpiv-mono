@@ -30,10 +30,7 @@ const makeState = (outputData?: Record<string, unknown>): RunState => ({
 		droppedRoutingRows: [],
 		droppedFailureRows: [],
 	},
-	termination: {
-		success: false,
-		error: undefined,
-	},
+	termination: { status: "running" },
 });
 
 const ctxOf = (outputData?: Record<string, unknown>): EdgeContext => {
@@ -97,7 +94,7 @@ describe("nextStage", () => {
 			name: "pred",
 			start: "a",
 			stages: baseStages,
-			edges: { a: gate("count", { c: gt(0), b: eq(0) }) },
+			edges: { a: gate("count", { c: gt(0), b: eq(0) }, "b") },
 		};
 		expect(nextStage(workflow, "a", ctxOf({ count: 5 }))).toEqual({ kind: "next", stage: "c" });
 		expect(nextStage(workflow, "a", ctxOf({ count: 0 }))).toEqual({ kind: "next", stage: "b" });
@@ -165,7 +162,7 @@ describe("edgeIsDecision", () => {
 		stages: baseStages,
 		edges: {
 			a: "b",
-			b: gate("count", { c: gt(0), d: eq(0) }),
+			b: gate("count", { c: gt(0), d: eq(0) }, "d"),
 			c: "stop",
 		},
 	};

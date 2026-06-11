@@ -9,7 +9,7 @@ import { defineRoute, defineWorkflow, gate, produces, terminal } from "./api.js"
 import { registerBuiltIns } from "./built-ins.js";
 import { fanout } from "./control-flow.js";
 import { fs as fsHandle } from "./handle.js";
-import type { OutputSpec } from "./output.js";
+import type { Outcome } from "./output-spec.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
 import type { CompositionComparator } from "./skill-contract.js";
@@ -76,7 +76,7 @@ const parseFmTestOnly = (content: string): Record<string, unknown> => {
 	return fm;
 };
 
-const transcriptArtifactMdOutcome: OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+const transcriptArtifactMdOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 	collector: {
 		collect: (ctx) => {
 			let lastMatch: string | undefined;
@@ -153,7 +153,7 @@ describe("runWorkflow", () => {
 	 *
 	 *   wf("tiny", ["research"])
 	 *   wf("rev", ["research", "code-review", "revise", "commit"], {}, {
-	 *     "code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+	 *     "code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 	 *   })
 	 */
 	const wf = (
@@ -293,6 +293,7 @@ describe("runWorkflow", () => {
 			stagesCompleted: 1,
 			lastArtifact: ".rpiv/artifacts/research/r.md",
 			error: undefined,
+			termination: { status: "completed" },
 		});
 		expect(chain.ctx.newSession).toHaveBeenCalledTimes(1);
 		expect(chain.sentMessages).toEqual(["/skill:research add dark mode"]);
@@ -797,7 +798,6 @@ describe("runWorkflow", () => {
 			const upstreamHandle = fsHandle("/tmp/upstream.md");
 			let stage3InputKind: string | undefined;
 			let stage3InputArtifacts: number | undefined;
-			let stage3Primary: unknown;
 
 			const workflow = defineWorkflow({
 				name: "terminal-script-isolation",
@@ -815,7 +815,6 @@ describe("runWorkflow", () => {
 						run: (ctx: ScriptContext) => {
 							stage3InputKind = ctx.input?.kind;
 							stage3InputArtifacts = ctx.input?.artifacts?.length;
-							stage3Primary = ctx.state.primaryArtifact;
 							return { kind: "report", artifacts: [], data: { ok: true } };
 						},
 					}),
@@ -834,9 +833,8 @@ describe("runWorkflow", () => {
 			expect(stage3InputKind).toBe("side-effect");
 			expect(stage3InputArtifacts).toBe(0);
 
-			// The rolling primary-artifact slot was cleared by terminal.script
-			// (`inheritsArtifacts: false`), so stage 3 reads `undefined`.
-			expect(stage3Primary).toBeUndefined();
+			// The cleared primary slot is observable only via `ctx.input` and
+			// `result.lastArtifact` — `RunView` (T3) doesn't leak the slot itself.
 
 			// Final run.lastArtifact reflects whatever stage 3 produced (nothing
 			// here) — confirms terminal.script's clear isn't sticky once a
@@ -1754,7 +1752,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1790,7 +1788,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1824,7 +1822,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1870,7 +1868,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1909,7 +1907,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1942,7 +1940,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1965,6 +1963,42 @@ describe("runWorkflow", () => {
 				fromStage: "code-review",
 				decision: "commit",
 			});
+			// Matched branch (eq(0) hit) — no fallback, so no note (C12).
+			expect(routingDecisions[0]!.note).toBeUndefined();
+		});
+
+		it("routing row carries gate's fallback note when no branch matched (C12)", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			// No severeIssueCount in the frontmatter → Number(undefined) = NaN →
+			// no branch matches → gate takes `otherwise` and attaches the note.
+			writeArtifact(tmpDir, ".rpiv/artifacts/code-review/cr.md", "---\ntitle: review\n---\n\nContent");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/code-review/cr.md")] },
+					{ branch: [mockAssistantMessage("Committed.")] },
+				],
+			});
+
+			const workflow = wf(
+				"flow",
+				["research", "code-review", "revise", "commit"],
+				{},
+				{
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
+				},
+			);
+
+			const result = await runWorkflow(chain.ctx, { workflow, input: "x" });
+			expect(result.success).toBe(true);
+
+			const dir = join(tmpDir, ".rpiv", "workflows", "runs");
+			const runId = readdirSync(dir)[0]!.replace(".jsonl", "");
+			const routingDecisions = readRoutingDecisions(tmpDir, runId);
+			expect(routingDecisions).toHaveLength(1);
+			expect(routingDecisions[0]).toMatchObject({ decision: "commit" });
+			expect(routingDecisions[0]!.note).toMatch(/no branch matched value NaN.*"commit"/);
 		});
 
 		// -------------------------------------------------------------------
@@ -2118,7 +2152,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -2495,7 +2529,7 @@ describe("runWorkflow", () => {
 			// Pre-fix the bare `catch {}` silently disabled diffing for the whole
 			// run with zero diagnostics. The stage must still run (snapshot is
 			// best-effort) but the FIRST failure surfaces a warning.
-			const throwingSnapshotOutcome: OutputSpec = {
+			const throwingSnapshotOutcome: Outcome = {
 				collector: {
 					snapshot: () => {
 						throw new Error("custom snapshot bug");
@@ -2938,6 +2972,7 @@ describe("runWorkflow", () => {
 				stagesCompleted: 1,
 				lastArtifact: ".rpiv/artifacts/research/r.md",
 				error: undefined,
+				termination: { status: "completed" },
 			});
 			expect(chain.sentMessages).toEqual(["/skill:research add dark mode"]);
 			// A JSONL run file was written under the resolved runId.
@@ -3155,7 +3190,7 @@ describe("totalStages denominator (countReachableNodes)", () => {
 					c: { kind: "side-effect", sessionPolicy: "fresh" },
 				},
 				// gate attaches .targets = ["b", "c"]; BFS reaches both.
-				edges: { a: gate("count", { b: gt(0), c: eq(0) }), b: "stop", c: "stop" },
+				edges: { a: gate("count", { b: gt(0), c: eq(0) }, "c"), b: "stop", c: "stop" },
 			},
 			input: "x",
 		});

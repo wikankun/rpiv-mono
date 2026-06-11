@@ -16,11 +16,11 @@
  */
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
-import type { Output, OutputSpec } from "./output.js";
-import type { Predicate } from "./predicates.js";
-import type { RunState } from "./types.js";
+import type { Output, RunView } from "./output.js";
+import type { Outcome } from "./output-spec.js";
+import type { NumericPredicate } from "./predicates.js";
 
-export type { OutputSpec } from "./output.js";
+export type { Outcome } from "./output-spec.js";
 
 /**
  * Schema attached to a stage's `outputSchema` / `inputSchema`. Structurally
@@ -107,7 +107,7 @@ export interface FanoutContext {
 	cwd: string;
 	/** Primary artifact inherited from upstream (undefined when the loop stage is the entry point). */
 	artifact: import("./handle.js").Artifact | undefined;
-	state: Readonly<RunState>;
+	state: RunView;
 }
 
 /**
@@ -126,7 +126,7 @@ export interface IterateContext {
 	cwd: string;
 	/** Stage-entry primary, FROZEN across every unit (never rolls forward). */
 	artifact: import("./handle.js").Artifact | undefined;
-	state: Readonly<RunState>;
+	state: RunView;
 	/** Validated Outputs of this generation's completed units, in order. */
 	accumulated: readonly import("./output.js").Output[];
 	/** 0-based index of the unit about to run (== accumulated.length). */
@@ -142,56 +142,69 @@ export interface FeedForwardContext {
 	verdict: import("./output.js").Output;
 	/** 0-based round index of the round just judged (== the attempt index for verify). */
 	round: number;
-	state: Readonly<RunState>;
+	state: RunView;
+}
+
+/**
+ * The shared "repeat under a model judge" vocabulary — ONE set of field names
+ * for the two judged-repetition shapes (`AssessLoop` rounds, `VerifySpec`
+ * attempts). The runtime already admits they're one concept (verify desugars
+ * to a degenerate assess loop); this base keeps their vocabularies from
+ * drifting again (`pass`/`done`, `maxAttempts`/`max` were two spellings of
+ * the same two knobs).
+ */
+export interface JudgedRepetition {
+	judge: import("./judge.js").Judge;
+	/**
+	 * Sync TS reading the model-made verdict. `true` → the repetition stops
+	 * and the chain advances with the last producer pair. RESUME CONTRACT:
+	 * recomputed on resume (never persisted) — must be deterministic w.r.t.
+	 * the verdict `Output`. A `true` on the final round/attempt is a normal
+	 * completion (the predicate wins over the cap).
+	 */
+	done: (verdict: import("./output.js").Output) => boolean;
+	/**
+	 * Builds the next round/attempt's prompt arg from the just-judged
+	 * producer output + verdict. On a prompt-dispatch stage the returned
+	 * string is the COMPLETE retry message (sent raw — there is no skill to
+	 * prefix an arg onto).
+	 */
+	feedForward?: (ctx: FeedForwardContext) => string;
+	/** Repetition cap. Integer >= 1; clamped by `run.maxIterations` at runtime. */
+	max?: number;
 }
 
 /**
  * Per-stage post-condition judge — the data shape behind `StageDef.verify`.
  * After each attempt of the stage completes (collected, validated, persisted),
- * the judge session grades the attempt's primary artifact; `pass(verdict)`
+ * the judge session grades the attempt's primary artifact; `done(verdict)`
  * true → verified, the chain advances with the attempt's producer pair;
  * false → a fresh retry attempt (prompt arg built by `feedForward`) up to
- * `maxAttempts`, then a terminal "verification failed" halt. Author via the
+ * `max` attempts, then a terminal "verification failed" halt. Author via the
  * `verify()` constructor (control-flow.ts), which validates at construction;
  * load-time validation re-checks hand-rolled literals through the same
  * `verifyShapeIssues` rule source.
  *
+ * Field semantics on top of the shared `JudgedRepetition` vocabulary:
+ *  - `done` — the pass predicate (`true` = verified).
+ *  - `max` — total attempt budget; each attempt is a FRESH session running
+ *    the full produce→validate→persist cycle. Orthogonal to
+ *    `stage.maxRetries` (the cheap in-session schema-fix budget, which stays
+ *    live inside every attempt). Default 1 (gate-only).
+ *  - `feedForward` — REQUIRED when `max > 1` (without it the retried prompt
+ *    would be byte-identical to the original and the model would have no
+ *    signal about why it failed); never called when `max` is 1.
+ *
  * Runtime: the runner desugars the field into a degenerate assess loop
- * (`done: pass`, `max: maxAttempts ?? 1`, `onCap: "halt"`, `result: "last"`)
- * run by the ONE loop driver. Attempts and verdicts land as unit rows
- * (`role: "produce"` / `role: "verify"`, `unitIndex` = 0-based attempt); the
- * verdict publishes durably to `state.named[judge.outcome.name]` (so
- * declarative fallback routing over `EdgeContext.state.named` works); and
- * `projectResult` restores the last attempt's producer pair before the chain
- * advances — downstream stages never inherit the verdict.
+ * (`max: max ?? 1`, `onCap: "halt"`, `result: "last"`) run by the ONE loop
+ * driver. Attempts and verdicts land as unit rows (`role: "produce"` /
+ * `role: "verify"`, `unitIndex` = 0-based attempt); the verdict publishes
+ * durably to `state.named[judge.outcome.name]` (so declarative fallback
+ * routing over `EdgeContext.state.named` works); and `projectResult`
+ * restores the last attempt's producer pair before the chain advances —
+ * downstream stages never inherit the verdict.
  */
-export interface VerifySpec {
-	judge: import("./judge.js").Judge;
-	/**
-	 * Sync TS reading the model-made verdict. `true` → verified, advance.
-	 * RESUME CONTRACT: recomputed on resume (never persisted) — must be
-	 * deterministic w.r.t. the verdict `Output`. A pass on the final attempt
-	 * is a normal completion (the predicate wins over the attempt cap).
-	 */
-	pass: (verdict: import("./output.js").Output) => boolean;
-	/**
-	 * Builds the next attempt's prompt arg from the just-failed attempt's
-	 * producer output + verdict. On a prompt-dispatch stage the returned string
-	 * is the COMPLETE retry message (sent raw — there is no skill to prefix an
-	 * arg onto). REQUIRED when `maxAttempts > 1` (without it the retried prompt
-	 * would be byte-identical to the original and the model would have no
-	 * signal about why it failed); never called when `maxAttempts` is 1.
-	 */
-	feedForward?: (ctx: FeedForwardContext) => string;
-	/**
-	 * Total attempt budget — each attempt is a FRESH session running the full
-	 * produce→validate→persist cycle. Orthogonal to `stage.maxRetries` (the
-	 * cheap in-session schema-fix budget, which stays live inside every
-	 * attempt). Integer >= 1; default 1 (gate-only). Clamped by
-	 * `run.maxIterations` at runtime like every loop cap.
-	 */
-	maxAttempts?: number;
-}
+export type VerifySpec = JudgedRepetition;
 
 /**
  * Role a unit row/event carries. Every main-work unit — fanout unit, iterate
@@ -256,14 +269,16 @@ export interface IterateLoop extends LoopCommon {
 	next: IterateFn;
 }
 
-/** Model-judged until-done loop: producer→judge rounds. */
-export interface AssessLoop extends LoopCommon {
+/**
+ * Model-judged until-done loop: producer→judge rounds. Shares the
+ * `JudgedRepetition` vocabulary with `VerifySpec`; here `max` (the round cap)
+ * and `feedForward` are REQUIRED — the `assess()` constructor defaults `max`
+ * to 8 and rejects a missing `feedForward`.
+ */
+export interface AssessLoop extends LoopCommon, JudgedRepetition {
 	kind: "assess";
 	/** Round cap — REQUIRED here (the `assess()` constructor defaults it to 8). */
 	max: number;
-	judge: import("./judge.js").Judge;
-	/** Sync TS reading the model-made verdict. `true` → loop stops. */
-	done: (verdict: import("./output.js").Output) => boolean;
 	/** Builds the next producer prompt arg from the just-judged round's pair. */
 	feedForward: (ctx: FeedForwardContext) => string;
 }
@@ -297,7 +312,7 @@ export interface ScriptContext {
 	 * rolling primary slot (a `terminal()` ahead of it).
 	 */
 	input: Output | undefined;
-	state: Readonly<RunState>;
+	state: RunView;
 }
 
 /**
@@ -353,7 +368,7 @@ export type PromptFn = (ctx: ScriptContext) => string | Promise<string>;
  */
 export interface EdgeContext {
 	output: import("./output.js").Output | undefined;
-	state: Readonly<RunState>;
+	state: RunView;
 }
 
 /**
@@ -394,15 +409,22 @@ export type EdgeTarget = string | typeof STOP | EdgeFn;
  * Pi resolves the skill at run time; there's no allowlist gate. If Pi
  * can't load the skill, the runner halts with a clear error pointing
  * at this stage.
+ *
+ * TYPING MODEL (T2): `<TIn, TOut>` are LOCAL inference helpers — they tie a
+ * factory call's `inputSchema`/`outputSchema`/`run` together, then erase at
+ * the `Workflow.stages` boundary (`Record<string, StageDef>`). They do NOT
+ * carry types across edges; inter-stage typing is runtime-contract-based
+ * (schemas validate `output.data` at run time, skill contracts adjudicate
+ * composition at load). A typed builder API is a roadmap item.
  */
 export interface StageDef<TIn = unknown, TOut = unknown> {
 	skill?: string;
 	kind: StageKind;
 	sessionPolicy: SessionPolicy;
-	outcome?: OutputSpec;
+	outcome?: Outcome;
 	/**
 	 * Standard Schema v1 validator run against `output.data` after the
-	 * stage's `OutputSpec` produces it (the typed record parsed out of the
+	 * stage's `Outcome` produces it (the typed record parsed out of the
 	 * agent's emitted artifact). On rejection the runner honours
 	 * `onInvalid` ("retry" by default, up to `maxRetries`; "halt" to fail
 	 * fast).
@@ -439,9 +461,9 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	 * Opt-in post-condition judge. When set, the runner desugars this stage
 	 * into a degenerate assess loop (attempt → verify rounds through the ONE
 	 * driver, loop.ts): each attempt is graded by `verify.judge`;
-	 * `verify.pass(verdict)` gates advancement; failures retry with
-	 * `verify.feedForward` feedback up to `verify.maxAttempts`, then halt with
-	 * "verification failed". Author via the `verify()` constructor.
+	 * `verify.done(verdict)` gates advancement; failures retry with
+	 * `verify.feedForward` feedback up to `verify.max` attempts, then halt
+	 * with "verification failed". Author via the `verify()` constructor.
 	 *
 	 * Lifecycle follows LOOP semantics: `onLoopStart` fires with
 	 * `kind: "verify"`, attempts/verdicts fire `onUnitStart`/`onUnitEnd`, and
@@ -579,7 +601,7 @@ interface ActsScriptOptions<TIn = unknown> {
  */
 interface ProducesPromptOptions<TIn = unknown, TOut = unknown> {
 	prompt: string | PromptFn;
-	outcome: OutputSpec;
+	outcome: Outcome;
 	outputSchema?: StageSchema<unknown, TOut>;
 	inputSchema?: StageSchema<unknown, TIn>;
 	onInvalid?: OnInvalid;
@@ -810,35 +832,85 @@ export function defineRoute(targets: readonly string[], fn: EdgePredicate, opts?
 }
 
 /**
+ * Symbol under which an `EdgeFn` records a note about its most recent pick —
+ * today: `gate`'s "no branch matched, fallback fired" diagnostic. The runner's
+ * routing audit reads-and-clears it via `takeRouteNote` right after invoking
+ * the edge (same tick — single-threaded, no other decision can interleave)
+ * and persists it on the `RoutingDecision` row's `note`.
+ *
+ * Framework plumbing, not authoring surface — NOT re-exported from
+ * `registration.ts`. `Symbol.for` so it survives import boundaries, matching
+ * `READS_DATA`.
+ */
+export const ROUTE_NOTE: unique symbol = Symbol.for("rpiv.workflow.routeNote");
+
+/**
+ * Read-and-clear the note an `EdgeFn` attached to its most recent invocation.
+ * Returns undefined when the edge recorded nothing (the common case).
+ */
+export function takeRouteNote(fn: EdgeFn): string | undefined {
+	const slot = fn as unknown as Record<symbol, string | undefined>;
+	const note = slot[ROUTE_NOTE];
+	if (note !== undefined) slot[ROUTE_NOTE] = undefined;
+	return note;
+}
+
+/**
+ * Matches the keys JS engines hoist and reorder ahead of string keys
+ * (canonical array indices). `gate` evaluates branches in declaration order,
+ * so an integer-like stage name would silently change match priority.
+ */
+const INTEGER_LIKE_KEY = /^\d+$/;
+
+/**
  * Conditional routing keyed on a numeric field in `output.data`. Each
  * branch's predicate is evaluated against `Number(output.data[field])` in
- * declaration order; the first matching branch wins. If no predicate
- * matches, the last declared branch is the fallback — same posture as the
- * prior `threshold` builder, which routed missing/non-numeric fields to its
- * `ifBelow` branch by virtue of `NaN > anything === false`.
+ * declaration order; the first matching branch wins. When no predicate
+ * matches (including a missing or non-numeric field, which coerces to `NaN`),
+ * the EXPLICIT `otherwise` branch is taken and the routing-audit row carries
+ * a `note` saying the fallback fired — no-match is a visible event, not a
+ * silent property of declaration order.
  *
  * ```ts
- * gate("blockers_count", { revise: gt(0), commit: eq(0) })
+ * gate("blockers_count", { revise: gt(0), commit: eq(0) }, "commit")
  * // value > 0  → "revise"
  * // value = 0  → "commit"
- * // value < 0  → "commit" (no match, falls to last)
- * // missing/NaN → "commit" (no match, falls to last)
+ * // value < 0, missing, NaN → "commit" (otherwise; audit row notes the fallback)
  * ```
  *
+ * Branch keys must not be integer-like (`"2"`): JS object literals hoist
+ * array-index keys ahead of declaration order, which would silently reorder
+ * match priority — rejected at construction.
+ *
  * Built on `defineRoute` so the `.targets` metadata is attached structurally
- * and the `READS_DATA` marker auto-applies (routing reads `output.data`).
+ * (the `otherwise` target included) and the `READS_DATA` marker auto-applies
+ * (routing reads `output.data`).
  */
-export function gate(field: string, branches: Record<string, Predicate>): EdgeFn {
-	const targets = Object.keys(branches);
-	if (targets.length === 0) {
+export function gate(field: string, branches: Record<string, NumericPredicate>, otherwise: string): EdgeFn {
+	const branchTargets = Object.keys(branches);
+	if (branchTargets.length === 0) {
 		throw new Error("gate: branches must declare at least one possible return value");
 	}
-	const fallback = targets[targets.length - 1]!;
-	return defineRoute(targets, ({ output }) => {
+	if (typeof otherwise !== "string" || otherwise.length === 0) {
+		throw new Error("gate: an explicit `otherwise` branch is required — the no-match fallback must be deliberate");
+	}
+	for (const key of branchTargets) {
+		if (INTEGER_LIKE_KEY.test(key)) {
+			throw new Error(
+				`gate: branch key "${key}" is integer-like — JS reorders such keys ahead of declaration order, ` +
+					`silently changing match priority. Rename the stage or route to it via \`otherwise\`.`,
+			);
+		}
+	}
+	const targets = [...new Set([...branchTargets, otherwise])];
+	const route: EdgeFn = defineRoute(targets, ({ output }) => {
 		const value = Number((output?.data as Record<string, unknown> | undefined)?.[field]);
-		for (const target of targets) {
+		for (const target of branchTargets) {
 			if (branches[target]!(value)) return target;
 		}
-		return fallback;
+		(route as unknown as Record<symbol, string>)[ROUTE_NOTE] =
+			`gate("${field}"): no branch matched value ${value} — fell back to "${otherwise}"`;
+		return otherwise;
 	});
+	return route;
 }

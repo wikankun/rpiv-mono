@@ -104,4 +104,17 @@ describe.runIf(hasGit)("workspaceDiffCollector", () => {
 		const result = await collector.collect(collectCtxOf(tmpDir, snapshot));
 		expect(result.kind === "ok" && result.artifacts).toEqual([]);
 	});
+
+	it("fatal when git worked at snapshot time but fails after the stage — no fabricated 'no changes' (T10)", async () => {
+		initRepo(tmpDir);
+		const collector = workspaceDiffCollector();
+		const snapshot = await collector.snapshot?.(snapshotCtxOf(tmpDir));
+		expect(snapshot).toBeDefined();
+		// Simulate the environment breaking mid-stage: the repo (and cwd)
+		// vanish between snapshot and collect.
+		rmSync(tmpDir, { recursive: true, force: true });
+		const result = await collector.collect(collectCtxOf(tmpDir, snapshot));
+		expect(result.kind).toBe("fatal");
+		expect(result.kind === "fatal" && result.message).toMatch(/worked at snapshot time but failed after/);
+	});
 });

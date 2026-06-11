@@ -8,7 +8,11 @@
  * (parse may re-run during validation retries, when the working tree has
  * already moved on).
  *
- * Failure posture distinguishes the three cases:
+ * Failure posture follows the package-wide "nothing found" convention
+ * (`CollectResult` doc, output-spec.ts) — with ONE documented exception:
+ * this collector always emits a single sentinel artifact (even on no-op)
+ * carrying the complete fact in `meta`, so the parser stays pure and total.
+ * The three cases:
  *   - not a git repo / git unavailable at snapshot time → no-op data
  *     (`baselineMissing`), the workflow keeps moving;
  *   - HEAD unchanged after the stage → honest no-op data;
@@ -22,14 +26,7 @@
  */
 
 import { type Artifact, opaque } from "../handle.js";
-import type {
-	ArtifactCollector,
-	ArtifactParser,
-	CollectCtx,
-	OutputSpec,
-	ParseCtx,
-	SnapshotCtx,
-} from "../output-spec.js";
+import type { ArtifactCollector, ArtifactParser, CollectCtx, Outcome, ParseCtx, SnapshotCtx } from "../output-spec.js";
 import { execFileAsync, GIT_EXEC_TIMEOUT_MS } from "./exec.js";
 
 /**
@@ -215,7 +212,7 @@ export const gitCommitParser: ArtifactParser<GitHeadSnapshot | undefined, "git-c
 };
 
 // ---------------------------------------------------------------------------
-// OutputSpec — the wired-up pair
+// Outcome — the wired-up pair
 // ---------------------------------------------------------------------------
 
 /**
@@ -226,7 +223,7 @@ export const gitCommitParser: ArtifactParser<GitHeadSnapshot | undefined, "git-c
  * (undefined when not in a git repo), output kind is `"git-commit"`,
  * data is `GitCommitData`.
  */
-export const gitCommitOutcome: OutputSpec<GitHeadSnapshot | undefined, "git-commit", GitCommitData> = {
+export const gitCommitOutcome: Outcome<GitHeadSnapshot | undefined, "git-commit", GitCommitData> = {
 	collector: gitCommitCollector,
 	parser: gitCommitParser,
 };

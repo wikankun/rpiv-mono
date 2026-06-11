@@ -88,7 +88,7 @@ export const deriveOutcomes: OutcomeDeriverFn = (workflows, skillContracts, onIs
 				continue;
 			}
 
-			// Wire the full OutputSpec (name + collector + parser)
+			// Wire the full Outcome (name + collector + parser)
 			stage.outcome = rpivBucketOutcome(bucket);
 		}
 	}

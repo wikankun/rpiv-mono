@@ -28,7 +28,7 @@
  */
 
 import type { ScriptContext } from "../api.js";
-import { allocateStageNumber, auditCtxFor, nowIso, recordStage, recordTerminalFailure } from "../audit.js";
+import { allocateStageNumber, auditCtxFor, nowIso, recordStage, recordTerminalFailure, terminate } from "../audit.js";
 import type { Artifact } from "./../handle.js";
 import { applyCompletedStage, formatError } from "../internal-utils.js";
 import { scriptStageRef } from "../lifecycle.js";
@@ -188,7 +188,7 @@ function recordScriptSuccess(
 	);
 	if (assigned === undefined) {
 		curCtx.ui.notify(MSG_AUDIT_WRITE_FAILED(stage.name), "error");
-		state.termination.error = ERR_AUDIT_WRITE_FAILED(stage.name);
+		terminate(state, { status: "failed", error: ERR_AUDIT_WRITE_FAILED(stage.name) });
 		return false;
 	}
 	applyCompletedStage(state, stage.def, stage.name, output);

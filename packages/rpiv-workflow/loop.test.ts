@@ -20,7 +20,8 @@ import { assess, fanout, iterate, verify } from "./control-flow.js";
 import { fs as fsHandle, handleToString } from "./handle.js";
 import { judge } from "./judge.js";
 import { type LifecycleListeners, registerLifecycle } from "./lifecycle.js";
-import type { Output, OutputSpec } from "./output.js";
+import type { Output } from "./output.js";
+import type { Outcome } from "./output-spec.js";
 import { runWorkflow } from "./runner/index.js";
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ const lastMatch = (ctx: { branch: unknown[]; branchOffset?: number }, pattern: R
 };
 
 /** Produces outcome: emit the last `.rpiv/artifacts/.../*.md` as the primary artifact. */
-const mdOutcome = (name: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+const mdOutcome = (name: string): Outcome<unknown, "artifact-md", Record<string, unknown>> => ({
 	name,
 	collector: {
 		collect: (ctx) => {
@@ -63,7 +64,7 @@ const mdOutcome = (name: string): OutputSpec<unknown, "artifact-md", Record<stri
 });
 
 /** Verdict outcome: scan for the last `.rpiv/verdicts/*.json`; parse it to `{ done, feedback }`. */
-const verdictOutcome = (name: string): OutputSpec<unknown, "verdict", Record<string, unknown>> => ({
+const verdictOutcome = (name: string): Outcome<unknown, "verdict", Record<string, unknown>> & { name: string } => ({
 	name,
 	collector: {
 		collect: (ctx) => {
@@ -84,7 +85,9 @@ const verdictOutcome = (name: string): OutputSpec<unknown, "verdict", Record<str
 });
 
 /** A verdict outcome whose collector returns ZERO artifacts (structurally ok) — pins the ≥1-artifact halt. */
-const emptyVerdictOutcome = (name: string): OutputSpec<unknown, "verdict", Record<string, unknown>> => ({
+const emptyVerdictOutcome = (
+	name: string,
+): Outcome<unknown, "verdict", Record<string, unknown>> & { name: string } => ({
 	name,
 	collector: { collect: () => ({ kind: "ok", artifacts: [] }) },
 });
@@ -1000,13 +1003,13 @@ describe("loop driver — verify", () => {
 	const vFeedForward = ({ verdict, round }: { verdict: Output; round: number }) =>
 		`fix round=${round} done=${(verdict.data as { done?: boolean }).done}`;
 
-	const gateOnly = () => verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), pass });
-	const retrying = (maxAttempts = 3) =>
+	const gateOnly = () => verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), done: pass });
+	const retrying = (max = 3) =>
 		verify({
 			judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }),
-			pass,
+			done: pass,
 			feedForward: vFeedForward,
-			maxAttempts,
+			max,
 		});
 
 	const verifyWf = (v: VerifySpec) => ({
@@ -1098,7 +1101,7 @@ describe("loop driver — verify", () => {
 		expect(rows[3]).toMatchObject({ stage: "build (a1·verify)", role: "verify", unitIndex: 1 });
 	});
 
-	it("exhausted attempts: both verdicts fail at maxAttempts 2 → verification-failed halt", async () => {
+	it("exhausted attempts: both verdicts fail at max 2 → verification-failed halt", async () => {
 		writeVerdict(0, false);
 		writeVerdict(1, false);
 		const chain = createMockSessionChain({
@@ -1144,7 +1147,7 @@ describe("loop driver — verify", () => {
 				prompt: ({ output }) => `grade ${handleToString(output.artifacts[0]!.handle)} strictly`,
 				outcome: verdictOutcome("verdict"),
 			}),
-			pass,
+			done: pass,
 		});
 		const chain = createMockSessionChain({
 			cwd: tmpDir,
@@ -1253,7 +1256,7 @@ describe("loop driver — verify", () => {
 
 describe("loop driver — prompt dispatch", () => {
 	const pass = (v: Output) => Boolean((v.data as { done?: boolean }).done);
-	const gateOnly = () => verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), pass });
+	const gateOnly = () => verify({ judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }), done: pass });
 
 	it("verify × prompt gate-only pass: attempt 0 sends the prompt RAW; skill judge + consumer get handles", async () => {
 		writeVerdict(0, true);
@@ -1305,10 +1308,10 @@ describe("loop driver — prompt dispatch", () => {
 					prompt: "draft the impl",
 					verify: verify({
 						judge: judge({ skill: "grade", outcome: verdictOutcome("verdict") }),
-						pass,
+						done: pass,
 						feedForward: ({ verdict, round }) =>
 							`rewrite attempt=${round + 1} done=${(verdict.data as { done?: boolean }).done}`,
-						maxAttempts: 3,
+						max: 3,
 					}),
 				}),
 				consume: acts(),

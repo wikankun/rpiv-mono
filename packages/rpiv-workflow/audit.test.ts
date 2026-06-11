@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AuditCtx, decorateStage, recordTerminalFailure, unitRowFields } from "./audit.js";
+import { type AuditCtx, decorateStage, recordCancellation, recordTerminalFailure, unitRowFields } from "./audit.js";
 import { LifecycleDispatcher } from "./lifecycle.js";
 import { MSG_FAILURE_ROW_DROPPED } from "./messages.js";
 import { readAllStages } from "./state/index.js";
@@ -71,7 +71,7 @@ describe("recordTerminalFailure", () => {
 		stagesCompleted: 0,
 		lastAllocatedStageNumber: 0,
 		telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
-		termination: { success: false, error: undefined },
+		termination: { status: "running" },
 	});
 
 	const makeCtx = () => {
@@ -110,6 +110,34 @@ describe("recordTerminalFailure", () => {
 		expect(readAllStages(tmpDir, "run-1").map((r) => r.status)).toEqual(["failed"]);
 		expect(state.telemetry.droppedFailureRows).toEqual([]);
 		expect(notifications.map((n) => n.msg)).toEqual(["boom"]);
+		// T4: the discriminated outcome lands whole — status + error together.
+		expect(state.termination).toEqual({ status: "failed", error: "build failed" });
+	});
+
+	it("records user cancellation as a first-class outcome — no error-string sniffing (T4)", () => {
+		const { ctx } = makeCtx();
+		const state = freshState();
+
+		recordCancellation(ctx, auditFor(tmpDir, state));
+
+		expect(state.termination.status).toBe("cancelled");
+		expect(state.termination.error).toContain("cancelled by user");
+		// The JSONL row keeps the long-standing "skipped" status.
+		expect(readAllStages(tmpDir, "run-1").map((r) => r.status)).toEqual(["skipped"]);
+	});
+
+	it("records an aborted outcome as its own termination status (T4)", async () => {
+		const { ctx } = makeCtx();
+		const state = freshState();
+
+		await recordTerminalFailure(ctx, auditFor(tmpDir, state), {
+			status: "aborted",
+			notifyMsg: "stopped",
+			notifyLevel: "warning",
+			errMsg: "workflow aborted at build",
+		});
+
+		expect(state.termination).toEqual({ status: "aborted", error: "workflow aborted at build" });
 	});
 
 	it("surfaces a dropped failure-row append: warning notify + telemetry entry (C6)", async () => {

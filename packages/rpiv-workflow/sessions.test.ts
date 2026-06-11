@@ -34,7 +34,8 @@ import {
 	MSG_VALIDATION_EXHAUSTED,
 	MSG_VALIDATION_RETRY,
 } from "./messages.js";
-import type { CollectCtx, Output, OutputSpec } from "./output.js";
+import type { Output } from "./output.js";
+import type { CollectCtx, Outcome } from "./output-spec.js";
 import { runStageSession } from "./sessions/index.js";
 import { DEFAULT_TRIGGER } from "./triggers.js";
 import { typeboxSchema } from "./typebox-adapter.js";
@@ -68,10 +69,7 @@ const freshRunState = (overrides: Partial<RunState> = {}): RunState => ({
 		droppedRoutingRows: [],
 		droppedFailureRows: [],
 	},
-	termination: {
-		success: true,
-		error: undefined,
-	},
+	termination: { status: "running" },
 	...overrides,
 });
 
@@ -108,7 +106,7 @@ const stageSession = (overrides: Partial<StageSession> & Pick<StageSession, "cwd
  */
 type ScriptedResult = { kind: "ok"; data: Record<string, unknown> } | { kind: "fatal"; message: string };
 
-type ScriptedOutcome = OutputSpec & { collectSpy: ReturnType<typeof vi.fn> };
+type ScriptedOutcome = Outcome & { collectSpy: ReturnType<typeof vi.fn> };
 
 const scriptedOutcome = (results: ScriptedResult[]): ScriptedOutcome => {
 	let i = 0;
@@ -121,7 +119,7 @@ const scriptedOutcome = (results: ScriptedResult[]): ScriptedOutcome => {
 			artifacts: [{ handle: fsHandle(`scripted-${i}.md`), role: "primary" }],
 		};
 	});
-	const outcome: OutputSpec = {
+	const outcome: Outcome = {
 		collector: { collect: collectSpy as ScriptedOutcome["collector"]["collect"] },
 		parser: {
 			parse: () => {
@@ -797,7 +795,7 @@ describe("sessions — collector ctx (always-unsliced branch + policy-derived of
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	const recordingOutcomeOf = (results: ScriptedResult[], captured: CollectCtx[]): OutputSpec => {
+	const recordingOutcomeOf = (results: ScriptedResult[], captured: CollectCtx[]): Outcome => {
 		let i = 0;
 		return {
 			collector: {

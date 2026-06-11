@@ -17,7 +17,6 @@ import type {
 	SkillContractMap,
 } from "../skill-contract.js";
 import { getCompositionComparators } from "./registries.js";
-import { getSkillContracts } from "./registry.js";
 
 /** Outcome of adjudicating one named channel — see `adjudicateChannel`. */
 export type ChannelAdjudication =
@@ -62,18 +61,19 @@ export function adjudicateChannel(
  * Conservative (via `isSchemaCompatible`): returns `{ ok: true }` when either
  * schema is absent/opaque (not provably incompatible).
  *
- * IMPORTANT: the default `contracts` is the GLOBAL registry
- * (`getSkillContracts()`), which holds only `declared` + `injected` contracts —
- * NOT the `harvested` ones, which exist solely on `LoadedWorkflows.skillContracts`
- * (built per load, never written back to the global). So the zero-arg call sees a
- * weaker map than the loader's own edge-compat pass and will degrade to
- * `{ ok: true }` for any harvest-only skill. For the effective (declared ⊕
- * harvested) view an agent should pass `loaded.skillContracts` explicitly.
+ * `contracts` is REQUIRED (T12): the old zero-arg default silently consulted
+ * the GLOBAL registry, which holds only `declared` + `injected` contracts —
+ * NOT the `harvested` ones, which exist solely on
+ * `LoadedWorkflows.skillContracts` (built per load, never written back to the
+ * global) — so the convenient call was the wrong one for any harvest-only
+ * skill. Pass `loaded.skillContracts` for the effective (declared ⊕
+ * harvested) view, or `getSkillContracts()` when the declared/injected slice
+ * is genuinely what you mean.
  */
 export function canCompose(
 	producerSkill: string,
 	consumerSkill: string,
-	contracts: SkillContractMap = getSkillContracts(),
+	contracts: SkillContractMap,
 ): SchemaCompatResult {
 	const producerContract = contracts.get(producerSkill);
 	const consumerContract = contracts.get(consumerSkill);
@@ -104,12 +104,12 @@ export function canCompose(
 /**
  * Every known skill whose `consumes` is not provably incompatible with `skill`'s
  * `produces` — the generator's search-space narrowing. Sorted for determinism.
- * Same default-map caveat as `canCompose`: pass `loaded.skillContracts` for
- * the effective (declared ⊕ harvested) view, else only declared/injected skills
- * are considered. Conservative by design — absent/opaque schemas count as
- * compatible, so this excludes only PROVABLE data-channel mismatches.
+ * `contracts` is REQUIRED — same rationale as `canCompose`: pass
+ * `loaded.skillContracts` for the effective (declared ⊕ harvested) view.
+ * Conservative by design — absent/opaque schemas count as compatible, so this
+ * excludes only PROVABLE data-channel mismatches.
  */
-export function legalNextSkills(skill: string, contracts: SkillContractMap = getSkillContracts()): string[] {
+export function legalNextSkills(skill: string, contracts: SkillContractMap): string[] {
 	const next: string[] = [];
 	for (const candidate of contracts.keys()) {
 		if (canCompose(skill, candidate, contracts).ok) next.push(candidate);

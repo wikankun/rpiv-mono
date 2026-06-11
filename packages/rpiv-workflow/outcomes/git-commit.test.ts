@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CollectCtx, ParseCtx, SnapshotCtx } from "../output.js";
+import type { CollectCtx, ParseCtx, SnapshotCtx } from "../output-spec.js";
 import {
 	type GitHeadSnapshot,
 	gitCommitCollector,
@@ -44,23 +44,7 @@ const snapshotCtx = (cwd: string): SnapshotCtx => ({
 	cwd,
 	runId: "test-run",
 	stageIndex: 0,
-	state: {
-		originalInput: "",
-		primaryArtifact: undefined,
-		output: undefined,
-		named: {},
-		stagesCompleted: 0,
-		lastAllocatedStageNumber: 0,
-		telemetry: {
-			backwardJumps: 0,
-			droppedRoutingRows: [],
-			droppedFailureRows: [],
-		},
-		termination: {
-			success: false,
-			error: undefined,
-		},
-	},
+	state: { originalInput: "", output: undefined, named: {} },
 });
 
 const collectCtx = (cwd: string, snapshot: GitHeadSnapshot | undefined): CollectCtx<GitHeadSnapshot | undefined> => ({

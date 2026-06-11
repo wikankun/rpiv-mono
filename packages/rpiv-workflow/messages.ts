@@ -247,6 +247,14 @@ export const ERR_RESUME_NO_ROWS = (runId: string) => `rpiv: run ${runId} has no 
 export const ERR_RESUME_MALFORMED_ROW = (detail: string) =>
 	`rpiv: cannot resume — the run's trail contains a malformed stage row (${detail}); ` +
 	`resume refuses rather than replay an incomplete history`;
+/**
+ * The run's header carries a schema version this build doesn't write —
+ * resume refuses rather than fold rows whose shapes it may misread.
+ * Absent `v` is version 1 (back-compat), so this only fires on a real bump.
+ */
+export const ERR_RESUME_VERSION_MISMATCH = (detail: string, expected: number) =>
+	`rpiv: cannot resume — ${detail}, but this build reads schema v${expected}; ` +
+	`resume refuses rather than misread the trail`;
 export const ERR_RESUME_STAGE_GONE = (stage: string, workflow: string) =>
 	`rpiv: cannot resume — stage "${stage}" from the run no longer exists in workflow "${workflow}" ` +
 	`(renamed or removed)`;

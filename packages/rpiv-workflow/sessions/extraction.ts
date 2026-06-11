@@ -30,7 +30,7 @@ import {
 } from "../messages.js";
 import { sideEffectOutcome } from "../outcomes/index.js";
 import { finalizeOutput, type Output } from "../output.js";
-import type { CollectCtx, OutputSpec } from "../output-spec.js";
+import type { CollectCtx, Outcome } from "../output-spec.js";
 import { type BranchEntry, readBranch } from "../transcript.js";
 import type { StageSession, WorkflowHostContext } from "../types.js";
 import {
@@ -86,7 +86,7 @@ export async function produceAndValidateOutput(
  *    load time; the runtime throw is defense-in-depth for programmatic
  *    embedders that bypassed validation.
  */
-function resolveOutcome(stage: StageDef, skill: string): OutputSpec {
+function resolveOutcome(stage: StageDef, skill: string): Outcome {
 	if (stage.outcome) return stage.outcome;
 	switch (stage.kind) {
 		case "side-effect":
@@ -149,7 +149,7 @@ type RunOutcomeResult = { kind: "ok"; output: Output } | { kind: "fatal"; messag
  * escaping to the runner's generic catch and reading as a machinery failure.
  */
 async function runOutcome(
-	outcome: OutputSpec,
+	outcome: Outcome,
 	ctx: CollectCtx,
 	finalize: (parts: { kind: string; artifacts: readonly Artifact[]; data: unknown }) => Output,
 ): Promise<RunOutcomeResult> {
@@ -231,7 +231,7 @@ function shouldValidateOutput(s: StageSession, output: Output): boolean {
 }
 
 interface RetryDeps {
-	outcome: OutputSpec;
+	outcome: Outcome;
 	collectCtx: CollectCtx;
 	finalize: (parts: { kind: string; artifacts: readonly Artifact[]; data: unknown }) => Output;
 }

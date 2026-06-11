@@ -61,7 +61,7 @@ export interface StageShape {
 	 * stays `"single"` for verify stages — verify is a stage property in the
 	 * introspection model, not a loop kind (the desugar is a runtime concern).
 	 */
-	verify?: JudgeSpec & { maxAttempts: number };
+	verify?: JudgeSpec & { max: number };
 	edge: { mode: "linear" | "route" | "terminal"; targets?: readonly string[] };
 }
 
@@ -86,9 +86,7 @@ export function describeFlow(w: Workflow): StageShape[] {
 			stage: name,
 			skill: stage.skill,
 			control,
-			...(stage.verify
-				? { verify: { ...judgeSpecOf(stage.verify.judge), maxAttempts: stage.verify.maxAttempts ?? 1 } }
-				: {}),
+			...(stage.verify ? { verify: { ...judgeSpecOf(stage.verify.judge), max: stage.verify.max ?? 1 } } : {}),
 			edge,
 		};
 	});
@@ -201,9 +199,9 @@ export function assess(opts: AssessOptions): AssessLoop {
 
 /**
  * Per-stage post-condition judge: after each attempt of the stage completes,
- * `judge` grades it and `pass(verdict)` gates advancement — true → advance
+ * `judge` grades it and `done(verdict)` gates advancement — true → advance
  * with the attempt's producer pair; false → fresh retry attempt (prompt arg
- * from `feedForward`) up to `maxAttempts` (default 1 = gate-only), then a
+ * from `feedForward`) up to `max` attempts (default 1 = gate-only), then a
  * terminal "verification failed" halt. Requires `kind: "produces"` + an
  * `outcome` with a `name` (workflow-level, checked at load). Composes with
  * `reads` and with `prompt` dispatch (attempt 0 sends the stage's resolved
@@ -227,23 +225,22 @@ export function verify(spec: VerifySpec): VerifySpec {
  * factory (jiti-loaded configs erase TS types). Same pattern as
  * `judgeShapeIssues` / `judge()`.
  */
-export function verifyShapeIssues(v: VerifySpec | undefined): string[] {
-	if (!v || typeof v !== "object") return ["a verify object is required"];
+export function verifyShapeIssues(candidate: unknown): string[] {
+	if (!candidate || typeof candidate !== "object") return ["a verify object is required"];
+	const v = candidate as Partial<VerifySpec>;
 	const issues: string[] = [...judgeShapeIssues(v.judge)];
-	if (typeof v.pass !== "function") {
-		issues.push("verify requires `pass` to be a function deciding pass/fail from the verdict");
+	if (typeof v.done !== "function") {
+		issues.push("verify requires `done` to be a function deciding pass/fail from the verdict");
 	}
-	if (v.maxAttempts !== undefined && (!Number.isInteger(v.maxAttempts) || v.maxAttempts < 1)) {
-		issues.push(
-			`verify.maxAttempts: ${v.maxAttempts} — must be an integer >= 1 (run.maxIterations caps the upper bound)`,
-		);
+	if (v.max !== undefined && (!Number.isInteger(v.max) || v.max < 1)) {
+		issues.push(`verify.max: ${v.max} — must be an integer >= 1 (run.maxIterations caps the upper bound)`);
 	}
 	if (v.feedForward !== undefined && typeof v.feedForward !== "function") {
 		issues.push("verify `feedForward` must be a function building the next attempt's prompt arg");
 	}
-	if ((v.maxAttempts ?? 1) > 1 && v.feedForward === undefined) {
+	if ((v.max ?? 1) > 1 && v.feedForward === undefined) {
 		issues.push(
-			"verify.maxAttempts > 1 requires `feedForward` — without it the retried prompt would be byte-identical to the original",
+			"verify.max > 1 requires `feedForward` — without it the retried prompt would be byte-identical to the original",
 		);
 	}
 	return issues;
@@ -251,19 +248,20 @@ export function verifyShapeIssues(v: VerifySpec | undefined): string[] {
 
 /**
  * Unreachable by construction: the driver's cap check precedes the
- * feedForward call (loop.ts pullNext), so a gate-only verify (`maxAttempts`
- * 1, the only shape allowed to omit `feedForward`) caps before a second
- * attempt could ever ask for an arg. A throw here means that invariant broke
+ * feedForward call (loop.ts pullNext), so a gate-only verify (`max` 1, the
+ * only shape allowed to omit `feedForward`) caps before a second attempt
+ * could ever ask for an arg. A throw here means that invariant broke
  * — fail loudly (propagates to the runner's single catch) rather than
  * silently dispatching an empty-arg prompt.
  */
 const NEVER_FEED_FORWARD = (): string => {
-	throw new Error("verify: feedForward invoked on a gate-only verify (maxAttempts 1) — driver invariant violated");
+	throw new Error("verify: feedForward invoked on a gate-only verify (max 1) — driver invariant violated");
 };
 
 /**
- * The desugar: a `VerifySpec` as a degenerate assess loop. `done` IS `pass`,
- * the attempt budget IS the round cap, the cap policy is always `"halt"`
+ * The desugar: a `VerifySpec` as a degenerate assess loop — the shared
+ * `JudgedRepetition` fields flow straight through (`max` defaulted to 1 for
+ * the gate-only shape); the cap policy is always `"halt"`
  * (a failing final verdict = "verification failed"; `done` wins over the cap
  * so a pass on the final attempt is a normal completion), and `result:
  * "last"` restores the last attempt's producer pair at loop advance.
@@ -277,9 +275,9 @@ export function synthesizeVerifyLoop(v: VerifySpec): AssessLoop {
 	return {
 		kind: "assess",
 		judge: v.judge,
-		done: v.pass,
+		done: v.done,
 		feedForward: v.feedForward ?? NEVER_FEED_FORWARD,
-		max: v.maxAttempts ?? 1,
+		max: v.max ?? 1,
 		onCap: "halt",
 		result: "last",
 	};

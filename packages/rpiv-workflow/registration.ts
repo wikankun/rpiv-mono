@@ -26,6 +26,7 @@ export {
 	type IterateContext,
 	type IterateFn,
 	type IterateLoop,
+	type JudgedRepetition,
 	type LoopDef,
 	marksReadsData,
 	ON_INVALID_VALUES,
@@ -82,7 +83,16 @@ export type { WorkflowHost, WorkflowHostContext, WorkflowSessionContext } from "
 // consumer needs them); internal callers import them from their source modules
 // directly.
 export type { JsonSchemaCapable, JsonSchemaObject } from "./json-schema.js";
-export { type Judge, type JudgeContext, judge, judgeShapeIssues } from "./judge.js";
+export {
+	type Judge,
+	type JudgeContext,
+	type JudgePromptFn,
+	judge,
+	judgeShapeIssues,
+	type NamedOutcome,
+	type PromptJudge,
+	type SkillJudge,
+} from "./judge.js";
 export {
 	type LifecycleContext,
 	type LifecycleListeners,
@@ -118,20 +128,24 @@ export {
 	type WorkspaceDiffSnapshot,
 	workspaceDiffCollector,
 } from "./outcomes/index.js";
-export type {
-	ArtifactCollector,
-	ArtifactParser,
-	CollectCtx,
-	CollectResult,
-	Output,
-	OutputMeta,
-	OutputSpec,
-	ParseCtx,
-	ParseResult,
-	SnapshotCtx,
-} from "./output.js";
-export { defineCollector, defineParser } from "./output-spec.js";
-export { eq, gt, gte, lt, lte, type Predicate } from "./predicates.js";
+export type { Output, OutputMeta, RunView, Verdict } from "./output.js";
+// Producer-side surface — `output-spec.ts` is the ONE canonical import path
+// for collector/parser/outcome authoring types (`output.ts` keeps only the
+// envelope). `OutputSpec` is the deprecated pre-rename alias of `Outcome`.
+export {
+	type ArtifactCollector,
+	type ArtifactParser,
+	type CollectCtx,
+	type CollectResult,
+	defineCollector,
+	defineParser,
+	type Outcome,
+	type OutputSpec,
+	type ParseCtx,
+	type ParseResult,
+	type SnapshotCtx,
+} from "./output-spec.js";
+export { eq, gt, gte, lt, lte, type NumericPredicate, type Predicate } from "./predicates.js";
 export type {
 	ConsumesReadSpec,
 	ConsumesSpec,
@@ -159,13 +173,19 @@ export {
 	readLastStage,
 	readLoopCaps,
 	resolveRun,
-	runsDir,
-	stateFilePath,
+	// Storage layout stays private (M14): `runFileFor` is the one OPAQUE path
+	// projection; `runsDir`/`stateFilePath` moved to the test-only internal
+	// subpath so external code can't synthesize layout-coupled paths.
+	runFileFor,
+	STATE_SCHEMA_VERSION,
 	type WorkflowHeader,
 	type WorkflowStage,
 } from "./state/index.js";
 export { DEFAULT_TRIGGER, type RunTrigger } from "./triggers.js";
 export { typeboxSchema } from "./typebox-adapter.js";
-export type { RunState } from "./types.js";
+// `RunState` is deliberately NOT here — it became runner-private when user
+// contexts switched to the deep-readonly `RunView` (T3). Test fixtures that
+// must construct one import it from `@juicesharp/rpiv-workflow/internal`.
+export type { RunTermination } from "./types.js";
 export { type SchemaValidationFailure, validateOutputData } from "./validate-output.js";
 export { validateWorkflow, type WorkflowValidationIssue } from "./validate-workflow.js";

@@ -582,11 +582,7 @@ function checkScriptStageInvariants(
 	}
 	if (stage.outcome) {
 		issues.push(
-			error(
-				w.name,
-				name,
-				`stage "${name}": script stages cannot set "outcome" (the run function IS the OutputSpec)`,
-			),
+			error(w.name, name, `stage "${name}": script stages cannot set "outcome" (the run function IS the Outcome)`),
 		);
 	}
 	if (stage.loop) {

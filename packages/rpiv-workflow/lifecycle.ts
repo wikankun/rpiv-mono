@@ -29,15 +29,14 @@
 import type { CapPolicy, Unit, UnitRole } from "./api.js";
 import { formatError, globalSlot } from "./internal-utils.js";
 import { MSG_LIFECYCLE_THREW } from "./messages.js";
-import type { Output } from "./output.js";
+import type { Output, RunView } from "./output.js";
 import type { RunWorkflowResult } from "./runner/runner.js";
 import type { RunTrigger } from "./triggers.js";
-import type { RunState } from "./types.js";
 
 /**
  * Run-scoped context shared by every lifecycle callback. Mirrors the
  * shape `EdgeContext` and `FanoutContext` already use (frozen identity
- * + `Readonly<RunState>`) so listeners reconstruct "where am I" without
+ * + the deep-readonly `RunView`) so listeners reconstruct "where am I" without
  * widening the per-event payload.
  */
 export interface LifecycleContext {
@@ -47,7 +46,7 @@ export interface LifecycleContext {
 	totalStages: number;
 	/** What triggered this run; defaulted at `runWorkflow` entry if `options.trigger` was omitted. */
 	trigger: RunTrigger;
-	state: Readonly<RunState>;
+	state: RunView;
 }
 
 /**
@@ -295,7 +294,7 @@ export function buildLifecycleContext(args: {
 	workflow: string;
 	totalStages: number;
 	trigger: RunTrigger;
-	state: Readonly<RunState>;
+	state: RunView;
 }): LifecycleContext {
 	return args;
 }

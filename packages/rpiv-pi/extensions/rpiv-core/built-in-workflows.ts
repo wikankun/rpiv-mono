@@ -30,7 +30,7 @@ import {
 	type Output,
 	type PromptFn,
 	produces,
-	type RunState,
+	type RunView,
 	type Unit,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow/registration";
@@ -41,7 +41,7 @@ import { StagePreflightError } from "@juicesharp/rpiv-workflow/runner";
 // (`blockers_count` required), validated by the runtime output loop via
 // `effectiveOutputSchema`. One source of truth, in the skill, not copy-pasted
 // per workflow. Every workflow — build/arch/polish AND vet — routes on the
-// same numeric gate: `gate("blockers_count", { <fix>: gt(0), commit: eq(0) })`.
+// same numeric gate: `gate("blockers_count", { <fix>: gt(0), commit: eq(0) }, "commit")`.
 
 /**
  * A plan's structured `phases:` frontmatter array — the machine-readable phase
@@ -133,7 +133,7 @@ const planPhaseRecords = (content: string, who: string, path: string): readonly 
 };
 
 /** Latest `fs`-handle artifact most recently published under `name` (undefined if none). */
-const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | undefined =>
+const latestFsArtifact = (state: RunView, name: string): Artifact | undefined =>
 	state.named[name]?.at(-1)?.artifacts.find((a) => a.handle.kind === "fs");
 
 /**
@@ -227,7 +227,7 @@ const buildWorkflow = defineWorkflow({
 		blueprint: "implement",
 		implement: "validate",
 		validate: "code-review",
-		"code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }, "commit"),
 		// Backward edge: revise → implement re-enters the implement/validate/
 		// code-review cycle. Bounded by the runner's default maxBackwardJumps
 		// (2), permitting at most 3 review iterations before the guard halts.
@@ -268,7 +268,7 @@ const archWorkflow = defineWorkflow({
 		// design/plan/implement/validate/review cycle. Bounded by the
 		// runner's default maxBackwardJumps (2), permitting at most 3
 		// review iterations before the guard halts.
-		"code-review": gate("blockers_count", { design: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { design: gt(0), commit: eq(0) }, "commit"),
 		commit: "stop",
 	},
 });
@@ -297,7 +297,7 @@ const vetWorkflow = defineWorkflow({
 		// `blockers_count` field is sourced + validated from the code-review
 		// contract (`produces.data`, required), so a missing field fails
 		// output validation rather than silently routing.
-		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }, "commit"),
 		blueprint: "implement",
 		implement: "validate",
 		// Backward edge: validate → code-review creates the review-fix loop.
@@ -324,7 +324,7 @@ const vetWorkflow = defineWorkflow({
 const REVIEW_PHASE_RE = /^### Phase (\d+) — (.+)$/gm;
 
 /** Number of structured `phases` in the latest architecture review's frontmatter (0 if none). */
-const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
+const reviewPhaseCount = (state: RunView, cwd: string): number => {
 	const review = latestFsArtifact(state, "architecture-reviews");
 	if (review?.handle.kind !== "fs") return 0;
 	const { frontmatter } = parseFrontmatter(readArtifactFile(review.handle.path, cwd));
@@ -339,7 +339,7 @@ const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
  * (the review's phase count) and drop the stale generation. Shared by the
  * implement fanout and the validate prompt so both see the same plan set.
  */
-const latestPlans = (state: Readonly<RunState>, cwd: string): readonly Output[] => {
+const latestPlans = (state: RunView, cwd: string): readonly Output[] => {
 	const plans = state.named.plans ?? [];
 	const phaseCount = reviewPhaseCount(state, cwd);
 	return phaseCount > 0 && plans.length > phaseCount ? plans.slice(-phaseCount) : plans;
@@ -519,7 +519,7 @@ const polishWorkflow = defineWorkflow({
 		// Backward edge: code-review → blueprint re-plans (implement needs a plan).
 		// The iterate stage re-runs over every review phase; bounded by the
 		// runner's default maxBackwardJumps (2 → up to 3 review iterations).
-		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }, "commit"),
 		commit: "stop",
 	},
 });

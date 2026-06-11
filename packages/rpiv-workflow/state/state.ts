@@ -4,6 +4,12 @@
  * fail-soft (logs via console.warn with `[rpiv-workflow]` prefix, never
  * throws).
  *
+ * The trail is resume's SYSTEM OF RECORD — `runner/resume.ts` folds the rows
+ * back into a `RunState`, so the on-disk shape is a versioned contract, not a
+ * debug artifact. The header carries `v` (see `STATE_SCHEMA_VERSION`); resume
+ * refuses files written under a different version rather than mis-replaying
+ * them. Display readers stay lenient (shape-filtered, skip-on-mismatch).
+ *
  * Internally split into three modules:
  *   - paths.ts  — runsDir + stateFilePath + generateRunId
  *   - writes.ts — tryAppendJsonl + writeHeader + appendStage +
@@ -26,9 +32,10 @@ import type { RunTrigger } from "../triggers.js";
 export type StageStatus = "completed" | "failed" | "skipped" | "aborted";
 
 /**
- * Audit files are debug artifacts — no migration provided. Readers
- * shape-filter on `stageNumber`, so any rows that don't satisfy the
- * current shape are silently skipped.
+ * One stage activation's row. DISPLAY readers shape-filter on `stageNumber`
+ * and silently skip rows that don't satisfy the current shape; the RESUME
+ * reader (`readAllStagesForResume`) refuses instead — the fold replays these
+ * rows as the run's system of record (see the module header).
  *
  * Identity fields:
  *  - `stage` — DISPLAY identity. For single stages this is the workflow
@@ -87,12 +94,29 @@ export interface LoopCapRow {
 	ts: string;
 }
 
+/**
+ * On-disk schema version stamped into every new header's `v`. Bump when a
+ * row/envelope shape changes in a way the resume fold cannot replay —
+ * `reconstructState` refuses headers carrying any other version
+ * (`reason: "version-mismatch"`) instead of silently mis-replaying.
+ *
+ * BACK-COMPAT RULE: an absent `v` is version 1 — files written before the
+ * field existed resume normally. Tested in `runner/resume.test.ts`.
+ */
+export const STATE_SCHEMA_VERSION = 1;
+
 /** First line of the JSONL file. */
 export interface WorkflowHeader {
 	runId: string;
 	workflow: string;
 	input: string;
 	ts: string;
+	/**
+	 * On-disk schema version — see `STATE_SCHEMA_VERSION`. Optional so headers
+	 * written before the field existed still parse; readers treat `undefined`
+	 * as version 1.
+	 */
+	v?: number;
 	/**
 	 * What triggered the run. Optional so older JSONL files (written
 	 * before the trigger field was added) still parse — readers treat
@@ -129,6 +153,12 @@ export interface RoutingDecision {
 	fromStageIndex: number;
 	fromStage: string;
 	decision: string;
+	/**
+	 * Diagnostic the deciding `EdgeFn` attached to this pick (via the
+	 * `ROUTE_NOTE` channel) — e.g. `gate`'s "no branch matched, fallback
+	 * fired." Absent for ordinary matched decisions.
+	 */
+	note?: string;
 	ts: string;
 }
 
@@ -146,7 +176,7 @@ export {
 	releaseName,
 	VALID_NAME,
 } from "./names.js";
-export { generateRunId, namesFilePath, runsDir, stateFilePath } from "./paths.js";
+export { generateRunId, namesFilePath, runFileFor, runsDir, stateFilePath } from "./paths.js";
 export {
 	listArtifacts,
 	listRuns,

@@ -24,6 +24,7 @@ import {
 	recordStage,
 	recordStopFailure,
 	recordTerminalFailure,
+	terminate,
 	unitRowFields,
 } from "../audit.js";
 import { applyCompletedStage } from "../internal-utils.js";
@@ -183,7 +184,7 @@ async function recordStageSuccess(ctx: WorkflowHostContext, s: StageSession, out
 		return true;
 	}
 	ctx.ui.notify(MSG_AUDIT_WRITE_FAILED(s.skill), "error");
-	s.state.termination.error = ERR_AUDIT_WRITE_FAILED(s.skill);
+	terminate(s.state, { status: "failed", error: ERR_AUDIT_WRITE_FAILED(s.skill) });
 	return false;
 }
 

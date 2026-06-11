@@ -99,11 +99,33 @@ export interface RunState {
 	};
 
 	// ── Termination (set once at end-of-run) ───────────────────────────
-	termination: {
-		success: boolean;
-		error: string | undefined;
-	};
+	/**
+	 * How the run ended — `"running"` until the single end-of-run write via
+	 * `terminate()` (audit.ts), the ONLY sanctioned mutator. Discriminated so
+	 * every outcome is representable (cancellation used to be smuggled
+	 * through the error string) and so a halt site can't set half the shape.
+	 */
+	termination: RunTermination;
 }
+
+/**
+ * Run-termination outcome — the discriminated form behind
+ * `RunState.termination` and `RunWorkflowResult.termination`.
+ *
+ *  - `"running"`   — not terminated yet (also: the runner unwound without
+ *                    reaching any terminal write — treated as failure).
+ *  - `"completed"` — the chain reached `stop`.
+ *  - `"failed"`    — a stage/preflight/routing halt; `error` carries the cause.
+ *  - `"aborted"`   — cooperative cancellation via `RunWorkflowOptions.signal`,
+ *                    or the model aborted the stage.
+ *  - `"cancelled"` — the user dismissed the live session mid-stage.
+ */
+export type RunTermination =
+	| { status: "running"; error?: undefined }
+	| { status: "completed"; error?: undefined }
+	| { status: "failed"; error: string }
+	| { status: "aborted"; error: string }
+	| { status: "cancelled"; error: string };
 
 /** Per-run context the chain carries from stage to stage. */
 export interface RunContext {

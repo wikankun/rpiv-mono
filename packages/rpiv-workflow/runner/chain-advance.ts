@@ -8,6 +8,7 @@
  * downstream-stage throws.
  */
 
+import { takeRouteNote } from "../api.js";
 import { auditCtxFor, nowIso, recordTerminalFailure } from "../audit.js";
 import { resolveSkill } from "../internal-utils.js";
 import { skillStageRef } from "../lifecycle.js";
@@ -90,12 +91,18 @@ function auditRoutingDecision(
 	currentName: string,
 	nextName: string,
 ): void {
+	// Read-and-clear any note the edge attached to THIS pick (e.g. gate's
+	// fallback-fired diagnostic). Same tick as the invocation — no other
+	// decision can interleave. `undefined` is dropped by JSON.stringify.
+	const edge = run.workflow.edges[currentName];
+	const note = typeof edge === "function" ? takeRouteNote(edge) : undefined;
 	const fromStageIndex = idx + 1;
 	const wrote = appendRoutingDecision(run.cwd, run.runId, {
 		type: "routing",
 		fromStageIndex,
 		fromStage: currentName,
 		decision: nextName,
+		note,
 		ts: nowIso(),
 	});
 	if (!wrote) {

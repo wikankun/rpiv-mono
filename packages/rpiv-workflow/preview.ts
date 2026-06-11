@@ -158,12 +158,11 @@ function loopTag(loop: LoopDef): string {
 /**
  * Decoration for a verify-bearing stage: `verify(skill:<name>)` /
  * `verify(prompt)`, with the attempt budget appended when retrying
- * (`·attempts=N`); a gate-only verify (the default, maxAttempts 1) stays
- * compact.
+ * (`·attempts=N`); a gate-only verify (the default, max 1) stays compact.
  */
 function verifyTag(v: VerifySpec): string {
 	const judge = v.judge.skill ? `skill:${v.judge.skill}` : "prompt";
-	const attempts = (v.maxAttempts ?? 1) > 1 ? `·attempts=${v.maxAttempts}` : "";
+	const attempts = (v.max ?? 1) > 1 ? `·attempts=${v.max}` : "";
 	return `verify(${judge})${attempts}`;
 }
 

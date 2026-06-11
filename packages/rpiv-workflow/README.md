@@ -97,6 +97,8 @@ The key is the **skill** name (`stage.skill ?? <stage key>`), not the stage id. 
 
 A workflow is a typed graph: named entry point, a `stages` record, and an `edges` table that maps each stage to another stage name, the sentinel `"stop"`, or a predicate function that chooses at runtime.
 
+> **Typing model.** Inter-stage data typing is **runtime-contract-based**: `outputSchema` / `inputSchema` (Standard Schema v1) validate `output.data` when stages run, and skill contracts adjudicate composition at load time. The `StageDef<TIn, TOut>` type parameters are local inference helpers for a single factory call — they are erased at the `Workflow.stages` boundary (every stage collapses to `StageDef`), so they do **not** propagate types across edges. Don't lean on them for cross-stage safety; lean on schemas and contracts. A typed builder API that carries types through the graph is on the roadmap, not in this release.
+
 Three factories for the two stage kinds:
 
 - `produces(overrides?)` — `kind: "produces"`. The skill writes a file the next stage reads. Halts the chain if the path doesn't appear in the transcript. Without a Pi session, use [`produces.script`](#script-stages-no-pi-session).
@@ -120,14 +122,14 @@ Names address `state.named`, an accumulating registry every `produces` stage app
 
 Slots are arrays — iteration history is preserved across backward-jump loops; the default read resolves to `array.at(-1)`. Load-time validation rejects `reads:` references whose name no produces stage publishes; the `ensureNamedReads` preflight halts at runtime when a name's slot is empty (the producer hasn't fired yet on this path).
 
-Conditional routing uses `gate(field, branches)` with the bundled predicate helpers (`gt` / `gte` / `lt` / `lte` / `eq`):
+Conditional routing uses `gate(field, branches, otherwise)` with the bundled predicate helpers (`gt` / `gte` / `lt` / `lte` / `eq`):
 
 ```ts
 import { gate, gt, eq } from "@juicesharp/rpiv-workflow";
-edges: { "code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }) }
+edges: { "code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }, "commit") }
 ```
 
-Branches are evaluated against `Number(output.data[field])` in declaration order; the first matching predicate wins, and the last declared branch is the fallback when no predicate matches (so missing or non-numeric fields route to the last branch).
+Branches are evaluated against `Number(output.data[field])` in declaration order; the first matching predicate wins. When no predicate matches (including a missing or non-numeric field, which coerces to `NaN`), the explicit `otherwise` branch is taken and the run's routing-audit row carries a note saying the fallback fired — silent fallthrough is not a thing. Branch keys must not be integer-like (`"2"`): JS object literals reorder such keys ahead of declaration order, so `gate` rejects them at construction.
 
 `gate` is the numeric convenience only. String/enum, multi-field, or computed routing uses `defineRoute(targets, fn, opts?)` — the body is plain TS (e.g. `output.data.verdict === "approve" ? "commit" : "revise"`), so there's no separate string helper. By default `opts.readsData` is `true` (reads `output.data`, requires the source stage to declare an `outputSchema`); pass `{ readsData: false }` for a route that consults only `state` / `output.meta`.
 
@@ -186,7 +188,7 @@ breakdown: produces({
 
 ## Script stages (no Pi session)
 
-Some stages don't need an LLM — they merge two upstream artifacts, bump a version field, or fire a post-run notification. The `.script` accessor on each factory runs a pure TS function in place of a Pi skill body. No `/skill:<name>` dispatch, no session, no transcript scan: the function gets a `ScriptContext` (`cwd`, `input` — upstream `Output` envelope, `state` — `Readonly<RunState>`) and either returns the new envelope (`produces.script`) or returns `void` (`acts.script` / `terminal.script`).
+Some stages don't need an LLM — they merge two upstream artifacts, bump a version field, or fire a post-run notification. The `.script` accessor on each factory runs a pure TS function in place of a Pi skill body. No `/skill:<name>` dispatch, no session, no transcript scan: the function gets a `ScriptContext` (`cwd`, `input` — upstream `Output` envelope, `state` — the deep-readonly `RunView`) and either returns the new envelope (`produces.script`) or returns `void` (`acts.script` / `terminal.script`).
 
 Stages with `.run` set CANNOT also declare `skill`, `outcome`, `fanout`, or `sessionPolicy: "continue"` — load-time validation rejects the combination. `produces.script` may declare `outputSchema` + `maxRetries` + `onInvalid` (same retry semantics as skill stages); `acts.script` / `terminal.script` may declare `inputSchema` for the upstream-data contract.
 
@@ -412,7 +414,7 @@ const result = await runWorkflow(ctx, {
 });
 ```
 
-Every callback receives a `LifecycleContext` with `runId`, `workflow`, `totalStages`, the `trigger` metadata, and a `Readonly<RunState>` snapshot. Events fire AFTER their JSONL row lands on disk, so a listener that calls `readLastStage(cwd, ctx.runId)` is guaranteed to see the just-recorded row. Callbacks may be async — the runner awaits them before advancing, giving back-pressure for free. Throws are caught + surfaced through `ctx.ui.notify(..., "warning")`; they never halt the run.
+Every callback receives a `LifecycleContext` with `runId`, `workflow`, `totalStages`, the `trigger` metadata, and a deep-readonly `RunView` snapshot of the run's data channels. Events fire AFTER their JSONL row lands on disk, so a listener that calls `readLastStage(cwd, ctx.runId)` is guaranteed to see the just-recorded row. Callbacks may be async — the runner awaits them before advancing, giving back-pressure for free. Throws are caught + surfaced through `ctx.ui.notify(..., "warning")`; they never halt the run.
 
 Available callbacks: `onWorkflowStart`, `onStageStart`, `onStageEnd`, `onStageRetry`, `onStageError`, `onRoute`, `onLoopStart`, `onUnitStart`, `onUnitEnd`, `onLoopCap`, `onWorkflowEnd`. See the `LifecycleListeners` JSDoc for the per-event payload.
 
@@ -431,10 +433,10 @@ type RunTrigger =
 
 ## Outcomes — collectors and parsers
 
-Each `produces` stage wires an `OutputSpec` that tells the runtime three things:
+Each `produces` stage wires an `Outcome` (formerly `OutputSpec` — the old name remains as a deprecated alias for one release) that tells the runtime three things:
 
 ```ts
-interface OutputSpec<Snapshot, Kind, Data> {
+interface Outcome<Snapshot, Kind, Data> {
   name?:     string;                                // CATEGORISE — the publish slot in state.named (optional)
   collector: ArtifactCollector<Snapshot>;          // ENUMERATE — what did the stage produce?
   parser?:   ArtifactParser<Snapshot, Kind, Data>; // INTERPRET — what's the typed data channel?

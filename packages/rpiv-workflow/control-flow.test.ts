@@ -11,7 +11,7 @@ import {
 	acts,
 	defineWorkflow,
 	gate,
-	type OutputSpec,
+	type Outcome,
 	produces,
 	type StageDef,
 	type VerifySpec,
@@ -75,7 +75,7 @@ describe("describeFlow", () => {
 			implement: "blueprint",
 			blueprint: "breakdown",
 			breakdown: "code-review",
-			"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
+			"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }, "commit"),
 			commit: "stop",
 		},
 	});
@@ -228,61 +228,62 @@ describe("verify() constructor", () => {
 		collect: () => {
 			throw new Error("collector unused in constructor tests");
 		},
-	} as unknown as OutputSpec["collector"];
-	const outcomeOf = (name: string): OutputSpec => ({ name, collector: noopCollector });
+	} as unknown as Outcome["collector"];
+	const outcomeOf = (name: string): Outcome & { name: string } => ({ name, collector: noopCollector });
 	const skillJudge = () => judge({ skill: "grade", outcome: outcomeOf("verdict") });
 	const pass = (v: Output) => Boolean((v.data as { ok?: boolean }).ok);
 
 	it("accepts a well-formed gate-only verify (judge + pass)", () => {
-		const v = verify({ judge: skillJudge(), pass });
-		expect(v.pass).toBe(pass);
-		expect(v.maxAttempts).toBeUndefined();
+		const v = verify({ judge: skillJudge(), done: pass });
+		expect(v.done).toBe(pass);
+		expect(v.max).toBeUndefined();
 	});
 
-	it("accepts a retrying verify (feedForward + maxAttempts)", () => {
+	it("accepts a retrying verify (feedForward + max)", () => {
 		const feedForward = () => "again";
-		const v = verify({ judge: skillJudge(), pass, feedForward, maxAttempts: 3 });
+		const v = verify({ judge: skillJudge(), done: pass, feedForward, max: 3 });
 		expect(v.feedForward).toBe(feedForward);
-		expect(v.maxAttempts).toBe(3);
+		expect(v.max).toBe(3);
 	});
 
 	it("throws on a judge that sets both skill and prompt", () => {
 		expect(() =>
-			verify({ judge: { skill: "grade", prompt: "rate it", outcome: outcomeOf("verdict") }, pass }),
+			verify({
+				judge: { skill: "grade", prompt: "rate it", outcome: outcomeOf("verdict") } as unknown as Judge,
+				done: pass,
+			}),
 		).toThrow(/skill XOR prompt/);
 	});
 
 	it("throws on a judge whose outcome has no name", () => {
 		expect(() =>
-			verify({ judge: { skill: "grade", outcome: { collector: noopCollector } as OutputSpec }, pass }),
+			verify({ judge: { skill: "grade", outcome: { collector: noopCollector } as Judge["outcome"] }, done: pass }),
 		).toThrow(/judge\.outcome must carry a `name`/);
 	});
 
-	it("throws when `pass` is not a function", () => {
-		expect(() => verify({ judge: skillJudge(), pass: true as unknown as VerifySpec["pass"] })).toThrow(
-			/`pass` to be a function/,
+	it("throws when `done` is not a function", () => {
+		expect(() => verify({ judge: skillJudge(), done: true as unknown as VerifySpec["done"] })).toThrow(
+			/`done` to be a function/,
 		);
 	});
 
-	it.each([0, -1, 1.5])("throws on maxAttempts %s (must be an integer >= 1)", (maxAttempts) => {
-		expect(() => verify({ judge: skillJudge(), pass, feedForward: () => "x", maxAttempts })).toThrow(
-			/maxAttempts.*must be an integer >= 1/,
+	it.each([0, -1, 1.5])("throws on max %s (must be an integer >= 1)", (max) => {
+		expect(() => verify({ judge: skillJudge(), done: pass, feedForward: () => "x", max })).toThrow(
+			/max.*must be an integer >= 1/,
 		);
 	});
 
-	it("throws when maxAttempts > 1 without feedForward", () => {
-		expect(() => verify({ judge: skillJudge(), pass, maxAttempts: 2 })).toThrow(
-			/maxAttempts > 1 requires `feedForward`/,
-		);
+	it("throws when max > 1 without feedForward", () => {
+		expect(() => verify({ judge: skillJudge(), done: pass, max: 2 })).toThrow(/max > 1 requires `feedForward`/);
 	});
 
 	it("throws when feedForward is present but not a function", () => {
 		expect(() =>
 			verify({
 				judge: skillJudge(),
-				pass,
+				done: pass,
 				feedForward: "again" as unknown as VerifySpec["feedForward"],
-				maxAttempts: 2,
+				max: 2,
 			}),
 		).toThrow(/`feedForward` must be a function/);
 	});
@@ -293,13 +294,13 @@ describe("synthesizeVerifyLoop / effectiveLoopOf", () => {
 		collect: () => {
 			throw new Error("collector unused");
 		},
-	} as unknown as OutputSpec["collector"];
-	const outcomeOf = (name: string): OutputSpec => ({ name, collector: noopCollector });
+	} as unknown as Outcome["collector"];
+	const outcomeOf = (name: string): Outcome & { name: string } => ({ name, collector: noopCollector });
 	const skillJudge = () => judge({ skill: "grade", outcome: outcomeOf("verdict") });
 	const pass = (v: Output) => Boolean((v.data as { ok?: boolean }).ok);
 
 	it("gate-only synthesis: degenerate assess — max 1, onCap halt, result last, done IS pass", () => {
-		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), pass }));
+		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), done: pass }));
 		expect(loop.kind).toBe("assess");
 		expect(loop.max).toBe(1);
 		expect(loop.onCap).toBe("halt");
@@ -307,22 +308,22 @@ describe("synthesizeVerifyLoop / effectiveLoopOf", () => {
 		expect(loop.done).toBe(pass);
 	});
 
-	it("retrying synthesis: max = maxAttempts, feedForward IS the author's", () => {
+	it("retrying synthesis: max = max, feedForward IS the author's", () => {
 		const feedForward = () => "again";
-		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), pass, feedForward, maxAttempts: 3 }));
+		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), done: pass, feedForward, max: 3 }));
 		expect(loop.max).toBe(3);
 		expect(loop.feedForward).toBe(feedForward);
 	});
 
 	it("the gate-only feedForward stub throws when invoked (driver invariant tripwire)", () => {
-		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), pass }));
+		const loop = synthesizeVerifyLoop(verify({ judge: skillJudge(), done: pass }));
 		expect(() => loop.feedForward({} as unknown as Parameters<typeof loop.feedForward>[0])).toThrow(
 			/driver invariant violated/,
 		);
 	});
 
 	it("effectiveLoopOf: loop wins over verify; verify synthesizes; neither → undefined", () => {
-		const v = verify({ judge: skillJudge(), pass });
+		const v = verify({ judge: skillJudge(), done: pass });
 		const explicit = iterate({ next: () => null });
 		const base: StageDef = { kind: "produces", sessionPolicy: "fresh" };
 		expect(effectiveLoopOf({ ...base, loop: explicit, verify: v })).toBe(explicit);
@@ -339,14 +340,14 @@ describe("synthesizeVerifyLoop / effectiveLoopOf", () => {
 					kind: "produces",
 					sessionPolicy: "fresh",
 					outcome: outcomeOf("impl"),
-					verify: verify({ judge: skillJudge(), pass, feedForward: () => "x", maxAttempts: 2 }),
+					verify: verify({ judge: skillJudge(), done: pass, feedForward: () => "x", max: 2 }),
 				},
 			},
 			edges: { build: "stop" },
 		};
 		const [shape] = describeFlow(w);
 		expect(shape?.control.mode).toBe("single");
-		expect(shape?.verify).toEqual({ skill: "grade", prompt: false, outcome: "verdict", maxAttempts: 2 });
+		expect(shape?.verify).toEqual({ skill: "grade", prompt: false, outcome: "verdict", max: 2 });
 	});
 
 	it("loopSpecOf's assess judge summary equals judgeSpecOf's output (no drift)", () => {

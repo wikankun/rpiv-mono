@@ -223,7 +223,7 @@ describe("formatWorkflowDetails", () => {
 				commit: acts(),
 			},
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},

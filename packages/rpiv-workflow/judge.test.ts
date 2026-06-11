@@ -50,10 +50,10 @@ describe("judge()", () => {
 	});
 
 	it("throws on skill+prompt", () => {
-		expect(() => judge({ skill: "grade", prompt: "x", outcome })).toThrow(/skill XOR prompt/);
+		expect(() => judge({ skill: "grade", prompt: "x", outcome } as unknown as Judge)).toThrow(/skill XOR prompt/);
 	});
 
 	it("throws on neither skill nor prompt", () => {
-		expect(() => judge({ outcome })).toThrow(/one is required to dispatch/);
+		expect(() => judge({ outcome } as unknown as Judge)).toThrow(/one is required to dispatch/);
 	});
 });

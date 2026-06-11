@@ -32,3 +32,9 @@ export {
 	getSkillContracts,
 	harvestStageContracts,
 } from "./skill-contracts/index.js";
+// Layout-coupled path helpers — test fixtures that WRITE synthetic run files
+// need them; production consumers use the opaque `runFileFor` instead.
+export { runsDir, stateFilePath } from "./state/index.js";
+// Type-only: lets external test fixtures construct the full mutable run state
+// for direct `recordStage` calls. Production consumers read `RunView` instead.
+export type { RunState } from "./types.js";

@@ -31,7 +31,7 @@ import {
 	type ArtifactCollector,
 	type ArtifactParser,
 	defineParser,
-	type OutputSpec,
+	type Outcome,
 	type ParseCtx,
 	transcriptPathCollector,
 	// Runner-free entry — keeps the ~530ms engine off the startup path.
@@ -91,11 +91,11 @@ export const frontmatterParser: ArtifactParser<undefined, "artifact-md", Record<
 });
 
 // ---------------------------------------------------------------------------
-// OutputSpec — pre-bundled wiring rpiv-pi workflows plug in
+// Outcome — pre-bundled wiring rpiv-pi workflows plug in
 // ---------------------------------------------------------------------------
 
 /** Default rpiv-pi produces outcome — bucket-agnostic text scan + frontmatter parse. */
-export const rpivArtifactMdOutcome: OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+export const rpivArtifactMdOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 	collector: rpivArtifactCollector,
 	parser: frontmatterParser,
 };
@@ -107,6 +107,6 @@ export const rpivArtifactMdOutcome: OutputSpec<unknown, "artifact-md", Record<st
  * restating the bucket on each producing stage. Multiple stages wiring
  * the same bucket converge to one named slot (latest entry wins on read).
  */
-export function rpivBucketOutcome(bucket: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> {
+export function rpivBucketOutcome(bucket: string): Outcome<unknown, "artifact-md", Record<string, unknown>> {
 	return { name: bucket, collector: rpivBucketCollector(bucket), parser: frontmatterParser };
 }

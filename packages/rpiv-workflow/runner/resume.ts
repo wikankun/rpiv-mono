@@ -31,7 +31,7 @@ import { applyCompletedStage, formatError, stageEntryArgs } from "../internal-ut
 import { advanceCursor, freshCursor, judgeStageDef, type LoopCursor, projectResult, unitTagOf } from "../loop.js";
 import { ERR_RESUME_LOOP_MISMATCH } from "../messages.js";
 import type { Output } from "../output.js";
-import { readAllStagesForResume } from "../state/index.js";
+import { readAllStagesForResume, STATE_SCHEMA_VERSION } from "../state/index.js";
 import type { WorkflowHeader, WorkflowStage } from "../state/state.js";
 import type { RunState } from "../types.js";
 
@@ -73,7 +73,7 @@ export type ReconstructResult =
 			/** Guard tripped mid-fold — the resume entry records this as a terminal failure. */
 			drift?: { parent: string; errMsg: string };
 	  }
-	| { ok: false; reason: "no-rows" | "stage-gone" | "malformed-row"; detail: string };
+	| { ok: false; reason: "no-rows" | "stage-gone" | "malformed-row" | "version-mismatch"; detail: string };
 
 /**
  * A pristine `RunState`. New runs start here (`runWorkflow`); the fold starts
@@ -90,7 +90,7 @@ export function freshRunState(originalInput: string): RunState {
 		stagesCompleted: 0,
 		lastAllocatedStageNumber: 0,
 		telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
-		termination: { success: false, error: undefined },
+		termination: { status: "running" },
 	};
 }
 
@@ -99,6 +99,14 @@ export async function reconstructState(
 	workflow: Workflow,
 	header: WorkflowHeader,
 ): Promise<ReconstructResult> {
+	// Version gate first: the fold replays rows under the CURRENT shapes, so a
+	// file written under a different schema version must refuse cleanly rather
+	// than mis-replay. Absent `v` = version 1 (pre-field files) — see
+	// STATE_SCHEMA_VERSION's back-compat rule.
+	const v = header.v ?? 1;
+	if (v !== STATE_SCHEMA_VERSION) {
+		return { ok: false, reason: "version-mismatch", detail: `run ${header.runId} was written under schema v${v}` };
+	}
 	// Strict reader: a stage-shaped row failing the deep guard REFUSES here —
 	// the fold replays the trail as its system of record, so a silently
 	// skipped row would replay a hole and route onward past it.

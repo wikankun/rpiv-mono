@@ -135,7 +135,7 @@ describe("validateWorkflow — edge targets", () => {
 			start: "a",
 			stages: { a: produces(), good: produces() },
 			// gate writes .targets = ["good", "bad"] — "bad" isn't a declared stage.
-			edges: { a: gate("count", { good: gt(0), bad: eq(0) }), good: "stop" },
+			edges: { a: gate("count", { good: gt(0), bad: eq(0) }, "bad"), good: "stop" },
 		};
 		const e = errors(w);
 		expect(e.some((i) => /resolves to "bad"/.test(i.message))).toBe(true);
@@ -206,7 +206,7 @@ describe("validateWorkflow — reachability", () => {
 			start: "a",
 			stages: { a: produces(), x: produces(), y: produces() },
 			// Both x and y are reachable through the gate.
-			edges: { a: gate("count", { x: gt(0), y: eq(0) }), x: "stop", y: "stop" },
+			edges: { a: gate("count", { x: gt(0), y: eq(0) }, "y"), x: "stop", y: "stop" },
 		};
 		const w2 = warnings(w);
 		expect(w2.find((i) => /unreachable/.test(i.message))).toBeUndefined();
@@ -224,7 +224,7 @@ describe("validateWorkflow — reachability", () => {
 			},
 			edges: {
 				implement: "validate",
-				validate: gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				validate: gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "implement", // back-edge
 				commit: "stop",
 			},
@@ -307,7 +307,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			start: "code-review",
 			stages: { "code-review": produces(), revise: produces(), commit: acts() },
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -327,7 +327,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			start: "code-review",
 			stages: { "code-review": produces(), a: produces(), b: produces() },
 			edges: {
-				"code-review": defineRoute(["a", "b"], ({ state }) => (state.telemetry.backwardJumps > 0 ? "a" : "b"), {
+				"code-review": defineRoute(["a", "b"], ({ state }) => (state.named["code-review"] ? "a" : "b"), {
 					readsData: false,
 				}),
 				a: "stop",
@@ -372,7 +372,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 				commit: acts(),
 			},
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -402,7 +402,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			start: "code-review",
 			stages: { "code-review": produces(), revise: produces(), commit: acts() },
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -422,7 +422,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			start: "code-review",
 			stages: { "code-review": produces(), revise: produces(), commit: acts() },
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -458,7 +458,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 				commit: acts(),
 			},
 			edges: {
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -923,7 +923,7 @@ describe("validateWorkflow — verify invariants", () => {
 	});
 
 	const skillJudge = () => judge({ skill: "grade", outcome: verdictOutcome });
-	const wellFormed = () => verify({ judge: skillJudge(), pass: () => true });
+	const wellFormed = () => verify({ judge: skillJudge(), done: () => true });
 
 	const base = (overrides: Partial<StageDef> = {}): StageDef => ({
 		kind: "produces",
@@ -938,7 +938,7 @@ describe("validateWorkflow — verify invariants", () => {
 	const rawVerify = (over: Record<string, unknown> = {}, judgeOver: Record<string, unknown> = {}): VerifySpec =>
 		({
 			judge: { skill: "grade", outcome: verdictOutcome, ...judgeOver },
-			pass: () => true,
+			done: () => true,
 			...over,
 		}) as unknown as VerifySpec;
 
@@ -990,7 +990,7 @@ describe("validateWorkflow — verify invariants", () => {
 
 	it("rejects a verdict channel that collides with the producer's publish name", () => {
 		const e = errors(
-			wf(base({ verify: verify({ judge: judge({ skill: "grade", outcome: producerOutcome }), pass: () => true }) })),
+			wf(base({ verify: verify({ judge: judge({ skill: "grade", outcome: producerOutcome }), done: () => true }) })),
 		);
 		expect(e.some((i) => /collides with the producer's publish name/.test(i.message))).toBe(true);
 	});
@@ -1000,19 +1000,19 @@ describe("validateWorkflow — verify invariants", () => {
 		expect(e.some((i) => /judge\.outcome must carry a `name`/.test(i.message))).toBe(true);
 	});
 
-	it("rejects a hand-rolled non-function pass", () => {
-		const e = errors(wf(base({ verify: rawVerify({ pass: true }) })));
-		expect(e.some((i) => /`pass` to be a function/.test(i.message))).toBe(true);
+	it("rejects a hand-rolled non-function done", () => {
+		const e = errors(wf(base({ verify: rawVerify({ done: true }) })));
+		expect(e.some((i) => /`done` to be a function/.test(i.message))).toBe(true);
 	});
 
-	it.each([0, -1, 1.5])("rejects verify.maxAttempts: %s (must be an integer >= 1)", (maxAttempts) => {
-		const e = errors(wf(base({ verify: rawVerify({ maxAttempts, feedForward: () => "x" }) })));
-		expect(e.some((i) => /maxAttempts.*must be an integer >= 1/.test(i.message))).toBe(true);
+	it.each([0, -1, 1.5])("rejects verify.max: %s (must be an integer >= 1)", (max) => {
+		const e = errors(wf(base({ verify: rawVerify({ max, feedForward: () => "x" }) })));
+		expect(e.some((i) => /max.*must be an integer >= 1/.test(i.message))).toBe(true);
 	});
 
-	it("rejects maxAttempts > 1 without feedForward (hand-rolled literal)", () => {
-		const e = errors(wf(base({ verify: rawVerify({ maxAttempts: 2 }) })));
-		expect(e.some((i) => /maxAttempts > 1 requires `feedForward`/.test(i.message))).toBe(true);
+	it("rejects max > 1 without feedForward (hand-rolled literal)", () => {
+		const e = errors(wf(base({ verify: rawVerify({ max: 2 }) })));
+		expect(e.some((i) => /max > 1 requires `feedForward`/.test(i.message))).toBe(true);
 	});
 });
 
@@ -1033,7 +1033,7 @@ describe("validateWorkflow — judge verdict channels are published names", () =
 				s: baseStage({
 					verify: verify({
 						judge: judge({ skill: "grade", outcome: { name: "verdict", collector: noop } }),
-						pass: () => true,
+						done: () => true,
 					}),
 				}),
 				next: { kind: "side-effect", sessionPolicy: "fresh", reads: ["verdict"] },
@@ -1254,7 +1254,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 				c: acts(),
 			},
 			edges: {
-				a: gate("x", { b: gt(0), c: eq(0) }),
+				a: gate("x", { b: gt(0), c: eq(0) }, "c"),
 				b: "stop",
 				c: "stop",
 			},

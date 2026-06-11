@@ -24,10 +24,22 @@ import {
 } from "./messages.js";
 import { appendStage, listArtifacts, type WorkflowStage } from "./state/index.js";
 import type { StopSignal } from "./transcript.js";
-import type { RunContext, RunState, SessionContext, UnitRef, WorkflowHostContext } from "./types.js";
+import type { RunContext, RunState, RunTermination, SessionContext, UnitRef, WorkflowHostContext } from "./types.js";
 
 /** Single source of ISO-8601 timestamps for audit rows + output meta. */
 export const nowIso = (): string => new Date().toISOString();
+
+/**
+ * THE one `state.termination` mutator. Every terminal path — completion
+ * (`finalizeWorkflow`), failure/abort (`recordTerminalFailure`), cancellation
+ * (`recordCancellation`), audit-write halts — lands its outcome through here,
+ * so the union can never be half-set and a new outcome variant has one
+ * write-site to thread through. Last write wins (a failure recorded after an
+ * earlier failure on the same unwind keeps today's semantics).
+ */
+export function terminate(state: RunState, outcome: Exclude<RunTermination, { status: "running" }>): void {
+	state.termination = outcome;
+}
 
 /**
  * Minimal bookkeeping ctx. Structurally derived from `SessionContext` so any
@@ -208,7 +220,7 @@ export async function recordTerminalFailure(
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(args.notifyMsg, args.notifyLevel);
 	onFailure?.(ctx);
-	audit.state.termination.error = args.errMsg;
+	terminate(audit.state, { status: args.status, error: args.errMsg });
 	const ref = audit.isScript
 		? scriptStageRef(audit.stageName, audit.state.lastAllocatedStageNumber)
 		: skillStageRef(audit.stageName, audit.state.lastAllocatedStageNumber, audit.skill);
@@ -296,10 +308,9 @@ function stopFailureArgs(
 }
 
 export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): void {
-	// `success: false` alone can't distinguish "cancelled" from "never started";
-	// the error string is the signal. Mirrored into the JSONL row's `errMsg`
-	// so post-mortems work from the trail alone (same posture as
-	// `recordTerminalFailure`).
+	// Cancellation is a first-class termination outcome (`status: "cancelled"`);
+	// `errMsg` is mirrored into the JSONL row so post-mortems work from the
+	// trail alone (same posture as `recordTerminalFailure`).
 	const errMsg = `${audit.skill} cancelled by user`;
 	recordStage(
 		audit.cwd,
@@ -316,5 +327,5 @@ export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): v
 	);
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(MSG_WORKFLOW_CANCELLED, "info");
-	audit.state.termination.error = errMsg;
+	terminate(audit.state, { status: "cancelled", error: errMsg });
 }
