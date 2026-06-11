@@ -343,6 +343,8 @@ describe("/wf — issue surfacing", () => {
 					workflow: "tiny",
 					stage: "research",
 					severity: "warning",
+					code: "stage-unreachable",
+					params: { start: "research" },
 					message: "orphan check",
 					layer: "built-in",
 				},

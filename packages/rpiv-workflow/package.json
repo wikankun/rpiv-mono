@@ -73,6 +73,7 @@
 		"types.ts",
 		"validate-output.ts",
 		"validate-workflow.ts",
+		"validate/",
 		"docs-protocol.ts",
 		"docs/",
 		"README.md",

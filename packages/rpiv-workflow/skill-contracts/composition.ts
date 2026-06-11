@@ -8,6 +8,7 @@
  */
 
 import { formatError } from "../internal-utils.js";
+import type { JsonSchemaObject } from "../json-schema.js";
 import { isSchemaCompatible } from "../schema-compat.js";
 import type {
 	CompositionComparator,
@@ -17,6 +18,21 @@ import type {
 	SkillContractMap,
 } from "../skill-contract.js";
 import { getCompositionComparators } from "./registries.js";
+
+/**
+ * THE single data-channel comparison core — shared by `canCompose` and the
+ * validator's `checkEdgeSchemaCompat` (D4), so the adviser and the load gate
+ * answer the producer→consumer data question through one engine. Conservative:
+ * either side absent/opaque → `{ ok: true }` (not provably incompatible);
+ * both present → `isSchemaCompatible`.
+ */
+export function compareDataChannel(
+	producer: JsonSchemaObject | undefined,
+	consumer: JsonSchemaObject | undefined,
+): SchemaCompatResult {
+	if (!producer || !consumer) return { ok: true };
+	return isSchemaCompatible(producer, consumer);
+}
 
 /** Outcome of adjudicating one named channel — see `adjudicateChannel`. */
 export type ChannelAdjudication =
@@ -77,13 +93,9 @@ export function canCompose(
 ): SchemaCompatResult {
 	const producerContract = contracts.get(producerSkill);
 	const consumerContract = contracts.get(consumerSkill);
-	// Data channel: a provable data mismatch is decisive.
-	const producerData = producerContract?.produces?.data;
-	const consumerData = consumerContract?.consumes?.data;
-	if (producerData && consumerData) {
-		const dataCompat = isSchemaCompatible(producerData, consumerData);
-		if (!dataCompat.ok) return dataCompat;
-	}
+	// Data channel: a provable data mismatch is decisive (shared core — D4).
+	const dataCompat = compareDataChannel(producerContract?.produces?.data, consumerContract?.consumes?.data);
+	if (!dataCompat.ok) return dataCompat;
 	// Named-channel (reads) compat — THE shared `adjudicateChannel` rule (same
 	// gating + degrade posture as the validator's load gate). Only a clean
 	// mismatch is decisive; skipped channels and comparator throws degrade to

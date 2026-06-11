@@ -19,7 +19,7 @@ import type { Workflow } from "../api.js";
 import { formatError } from "../internal-utils.js";
 import type { ConfigLayer } from "../layers.js";
 import { cachedImport } from "./cache.js";
-import type { Issue } from "./index.js";
+import type { Issue } from "./issues.js";
 import { type FileKind, normalizeDefaultExport, type ParsedConfig } from "./normalize.js";
 import type { OverlayPaths } from "./paths.js";
 

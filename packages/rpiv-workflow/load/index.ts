@@ -42,6 +42,7 @@
  * (the config file + pack files) before running `/wf`.
  *
  * Module map:
+ *   ./issues.ts           — LoadIssue + Issue (the layer/path-attributed wrapper)
  *   ./paths.ts            — OverlayPaths + per-layer path helpers
  *   ./shape-guards.ts     — isWorkflow, isEnvelope, describe
  *   ./normalize.ts        — normalizeDefaultExport + NormalizeResult
@@ -65,8 +66,9 @@ import {
 	flushSkillContractProviders,
 	getOutcomeDerivers,
 } from "../skill-contracts/index.js";
-import { validateWorkflow, type WorkflowValidationIssue } from "../validate-workflow.js";
+import { validateWorkflow } from "../validate-workflow.js";
 import { applySkillAliases } from "./alias.js";
+import type { Issue } from "./issues.js";
 import { type LoadAccumulator, loadLayer } from "./merge.js";
 import { type OverlayPaths, projectOverlayPaths, userOverlayPaths } from "./paths.js";
 import { resolveDefault } from "./resolve-default.js";
@@ -78,18 +80,9 @@ import { resolveDefault } from "./resolve-default.js";
 export type { ConfigLayer } from "../layers.js";
 export { aliasSkills } from "./alias.js";
 export { __resetLoadCache } from "./cache.js";
+export type { Issue, LoadIssue } from "./issues.js";
 export type { OverlayPaths } from "./paths.js";
 export { projectOverlayPaths, userOverlayPaths } from "./paths.js";
-
-export interface LoadIssue {
-	kind: "load";
-	layer: ConfigLayer;
-	path?: string;
-	severity: "error" | "warning";
-	message: string;
-}
-
-export type Issue = LoadIssue | (WorkflowValidationIssue & { kind: "validation"; layer: ConfigLayer; path?: string });
 
 export interface LoadedWorkflows {
 	workflows: readonly Workflow[];

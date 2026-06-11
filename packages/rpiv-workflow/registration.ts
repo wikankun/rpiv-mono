@@ -188,4 +188,8 @@ export { typeboxSchema } from "./typebox-adapter.js";
 // must construct one import it from `@juicesharp/rpiv-workflow/internal`.
 export type { RunTermination } from "./types.js";
 export { type SchemaValidationFailure, validateOutputData } from "./validate-output.js";
-export { validateWorkflow, type WorkflowValidationIssue } from "./validate-workflow.js";
+export {
+	type ValidationIssueCode,
+	validateWorkflow,
+	type WorkflowValidationIssue,
+} from "./validate-workflow.js";

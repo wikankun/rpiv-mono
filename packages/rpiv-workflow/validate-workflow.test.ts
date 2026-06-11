@@ -80,7 +80,8 @@ describe("validateWorkflow — start", () => {
 		};
 		const e = errors(w);
 		expect(e).toHaveLength(1);
-		expect(e[0]!.message).toMatch(/start stage "ghost" is not declared/);
+		expect(e[0]!.code).toBe("start-stage-missing");
+		expect(e[0]!.params).toEqual({ start: "ghost" });
 	});
 });
 
@@ -97,7 +98,7 @@ describe("validateWorkflow — edge keys", () => {
 			edges: { a: "stop", phantom: "a" },
 		};
 		const e = errors(w);
-		expect(e.some((i) => /edges\["phantom"\] references a stage that's not declared/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "edge-key-unknown" && i.stage === "phantom")).toBe(true);
 	});
 });
 
@@ -114,7 +115,7 @@ describe("validateWorkflow — edge targets", () => {
 			edges: { a: "missing", b: "stop" },
 		};
 		const e = errors(w);
-		expect(e.some((i) => i.stage === "a" && /resolves to "missing" which is not declared/.test(i.message))).toBe(
+		expect(e.some((i) => i.stage === "a" && i.code === "edge-target-unknown" && i.params.target === "missing")).toBe(
 			true,
 		);
 	});
@@ -138,7 +139,7 @@ describe("validateWorkflow — edge targets", () => {
 			edges: { a: gate("count", { good: gt(0), bad: eq(0) }, "bad"), good: "stop" },
 		};
 		const e = errors(w);
-		expect(e.some((i) => /resolves to "bad"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "edge-target-unknown" && i.params.target === "bad")).toBe(true);
 	});
 
 	it("errors on an EdgeFn without .targets metadata (no probe fallback)", () => {
@@ -153,7 +154,7 @@ describe("validateWorkflow — edge targets", () => {
 			edges: { a: handCrafted },
 		};
 		const e = errors(w);
-		expect(e.some((i) => /EdgeFn without `\.targets`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "edge-fn-no-targets")).toBe(true);
 	});
 });
 
@@ -170,7 +171,7 @@ describe("validateWorkflow — implicit terminals", () => {
 			edges: { a: "b" }, // b has no edge — implicit terminal
 		};
 		const w2 = warnings(w);
-		expect(w2.some((i) => i.stage === "b" && /has no edge — treated as terminal/.test(i.message))).toBe(true);
+		expect(w2.some((i) => i.stage === "b" && i.code === "edge-missing")).toBe(true);
 	});
 
 	it('does not warn when terminal is declared with "stop"', () => {
@@ -197,7 +198,9 @@ describe("validateWorkflow — reachability", () => {
 			edges: { a: "b", b: "stop", orphan: "stop" },
 		};
 		const w2 = warnings(w);
-		expect(w2.some((i) => i.stage === "orphan" && /unreachable from start "a"/.test(i.message))).toBe(true);
+		expect(w2.some((i) => i.stage === "orphan" && i.code === "stage-unreachable" && i.params.start === "a")).toBe(
+			true,
+		);
 	});
 
 	it("treats EdgeFn branches as reachable via .targets metadata", () => {
@@ -209,7 +212,7 @@ describe("validateWorkflow — reachability", () => {
 			edges: { a: gate("count", { x: gt(0), y: eq(0) }, "y"), x: "stop", y: "stop" },
 		};
 		const w2 = warnings(w);
-		expect(w2.find((i) => /unreachable/.test(i.message))).toBeUndefined();
+		expect(w2.find((i) => i.code === "stage-unreachable")).toBeUndefined();
 	});
 
 	it("treats a back-edge cycle as reachable (e.g. revise loop)", () => {
@@ -231,7 +234,7 @@ describe("validateWorkflow — reachability", () => {
 		};
 		const issues = validateWorkflow(w);
 		expect(issues.filter((i) => i.severity === "error")).toEqual([]);
-		expect(issues.filter((i) => i.severity === "warning" && /unreachable/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "stage-unreachable")).toEqual([]);
 	});
 });
 
@@ -249,22 +252,22 @@ describe("validateWorkflow — semantic stage constraints", () => {
 
 	it("errors on maxRetries below the floor", () => {
 		const issues = validateWorkflow(baseWithStage({ maxRetries: 0 }));
-		expect(issues.some((i) => i.severity === "error" && /maxRetries: 0/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "max-retries-out-of-range" && i.params.value === 0)).toBe(true);
 	});
 
 	it("errors on maxRetries above the ceiling", () => {
 		const issues = validateWorkflow(baseWithStage({ maxRetries: 100 }));
-		expect(issues.some((i) => i.severity === "error" && /maxRetries: 100/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "max-retries-out-of-range" && i.params.value === 100)).toBe(true);
 	});
 
 	it("errors on validateTimeoutMs out of range", () => {
 		const issues = validateWorkflow(baseWithStage({ validateTimeoutMs: 0 }));
-		expect(issues.some((i) => i.severity === "error" && /validateTimeoutMs: 0/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "validate-timeout-out-of-range" && i.params.value === 0)).toBe(true);
 	});
 
 	it("errors on unknown onInvalid value", () => {
 		const issues = validateWorkflow(baseWithStage({ onInvalid: "burn-it-down" as unknown as "retry" | "halt" }));
-		expect(issues.some((i) => i.severity === "error" && /onInvalid: "burn-it-down"/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "on-invalid-unknown" && i.params.value === "burn-it-down")).toBe(true);
 	});
 
 	it("accepts the documented onInvalid values", () => {
@@ -274,19 +277,19 @@ describe("validateWorkflow — semantic stage constraints", () => {
 
 	it("errors on unknown kind", () => {
 		const issues = validateWorkflow(baseWithStage({ kind: "burn-it" as unknown as "produces" }));
-		expect(issues.some((i) => i.severity === "error" && /kind: "burn-it"/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "stage-kind-unknown" && i.params.value === "burn-it")).toBe(true);
 	});
 
 	it("errors on unknown sessionPolicy", () => {
 		const issues = validateWorkflow(baseWithStage({ sessionPolicy: "lingering" as unknown as "fresh" }));
-		expect(issues.some((i) => i.severity === "error" && /sessionPolicy: "lingering"/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "session-policy-unknown" && i.params.value === "lingering")).toBe(true);
 	});
 
 	it("warns when inheritsArtifacts: false is set on a produces stage", () => {
 		// The flag is the `terminal()` factory's mechanism — meaningful only
 		// for side-effect stages. Setting it on `produces` does nothing.
 		const issues = validateWorkflow(baseWithStage({ inheritsArtifacts: false }));
-		expect(issues.some((i) => i.severity === "warning" && /inheritsArtifacts: false/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "inherits-artifacts-on-produces")).toBe(true);
 	});
 
 	it("does NOT warn when inheritsArtifacts: false is set on a side-effect stage", () => {
@@ -296,7 +299,7 @@ describe("validateWorkflow — semantic stage constraints", () => {
 			stages: { a: acts({ inheritsArtifacts: false }) },
 			edges: { a: "stop" },
 		};
-		expect(warnings(w).filter((i) => /inheritsArtifacts/.test(i.message))).toEqual([]);
+		expect(warnings(w).filter((i) => i.code === "inherits-artifacts-on-produces")).toEqual([]);
 	});
 });
 
@@ -313,9 +316,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w);
-		expect(
-			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
-		).toBe(true);
+		expect(issues.some((i) => i.code === "route-reads-unvalidated-data" && i.stage === "code-review")).toBe(true);
 	});
 
 	it("does NOT warn when defineRoute is called with readsData: false", () => {
@@ -335,7 +336,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w);
-		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "route-reads-unvalidated-data")).toEqual([]);
 	});
 
 	it("DOES warn when a hand-rolled defineRoute reads output.data with no upstream outputSchema", () => {
@@ -355,9 +356,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w);
-		expect(
-			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
-		).toBe(true);
+		expect(issues.some((i) => i.code === "route-reads-unvalidated-data" && i.stage === "code-review")).toBe(true);
 	});
 
 	it("does not warn when the route source carries an outputSchema", () => {
@@ -378,7 +377,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w);
-		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "route-reads-unvalidated-data")).toEqual([]);
 	});
 
 	it("does not warn when the route source is backed only by a contract produces.data", () => {
@@ -408,7 +407,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w, { skillContracts: contracts });
-		expect(issues.filter((i) => i.severity === "warning" && /outputSchema/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "route-reads-unvalidated-data")).toEqual([]);
 	});
 
 	it("still warns when neither outputSchema nor a contract covers the route source", () => {
@@ -428,9 +427,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w, { skillContracts: contracts });
-		expect(
-			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
-		).toBe(true);
+		expect(issues.some((i) => i.code === "route-reads-unvalidated-data" && i.stage === "code-review")).toBe(true);
 	});
 
 	it("a SCRIPT stage is not exempted by a contract under its record key (C2)", () => {
@@ -464,9 +461,7 @@ describe("validateWorkflow — route-edge schema check", () => {
 			},
 		};
 		const issues = validateWorkflow(w, { skillContracts: contracts });
-		expect(
-			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
-		).toBe(true);
+		expect(issues.some((i) => i.code === "route-reads-unvalidated-data" && i.stage === "code-review")).toBe(true);
 	});
 });
 
@@ -503,8 +498,9 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 		expect(
 			issues.some(
 				(i) =>
-					i.severity === "error" &&
-					/reads channel "plans" but publisher "blueprint" is incompatible/.test(i.message),
+					i.code === "reads-channel-incompatible" &&
+					i.params.channel === "plans" &&
+					i.params.producer === "blueprint",
 			),
 		).toBe(true);
 	});
@@ -512,12 +508,16 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 	it("does NOT error when kinds match", () => {
 		registerCompositionComparator("plans", kindComparator);
 		const issues = validateWorkflow(wf, { skillContracts: contractsWith("plan", "plan") });
-		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(
+			issues.filter((i) => i.code === "reads-channel-incompatible" || i.code === "reads-comparator-threw"),
+		).toEqual([]);
 	});
 
 	it("degrades (no error) when no comparator is registered for the channel", () => {
 		const issues = validateWorkflow(wf, { skillContracts: contractsWith("design", "plan") });
-		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(
+			issues.filter((i) => i.code === "reads-channel-incompatible" || i.code === "reads-comparator-threw"),
+		).toEqual([]);
 	});
 
 	it("degrades (no error) when the publisher is unsigned", () => {
@@ -528,7 +528,9 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 				["implement", { source: "declared", consumes: { reads: { plans: { meta: { artifactKind: "plan" } } } } }],
 			]),
 		});
-		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(
+			issues.filter((i) => i.code === "reads-channel-incompatible" || i.code === "reads-comparator-threw"),
+		).toEqual([]);
 	});
 
 	it("surfaces a comparator throw as a WARNING instead of silently disabling the gate (C13)", () => {
@@ -536,13 +538,11 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 			throw new Error("comparator bug");
 		});
 		const issues = validateWorkflow(wf, { skillContracts: contractsWith("design", "plan") });
-		const warn = issues.find(
-			(i) => i.severity === "warning" && /comparator for channel "plans" threw/.test(i.message),
-		);
+		const warn = issues.find((i) => i.code === "reads-comparator-threw" && i.params.channel === "plans");
 		expect(warn).toBeDefined();
-		expect(warn?.message).toContain("comparator bug");
+		expect(warn?.params.error).toContain("comparator bug");
 		// The throw degrades — never a false reads-compat error.
-		expect(issues.filter((i) => i.severity === "error" && /reads channel/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "reads-channel-incompatible")).toEqual([]);
 	});
 
 	it("a SCRIPT consumer named after a signed skill does not inherit its contract (C2)", () => {
@@ -559,7 +559,9 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 			edges: { blueprint: "implement", implement: "stop" },
 		};
 		const issues = validateWorkflow(scriptConsumer, { skillContracts: contractsWith("design", "plan") });
-		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(
+			issues.filter((i) => i.code === "reads-channel-incompatible" || i.code === "reads-comparator-threw"),
+		).toEqual([]);
 		expect(issues.filter((i) => i.severity === "error")).toEqual([]);
 	});
 
@@ -583,7 +585,7 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 			edges: { blueprint: "implement", implement: "stop" },
 		};
 		const issues = validateWorkflow(promptPublisher, { skillContracts: contractsWith("design", "plan") });
-		expect(issues.filter((i) => i.severity === "error" && /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.code === "reads-channel-incompatible")).toEqual([]);
 	});
 
 	it("errors on a NON-ADJACENT publisher the edge-local walk would miss (all-publishers)", () => {
@@ -605,9 +607,7 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 			["implement", { source: "declared", consumes: { reads: { plans: { meta: { artifactKind: "plan" } } } } }],
 		]);
 		const issues = validateWorkflow(loopback, { skillContracts: contracts });
-		expect(issues.some((i) => i.severity === "error" && /publisher "revise" is incompatible/.test(i.message))).toBe(
-			true,
-		);
+		expect(issues.some((i) => i.code === "reads-channel-incompatible" && i.params.producer === "revise")).toBe(true);
 	});
 });
 
@@ -620,9 +620,7 @@ describe("validateWorkflow — workflow name", () => {
 			edges: { a: "stop" },
 		};
 		const issues = validateWorkflow(w);
-		expect(
-			issues.some((i) => i.severity === "error" && /workflow name must be a non-empty string/.test(i.message)),
-		).toBe(true);
+		expect(issues.some((i) => i.code === "workflow-name-invalid")).toBe(true);
 	});
 });
 
@@ -647,7 +645,7 @@ describe("validateWorkflow — script stage invariants", () => {
 
 	it("rejects `skill` alongside `run`", () => {
 		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopProducesScript, skill: "x" }));
-		expect(e.some((i) => /script stages cannot set "skill"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "script-with-skill")).toBe(true);
 	});
 
 	it("rejects `outcome` alongside `run`", () => {
@@ -659,7 +657,7 @@ describe("validateWorkflow — script stage invariants", () => {
 				outcome: { collector: noopCollector },
 			}),
 		);
-		expect(e.some((i) => /script stages cannot set "outcome"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "script-with-outcome")).toBe(true);
 	});
 
 	it("rejects a `loop` alongside `run`", () => {
@@ -671,12 +669,12 @@ describe("validateWorkflow — script stage invariants", () => {
 				loop: fanout({ units: () => [] }),
 			}),
 		);
-		expect(e.some((i) => /script stages cannot loop/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "script-with-loop")).toBe(true);
 	});
 
 	it('rejects sessionPolicy: "continue" alongside `run`', () => {
 		const e = errors(wf({ kind: "produces", sessionPolicy: "continue", run: noopProducesScript }));
-		expect(e.some((i) => /script stages cannot use sessionPolicy "continue"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "script-continue-session")).toBe(true);
 	});
 
 	it("warns when a side-effect script stage carries an outputSchema (no data to validate)", () => {
@@ -687,7 +685,7 @@ describe("validateWorkflow — script stage invariants", () => {
 			outputSchema: typeboxSchema(Type.Object({ ok: Type.Boolean() })),
 		});
 		const ws = warnings(w);
-		expect(ws.some((i) => /outputSchema is meaningless on side-effect script stages/.test(i.message))).toBe(true);
+		expect(ws.some((i) => i.code === "script-side-effect-output-schema")).toBe(true);
 		expect(errors(w)).toEqual([]);
 	});
 
@@ -699,7 +697,7 @@ describe("validateWorkflow — script stage invariants", () => {
 			inheritsArtifacts: false,
 		});
 		const ws = warnings(w);
-		expect(ws.some((i) => /sets `inheritsArtifacts: false` on a `produces` stage/.test(i.message))).toBe(true);
+		expect(ws.some((i) => i.code === "inherits-artifacts-on-produces")).toBe(true);
 	});
 
 	it("does NOT require `outcome` on a produces script stage (the run function returns the envelope)", () => {
@@ -764,19 +762,19 @@ describe("validateWorkflow — iterate loop invariants", () => {
 
 	it('rejects an iterate loop with sessionPolicy: "continue"', () => {
 		const e = errors(wf({ kind: "produces", sessionPolicy: "continue", outcome: namedOutcome, loop: iter }));
-		expect(e.some((i) => /cannot combine a loop with sessionPolicy "continue"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-continue-session")).toBe(true);
 	});
 
 	it('rejects iterate on a non-produces stage (kind: "side-effect")', () => {
 		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", outcome: namedOutcome, loop: iter }));
-		expect(e.some((i) => /iterate requires kind "produces"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-requires-produces" && i.params.kind === "iterate")).toBe(true);
 	});
 
 	it("rejects iterate when the outcome has no name (collecting loop needs a stable slot)", () => {
 		const e = errors(
 			wf({ kind: "produces", sessionPolicy: "fresh", outcome: { collector: noopCollector }, loop: iter }),
 		);
-		expect(e.some((i) => /a collecting loop requires an `outcome` with a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-outcome-name-required")).toBe(true);
 	});
 });
 
@@ -847,42 +845,50 @@ describe("validateWorkflow — assess loop invariants", () => {
 
 	it('rejects assess on a non-produces stage (kind: "side-effect")', () => {
 		const e = errors(wf(base({ kind: "side-effect" })));
-		expect(e.some((i) => /assess requires kind "produces"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-requires-produces" && i.params.kind === "assess")).toBe(true);
 	});
 
 	it('rejects an assess loop with sessionPolicy: "continue"', () => {
 		const e = errors(wf(base({ sessionPolicy: "continue" })));
-		expect(e.some((i) => /cannot combine a loop with sessionPolicy "continue"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-continue-session")).toBe(true);
 	});
 
 	it("requires a producer outcome.name (collecting loop needs a stable slot)", () => {
 		const e = errors(wf(base({ outcome: { collector: noopCollector } })));
-		expect(e.some((i) => /a collecting loop requires an `outcome` with a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-outcome-name-required")).toBe(true);
 	});
 
 	it("rejects a judge whose outcome has no name (defensive load gate)", () => {
 		const e = errors(wf(base({ loop: rawAssessLoop({}, { outcome: { collector: noopCollector } }) })));
-		expect(e.some((i) => /assess judge\.outcome must carry a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "assess-judge-shape" && String(i.params.issue).includes("judge.outcome"))).toBe(
+			true,
+		);
 	});
 
 	it("rejects a judge that sets both skill and prompt (defensive load gate)", () => {
 		const e = errors(wf(base({ loop: rawAssessLoop({}, { prompt: "grade it" }) })));
-		expect(e.some((i) => /assess judge sets both `skill` and `prompt`/.test(i.message))).toBe(true);
+		expect(
+			e.some((i) => i.code === "assess-judge-shape" && String(i.params.issue).includes("both `skill` and `prompt`")),
+		).toBe(true);
 	});
 
 	it("rejects a judge that sets neither skill nor prompt (defensive load gate)", () => {
 		const e = errors(wf(base({ loop: rawAssessLoop({}, { skill: undefined }) })));
-		expect(e.some((i) => /assess judge sets neither `skill` nor `prompt`/.test(i.message))).toBe(true);
+		expect(
+			e.some(
+				(i) => i.code === "assess-judge-shape" && String(i.params.issue).includes("neither `skill` nor `prompt`"),
+			),
+		).toBe(true);
 	});
 
 	it("rejects a non-function done (defensive load gate)", () => {
 		const e = errors(wf(base({ loop: rawAssessLoop({ done: undefined }) })));
-		expect(e.some((i) => /assess requires `done` to be a function/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "assess-done-not-function")).toBe(true);
 	});
 
 	it("rejects a non-function feedForward (defensive load gate)", () => {
 		const e = errors(wf(base({ loop: rawAssessLoop({ feedForward: undefined }) })));
-		expect(e.some((i) => /assess requires `feedForward` to be a function/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "assess-feed-forward-not-function")).toBe(true);
 	});
 
 	it("rejects a judge outcome name that collides with the producer's publish name", () => {
@@ -894,12 +900,12 @@ describe("validateWorkflow — assess loop invariants", () => {
 			}),
 		});
 		const e = errors(wf(stage));
-		expect(e.some((i) => /collides with the producer's publish name/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "assess-verdict-channel-collision" && i.params.channel === "tasks")).toBe(true);
 	});
 
 	it.each([0, -1, 1.5])("rejects loop.max: %s (must be an integer >= 1)", (max) => {
 		const e = errors(wf(base({ loop: rawAssessLoop({ max }) })));
-		expect(e.some((i) => /loop\.max.*must be an integer >= 1/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "loop-max-invalid" && i.params.max === max)).toBe(true);
 	});
 
 	it("accepts loop.max: 1 and an omitted max", () => {
@@ -961,17 +967,17 @@ describe("validateWorkflow — verify invariants", () => {
 
 	it('rejects verify on a non-produces stage (kind: "side-effect")', () => {
 		const e = errors(wf(base({ kind: "side-effect", outcome: undefined })));
-		expect(e.some((i) => /verify requires kind "produces"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-requires-produces")).toBe(true);
 	});
 
 	it("rejects verify alongside loop (v1)", () => {
 		const e = errors(wf(base({ loop: iterate({ next: () => null }) })));
-		expect(e.some((i) => /verify and loop are mutually exclusive/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-with-loop")).toBe(true);
 	});
 
 	it("rejects verify alongside run (script stages have no session to grade)", () => {
 		const e = errors(wf(base({ run: () => ({ kind: "x", artifacts: [], data: {} }) })));
-		expect(e.some((i) => /verify and run are mutually exclusive/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-with-run")).toBe(true);
 	});
 
 	it("accepts verify alongside prompt (composes — attempt 0 sends the resolved prompt raw)", () => {
@@ -980,39 +986,45 @@ describe("validateWorkflow — verify invariants", () => {
 
 	it('rejects verify with sessionPolicy "continue"', () => {
 		const e = errors(wf(base({ sessionPolicy: "continue" })));
-		expect(e.some((i) => /verify cannot combine with sessionPolicy "continue"/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-continue-session")).toBe(true);
 	});
 
 	it("rejects a producer outcome without a name (attempts need a stable named slot)", () => {
 		const e = errors(wf(base({ outcome: { collector: noopCollector } })));
-		expect(e.some((i) => /verify requires an `outcome` with a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-outcome-name-required")).toBe(true);
 	});
 
 	it("rejects a verdict channel that collides with the producer's publish name", () => {
 		const e = errors(
 			wf(base({ verify: verify({ judge: judge({ skill: "grade", outcome: producerOutcome }), done: () => true }) })),
 		);
-		expect(e.some((i) => /collides with the producer's publish name/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-verdict-channel-collision" && i.params.channel === "impl")).toBe(true);
 	});
 
 	it("rejects a hand-rolled judge whose outcome has no name (defensive load gate)", () => {
 		const e = errors(wf(base({ verify: rawVerify({}, { outcome: { collector: noopCollector } }) })));
-		expect(e.some((i) => /judge\.outcome must carry a `name`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "verify-shape" && String(i.params.issue).includes("judge.outcome"))).toBe(true);
 	});
 
 	it("rejects a hand-rolled non-function done", () => {
 		const e = errors(wf(base({ verify: rawVerify({ done: true }) })));
-		expect(e.some((i) => /`done` to be a function/.test(i.message))).toBe(true);
+		expect(
+			e.some((i) => i.code === "verify-shape" && String(i.params.issue).includes("`done` to be a function")),
+		).toBe(true);
 	});
 
 	it.each([0, -1, 1.5])("rejects verify.max: %s (must be an integer >= 1)", (max) => {
 		const e = errors(wf(base({ verify: rawVerify({ max, feedForward: () => "x" }) })));
-		expect(e.some((i) => /max.*must be an integer >= 1/.test(i.message))).toBe(true);
+		expect(
+			e.some((i) => i.code === "verify-shape" && String(i.params.issue).includes("must be an integer >= 1")),
+		).toBe(true);
 	});
 
 	it("rejects max > 1 without feedForward (hand-rolled literal)", () => {
 		const e = errors(wf(base({ verify: rawVerify({ max: 2 }) })));
-		expect(e.some((i) => /max > 1 requires `feedForward`/.test(i.message))).toBe(true);
+		expect(
+			e.some((i) => i.code === "verify-shape" && String(i.params.issue).includes("max > 1 requires `feedForward`")),
+		).toBe(true);
 	});
 });
 
@@ -1072,7 +1084,7 @@ describe("validateWorkflow — judge verdict channels are published names", () =
 			},
 			edges: { s: "next", next: "stop" },
 		};
-		expect(errors(w).some((i) => /reads "nope" but no produces stage/.test(i.message))).toBe(true);
+		expect(errors(w).some((i) => i.code === "reads-unpublished" && i.params.channel === "nope")).toBe(true);
 	});
 });
 
@@ -1098,7 +1110,7 @@ describe("validateWorkflow — prompt invariants", () => {
 
 	it("rejects a prompt stage that also sets an explicit skill", () => {
 		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", skill: "implement" }));
-		expect(e.some((i) => /a prompt stage cannot also set `skill`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "prompt-with-skill")).toBe(true);
 	});
 
 	it("rejects prompt + iterate (units own their prompts)", () => {
@@ -1111,7 +1123,7 @@ describe("validateWorkflow — prompt invariants", () => {
 				loop: iterate({ next: () => null }),
 			}),
 		);
-		expect(e.some((i) => /prompt and iterate loops are mutually exclusive/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "prompt-with-loop" && i.params.kind === "iterate")).toBe(true);
 	});
 
 	it("rejects prompt + fanout (units own their prompts)", () => {
@@ -1123,7 +1135,7 @@ describe("validateWorkflow — prompt invariants", () => {
 				loop: fanout({ units: () => [] }),
 			}),
 		);
-		expect(e.some((i) => /prompt and fanout loops are mutually exclusive/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "prompt-with-loop" && i.params.kind === "fanout")).toBe(true);
 	});
 
 	it("accepts prompt + assess (the prompt is round 0's message; feedForward builds retries)", () => {
@@ -1145,27 +1157,27 @@ describe("validateWorkflow — prompt invariants", () => {
 
 	it("rejects prompt + reads", () => {
 		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", reads: ["plans"] }));
-		expect(e.some((i) => /a prompt stage cannot set `reads`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "prompt-with-reads")).toBe(true);
 	});
 
 	it("rejects prompt + run (a script stage cannot set a raw prompt)", () => {
 		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", run: noopActsScript }));
-		expect(e.some((i) => /script stages cannot set a raw prompt/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "script-with-prompt")).toBe(true);
 	});
 
 	it("rejects an empty-string prompt", () => {
 		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "   " }));
-		expect(e.some((i) => /prompt is an empty string/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "prompt-empty")).toBe(true);
 	});
 
 	it("requires an outcome on a produces prompt stage (no run carve-out)", () => {
 		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", prompt: "write it" }));
-		expect(e.some((i) => /has kind "produces" but no `outcome`/.test(i.message))).toBe(true);
+		expect(e.some((i) => i.code === "produces-without-outcome")).toBe(true);
 	});
 
 	it("warns when a continue prompt stage is the workflow start", () => {
 		const w = wf({ kind: "side-effect", sessionPolicy: "continue", prompt: "follow up" });
-		expect(warnings(w).some((i) => /continue prompt stage is the workflow start/.test(i.message))).toBe(true);
+		expect(warnings(w).some((i) => i.code === "prompt-continue-at-start")).toBe(true);
 	});
 });
 
@@ -1188,6 +1200,53 @@ describe("validateWorkflow — issue shape", () => {
 		// At least one issue carries a specific stage attribution.
 		expect(issues.some((i) => i.stage === "a")).toBe(true);
 	});
+
+	it("every issue carries a machine-readable code + params + rendered message", () => {
+		const w: Workflow = {
+			name: "bad",
+			start: "ghost",
+			stages: { a: produces(), b: { kind: "produces", sessionPolicy: "continue", run: async () => undefined } },
+			edges: { a: "missing" },
+		};
+		const issues = validateWorkflow(w);
+		expect(issues.length).toBeGreaterThan(0);
+		for (const i of issues) {
+			expect(typeof i.code).toBe("string");
+			expect(i.params).toBeTypeOf("object");
+			expect(i.message.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("messages never embed the stage attribution (renderers compose it)", () => {
+		// A stage-attributed issue must not also spell `stage "<name>"` in its
+		// prose — the double-attribution the old free-form messages produced.
+		const w: Workflow = {
+			name: "bad",
+			start: "s",
+			stages: { s: { ...produces(), sessionPolicy: "continue", loop: iterate({ next: () => null }) } },
+			edges: { s: "stop" },
+		};
+		const issues = validateWorkflow(w);
+		expect(issues.length).toBeGreaterThan(0);
+		for (const i of issues) {
+			if (!i.stage) continue;
+			expect(i.message).not.toContain(`stage "${i.stage}"`);
+		}
+	});
+
+	it("skips reachability when an EdgeFn lacks .targets — gated on the issue CODE (C5)", () => {
+		const naked: EdgeFn = () => "ghost";
+		const w: Workflow = {
+			name: "gated",
+			start: "a",
+			stages: { a: produces(), orphan: produces() },
+			edges: { a: naked, orphan: "stop" },
+		};
+		const issues = validateWorkflow(w);
+		expect(issues.some((i) => i.code === "edge-fn-no-targets")).toBe(true);
+		// No unreachable-cascade: reachability was skipped.
+		expect(issues.filter((i) => i.code === "stage-unreachable")).toEqual([]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1209,7 +1268,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			edges: { producer: "consumer", consumer: "stop" },
 		};
 		const ws = warnings(w);
-		expect(ws.some((i) => /schema incompatibility/.test(i.message))).toBe(true);
+		expect(ws.some((i) => i.code === "edge-schema-incompatible")).toBe(true);
 	});
 
 	it("does NOT warn when schemas are compatible", () => {
@@ -1225,7 +1284,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			},
 			edges: { producer: "consumer", consumer: "stop" },
 		};
-		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+		expect(warnings(w).filter((i) => i.code === "edge-schema-incompatible")).toEqual([]);
 	});
 
 	it("does NOT warn when producer or consumer schema is absent (degrade)", () => {
@@ -1238,7 +1297,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			},
 			edges: { a: "b", b: "stop" },
 		};
-		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+		expect(warnings(w).filter((i) => i.code === "edge-schema-incompatible")).toEqual([]);
 	});
 
 	it("does NOT warn on predicate edges (only string edges are checked)", () => {
@@ -1259,7 +1318,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 				c: "stop",
 			},
 		};
-		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+		expect(warnings(w).filter((i) => i.code === "edge-schema-incompatible")).toEqual([]);
 	});
 
 	it("uses registry contracts when provided (overrides stage schemas)", () => {
@@ -1294,7 +1353,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			edges: { producer: "consumer", consumer: "stop" },
 		};
 		const ws = validateWorkflow(w, { skillContracts: contracts }).filter(
-			(i) => i.severity === "warning" && /schema incompatibility/.test(i.message),
+			(i) => i.code === "edge-schema-incompatible",
 		);
 		expect(ws).toEqual([]);
 	});
@@ -1331,7 +1390,7 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			edges: { producer: "consumer", consumer: "stop" },
 		};
 		const issues = validateWorkflow(w, { skillContracts: contracts });
-		expect(issues.some((i) => i.severity === "warning" && /schema incompatibility/.test(i.message))).toBe(true);
+		expect(issues.some((i) => i.code === "edge-schema-incompatible")).toBe(true);
 	});
 
 	it("does NOT warn on stop edges", () => {
@@ -1341,13 +1400,12 @@ describe("validateWorkflow — edge-schema compatibility", () => {
 			stages: { a: produces() },
 			edges: { a: "stop" },
 		};
-		expect(warnings(w).filter((i) => /schema incompatibility/.test(i.message))).toEqual([]);
+		expect(warnings(w).filter((i) => i.code === "edge-schema-incompatible")).toEqual([]);
 	});
 });
 
 describe("checkFanoutSource (control-flow source lint)", () => {
-	const loopMsgs = (w: Workflow) =>
-		warnings(w).filter((i) => /(fans out over|iterates over|assesses over)/.test(i.message));
+	const loopMsgs = (w: Workflow) => warnings(w).filter((i) => i.code === "loop-source-unpublished");
 
 	it("warns when a fanout loop's source is not published by any produces stage", () => {
 		const w: Workflow = {
@@ -1361,7 +1419,7 @@ describe("checkFanoutSource (control-flow source lint)", () => {
 		};
 		const msgs = loopMsgs(w);
 		expect(msgs).toHaveLength(1);
-		expect(msgs[0]?.message).toContain('fans out over source "plans"');
+		expect(msgs[0]?.params).toMatchObject({ verb: "fans out over", source: "plans" });
 	});
 
 	it("warns when an iterate loop's source is unpublished (the no-`reads` case)", () => {
@@ -1377,7 +1435,9 @@ describe("checkFanoutSource (control-flow source lint)", () => {
 			},
 			edges: { start: "bp", bp: "stop" },
 		};
-		expect(loopMsgs(w).some((i) => /iterates over source "architecture-reviews"/.test(i.message))).toBe(true);
+		expect(
+			loopMsgs(w).some((i) => i.params.verb === "iterates over" && i.params.source === "architecture-reviews"),
+		).toBe(true);
 	});
 
 	it("is silent when the source IS published", () => {
@@ -1405,7 +1465,7 @@ describe("checkFanoutSource (control-flow source lint)", () => {
 		};
 		// reads owns "plans" (errors); checkFanoutSource stays quiet
 		expect(loopMsgs(w)).toEqual([]);
-		expect(errors(w).some((i) => /reads "plans"/.test(i.message))).toBe(true);
+		expect(errors(w).some((i) => i.code === "reads-unpublished" && i.params.channel === "plans")).toBe(true);
 	});
 
 	it("is silent for a loop with no source (degrade)", () => {
