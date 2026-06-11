@@ -81,7 +81,12 @@ export async function resumeLoopStage(
 	await runLoop(ctx, entry, point.cursor, run, deps);
 }
 
-/** Pending-work probe — never dispatches; gates the announce only. */
+/**
+ * Pending-work probe — never dispatches; gates the announce only. The
+ * iterate arm re-pulls `next()` at the cursor (the driver pulls the same
+ * index again right after) — the harmless double-pull is safe because the
+ * resume contract requires generators to be deterministic.
+ */
 async function hasPendingUnit(loop: LoopDef, point: LoopResumePoint, run: RunContext): Promise<boolean> {
 	if (loop.kind === "fanout") return point.cursor.index < (point.units?.length ?? 0);
 	if (loop.kind === "iterate") {

@@ -346,6 +346,9 @@ export function projectResult(
 ): void {
 	if (loop.result === "last" && cursor.lastProduce) {
 		state.output = cursor.lastProduce.output;
+		// `artifact` is undefined only for acts-stage units (produces units are
+		// guaranteed ≥1 artifact by enforceCompletionContract) — the entry
+		// primary carries through, mirroring how a single acts stage behaves.
 		state.primaryArtifact = cursor.lastProduce.artifact ?? entryPair.primaryArtifact;
 		return;
 	}
