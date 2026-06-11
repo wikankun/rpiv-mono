@@ -72,8 +72,8 @@
  *   6. Custom-outcome authoring surface — `./output.js`
  *      `OutputSpec<Snapshot, Kind, Data>` (collector + optional parser),
  *      `ArtifactCollector`, `ArtifactParser`, `CollectCtx`,
- *      `CollectResult`, `ParseCtx`, `ParseResult`, `SnapshotCtx`,
- *      `SnapshotFn`. Sugar: `defineCollector` / `defineParser`.
+ *      `CollectResult`, `ParseCtx`, `ParseResult`, `SnapshotCtx`.
+ *      Sugar: `defineCollector` / `defineParser`.
  *
  *   7. Validation surfaces — `./validate-workflow.js`,
  *      `./validate-output.js`

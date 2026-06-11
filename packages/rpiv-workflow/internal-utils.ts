@@ -18,6 +18,15 @@ export function assertNever(value: never): never {
 }
 
 /**
+ * Render a caught `unknown` as a human-readable message. The ONE spelling of
+ * the `instanceof Error` dance — every catch block that needs the reason as a
+ * string calls this instead of inlining the ternary.
+ */
+export function formatError(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
+}
+
+/**
  * Canonical accessor for "the primary artifact the chain is currently
  * carrying." Reads the rolling slot maintained by the runner —
  * produces stages update it on success; side-effect stages leave it
@@ -50,6 +59,19 @@ export function resolvePublishName(def: StageDef, stageName: string): string {
  */
 export function resolveSkill(def: StageDef, stageName: string): string {
 	return def.skill ?? stageName;
+}
+
+/**
+ * A stage dispatches a `/skill:<name>` exactly when it carries neither a `run`
+ * (script body) nor a `prompt` (raw-text body). `fanout`/`iterate` stages carry
+ * neither, so they ARE dispatching stages. The shared predicate for every site
+ * that treats `resolveSkill`'s result as a REAL skill identity — the alias
+ * remap + its no-op warning, contract harvest, and the validator's contract
+ * lookups must all agree, or a script/prompt stage whose record key matches a
+ * registered skill inherits that skill's contract by accident.
+ */
+export function isDispatchingStage(stage: StageDef): boolean {
+	return stage.run == null && stage.prompt == null;
 }
 
 /**

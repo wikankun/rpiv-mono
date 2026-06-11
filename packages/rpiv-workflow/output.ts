@@ -73,7 +73,6 @@ export type {
 	ParseCtx,
 	ParseResult,
 	SnapshotCtx,
-	SnapshotFn,
 } from "./output-spec.js";
 
 // ---------------------------------------------------------------------------

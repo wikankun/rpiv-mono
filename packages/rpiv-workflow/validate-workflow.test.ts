@@ -432,6 +432,42 @@ describe("validateWorkflow — route-edge schema check", () => {
 			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
 		).toBe(true);
 	});
+
+	it("a SCRIPT stage is not exempted by a contract under its record key (C2)", () => {
+		// "code-review" carries a covering contract — but the stage runs a script
+		// and never dispatches the skill, so the contract must not exempt it.
+		const contracts: SkillContractMap = new Map([
+			[
+				"code-review",
+				{
+					source: "declared",
+					produces: {
+						kind: "produces",
+						data: { type: "object", properties: { severeIssueCount: { type: "integer" } } },
+					},
+				},
+			],
+		]);
+		const scriptReview: ProducesScriptFn = async () => ({ kind: "artifacts", artifacts: [], data: {} });
+		const w: Workflow = {
+			name: "script-routed",
+			start: "code-review",
+			stages: {
+				"code-review": { kind: "produces", sessionPolicy: "fresh", run: scriptReview },
+				revise: produces(),
+				commit: acts(),
+			},
+			edges: {
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				revise: "commit",
+				commit: "stop",
+			},
+		};
+		const issues = validateWorkflow(w, { skillContracts: contracts });
+		expect(
+			issues.some((i) => i.severity === "warning" && i.stage === "code-review" && /outputSchema/.test(i.message)),
+		).toBe(true);
+	});
 });
 
 describe("validateWorkflow — reads-channel (meta) compatibility", () => {
@@ -493,6 +529,61 @@ describe("validateWorkflow — reads-channel (meta) compatibility", () => {
 			]),
 		});
 		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+	});
+
+	it("surfaces a comparator throw as a WARNING instead of silently disabling the gate (C13)", () => {
+		registerCompositionComparator("plans", () => {
+			throw new Error("comparator bug");
+		});
+		const issues = validateWorkflow(wf, { skillContracts: contractsWith("design", "plan") });
+		const warn = issues.find(
+			(i) => i.severity === "warning" && /comparator for channel "plans" threw/.test(i.message),
+		);
+		expect(warn).toBeDefined();
+		expect(warn?.message).toContain("comparator bug");
+		// The throw degrades — never a false reads-compat error.
+		expect(issues.filter((i) => i.severity === "error" && /reads channel/.test(i.message))).toEqual([]);
+	});
+
+	it("a SCRIPT consumer named after a signed skill does not inherit its contract (C2)", () => {
+		registerCompositionComparator("plans", kindComparator);
+		const scriptConsumer: Workflow = {
+			name: "script-consumer",
+			start: "blueprint",
+			stages: {
+				blueprint: produces({ outcome: { collector: noopCollector, name: "plans" } }),
+				// Record key "implement" matches the signed (and DISJOINT) consumer
+				// contract — but this stage runs a script, it never dispatches the skill.
+				implement: { kind: "side-effect", sessionPolicy: "fresh", run: async () => {}, reads: ["plans"] },
+			},
+			edges: { blueprint: "implement", implement: "stop" },
+		};
+		const issues = validateWorkflow(scriptConsumer, { skillContracts: contractsWith("design", "plan") });
+		expect(issues.filter((i) => /reads channel "plans"/.test(i.message))).toEqual([]);
+		expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+	});
+
+	it("a PROMPT publisher named after a signed skill is not a phantom signed publisher (C2)", () => {
+		registerCompositionComparator("plans", kindComparator);
+		const promptPublisher: Workflow = {
+			name: "prompt-publisher",
+			start: "blueprint",
+			stages: {
+				// Record key "blueprint" matches a signed contract whose artifactKind
+				// is DISJOINT from the consumer's requirement — but the stage
+				// dispatches raw prompt text, not /skill:blueprint.
+				blueprint: {
+					kind: "produces",
+					sessionPolicy: "fresh",
+					prompt: "draft the plan",
+					outcome: { collector: noopCollector, name: "plans" },
+				},
+				implement: acts({ reads: ["plans"] }),
+			},
+			edges: { blueprint: "implement", implement: "stop" },
+		};
+		const issues = validateWorkflow(promptPublisher, { skillContracts: contractsWith("design", "plan") });
+		expect(issues.filter((i) => i.severity === "error" && /reads channel "plans"/.test(i.message))).toEqual([]);
 	});
 
 	it("errors on a NON-ADJACENT publisher the edge-local walk would miss (all-publishers)", () => {

@@ -31,12 +31,14 @@ import type { Workflow } from "../api.js";
 import { auditCtxFor, notifyPartialArtifacts, nowIso, recordTerminalFailure } from "../audit.js";
 import { handleToString } from "../handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "../host.js";
-import { currentPrimaryArtifact } from "../internal-utils.js";
+import { currentPrimaryArtifact, formatError } from "../internal-utils.js";
 import { buildLifecycleContext, LifecycleDispatcher, type LifecycleListeners } from "../lifecycle.js";
 import {
+	ERR_RESUME_MALFORMED_ROW,
 	ERR_RESUME_NO_ROWS,
 	ERR_RESUME_STAGE_GONE,
 	ERR_WORKFLOW_ABORTED,
+	MSG_HEADER_WRITE_FAILED,
 	MSG_NAME_COLLISION,
 	MSG_NAME_INDEX_WRITE_FAILED,
 	MSG_NAME_INVALID,
@@ -46,12 +48,12 @@ import {
 	STATUS_KEY,
 } from "../messages.js";
 import { getSkillContracts } from "../skill-contracts/index.js";
-import { type ClaimResult, claimName, generateRunId, writeHeader } from "../state/index.js";
+import { type ClaimResult, claimName, generateRunId, releaseName, writeHeader } from "../state/index.js";
 import type { WorkflowHeader } from "../state/state.js";
 import { DEFAULT_TRIGGER, type RunTrigger } from "../triggers.js";
 import type { RunContext, RunState } from "../types.js";
 import { advanceChain } from "./chain-advance.js";
-import { type ReconstructResult, reconstructState } from "./resume.js";
+import { freshRunState, type ReconstructResult, reconstructState } from "./resume.js";
 import { recordLoopDriftFailure, resumeLoopStage } from "./resume-loop.js";
 import { buildLoopDeps, runStage, StagePreflightError } from "./stage-lifecycle.js";
 
@@ -157,6 +159,15 @@ export interface RunWorkflowResult {
 	 * reconstruction inputs.
 	 */
 	droppedRoutingRows?: Array<{ fromStageIndex: number; fromStage: string; decision: string }>;
+	/**
+	 * Stages whose terminal failure/aborted row failed to persist. Empty in
+	 * the common case. Unlike routing rows, failure rows ARE reconstruction
+	 * inputs: a trail missing its failure row reads as if the run stopped
+	 * after its last successful stage, so a later resume would route onward
+	 * past the stage that actually failed. Consumers holding this list should
+	 * not resume the run from disk.
+	 */
+	droppedFailureRows?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +201,9 @@ async function executeRun(
 		error: state.termination.error,
 		...(state.telemetry.droppedRoutingRows.length > 0
 			? { droppedRoutingRows: state.telemetry.droppedRoutingRows }
+			: {}),
+		...(state.telemetry.droppedFailureRows.length > 0
+			? { droppedFailureRows: state.telemetry.droppedFailureRows }
 			: {}),
 	};
 
@@ -243,7 +257,11 @@ export async function runWorkflow(ctx: WorkflowHostContext, options: RunWorkflow
 		if (!claim.ok) return { stagesCompleted: 0, success: false, error: nameClaimError(options.name, claim) };
 	}
 
-	writeHeader(cwd, {
+	// Nothing has executed yet — the cheapest moment to refuse. A lost header
+	// makes the run unlistable and unresumable while its stage rows land, so a
+	// failed append rejects the start and rolls back the name claim (the index
+	// must not point at a run that never existed).
+	const headerWritten = writeHeader(cwd, {
 		runId,
 		workflow: workflow.name,
 		input: options.input,
@@ -251,6 +269,10 @@ export async function runWorkflow(ctx: WorkflowHostContext, options: RunWorkflow
 		trigger,
 		name: options.name,
 	});
+	if (!headerWritten) {
+		if (options.name) releaseName(cwd, options.name, runId);
+		return { stagesCompleted: 0, success: false, error: MSG_HEADER_WRITE_FAILED(runId) };
+	}
 
 	const run = buildRunContext(cwd, workflow, options, {
 		runId,
@@ -337,20 +359,6 @@ function hostMissingForContinueStages(workflow: Workflow, host: WorkflowHost | u
 	return "workflow contains continue-policy stages which require a workflow host";
 }
 
-/** A pristine `RunState` for a brand-new run (resumes rebuild theirs via `reconstructState`). */
-function freshRunState(originalInput: string): RunState {
-	return {
-		originalInput,
-		primaryArtifact: undefined,
-		output: undefined,
-		named: {},
-		stagesCompleted: 0,
-		lastAllocatedStageNumber: 0,
-		telemetry: { backwardJumps: 0, droppedRoutingRows: [] },
-		termination: { success: false, error: undefined },
-	};
-}
-
 /**
  * Assemble the `RunContext` shared by both entry points. `identity` carries the
  * four fields that differ between a new run (fresh id/state/visited, caller
@@ -415,8 +423,11 @@ function selectResumeEntry(
 		return () => recordLoopDriftFailure(ctx, run, parent, errMsg);
 	}
 
+	// The fold's reconstructed chain index — NOT `stageNumber - 1`: the
+	// allocator counts every row including loop units, so past any loop the
+	// two diverge (a 10-unit loop would resume showing "stage 14/5").
 	const last = recon.rows[recon.rows.length - 1]!;
-	const idx = last.stageNumber - 1; // status-line / routing index; JSONL number comes from the allocator
+	const idx = recon.lastChainIndex; // status-line / routing index; JSONL number comes from the allocator
 
 	if (last.parent !== undefined) {
 		// `recon.trailing` is set by construction: the fold always produces a
@@ -461,6 +472,8 @@ function resumeRefusalError(recon: Extract<ReconstructResult, { ok: false }>, wo
 			return ERR_RESUME_NO_ROWS(recon.detail);
 		case "stage-gone":
 			return ERR_RESUME_STAGE_GONE(recon.detail, workflow);
+		case "malformed-row":
+			return ERR_RESUME_MALFORMED_ROW(recon.detail);
 	}
 }
 
@@ -563,7 +576,7 @@ async function recordEntryThrow(curCtx: WorkflowHostContext, name: string, run: 
 		);
 		return;
 	}
-	const reason = e instanceof Error ? e.message : String(e);
+	const reason = formatError(e);
 	await recordTerminalFailure(curCtx, auditCtxFor(run, name, name), {
 		status: "failed",
 		notifyMsg: MSG_STAGE_THREW(name, reason),

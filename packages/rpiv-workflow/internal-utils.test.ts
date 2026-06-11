@@ -46,7 +46,7 @@ const freshState = (): RunState => ({
 	named: {},
 	stagesCompleted: 0,
 	lastAllocatedStageNumber: 0,
-	telemetry: { backwardJumps: 0, droppedRoutingRows: [] },
+	telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
 	termination: { success: false, error: undefined },
 });
 

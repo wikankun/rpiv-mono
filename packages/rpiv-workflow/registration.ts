@@ -129,7 +129,6 @@ export type {
 	ParseCtx,
 	ParseResult,
 	SnapshotCtx,
-	SnapshotFn,
 } from "./output.js";
 export { defineCollector, defineParser } from "./output-spec.js";
 export { eq, gt, gte, lt, lte, type Predicate } from "./predicates.js";

@@ -21,7 +21,7 @@
  * in `resume-loop.test.ts`.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockSessionChain, mockAssistantMessage } from "@juicesharp/rpiv-test-utils";
@@ -31,6 +31,7 @@ import { assess, fanout, iterate, verify } from "../control-flow.js";
 import type { Artifact } from "../handle.js";
 import { fs as fsHandle, handleToString } from "../handle.js";
 import { judge } from "../judge.js";
+import { advanceCursor, freshCursor } from "../loop.js";
 import type { Output } from "../output.js";
 import {
 	appendStage,
@@ -371,6 +372,27 @@ describe("reconstructState", () => {
 		expect(result.detail).toBe(baseHeader.runId);
 	});
 
+	it("REFUSES (malformed-row) instead of skipping a stage-shaped row that fails the deep guard (T9)", async () => {
+		// Fault injection: the trail's failure row lost its valid `status` (torn
+		// write, foreign writer). Pre-fix the shallow guard skipped it and the
+		// fold replayed the run as if `build` never ran — a resume would route
+		// onward past the stage that actually failed.
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+		]);
+		appendFileSync(
+			stateFilePath(tmpDir, baseHeader.runId),
+			`${JSON.stringify({ stageNumber: 2, stage: "build", skill: "build", status: "exploded", ts: "t2" })}\n`,
+			"utf-8",
+		);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toBe("malformed-row");
+		expect(result.detail).toContain('stage row 2 ("build")');
+	});
+
 	it("row whose stage is not in workflow.stages: returns stage-gone refusal", async () => {
 		writeRunStages([
 			{
@@ -573,6 +595,72 @@ describe("reconstructState", () => {
 		expect(result.visited).toEqual(new Set(["breakdown", "gate"]));
 		expect(result.trailing).toBeUndefined();
 		expect(result.drift).toBeUndefined();
+	});
+
+	it("REPLAY PARITY (C1): the fold's trailing cursor is byte-equal to a live cursor advanced over the same outputs", async () => {
+		// `advanceCursor` is the ONE cursor state machine; this test pins the
+		// contract that the fold and the live driver advance identically. The
+		// trail ends mid-assess (produce, judge, produce — generation open) so
+		// the fold returns its reconstructed cursor for comparison.
+		const p0 = fakeOutput([fakeArtifact("tasks/t0.md")]);
+		const v0 = fakeOutput([fakeArtifact("verdicts/v0.json")]);
+		const p1 = fakeOutput([fakeArtifact("tasks/t1.md")]);
+		const loop = assess({
+			judge: judge({ skill: "grade", outcome: makeOutcome("verdict") }),
+			done: () => false,
+			feedForward: () => "more",
+		});
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "breakdown",
+			stages: { breakdown: produces({ outcome: makeOutcome("tasks"), loop }) },
+			edges: { breakdown: "stop" },
+		} as Workflow;
+
+		writeRunStages([
+			assessProduceRow("breakdown", 0, 1, p0),
+			assessJudgeRow("breakdown", "grade", 0, 2, v0),
+			assessProduceRow("breakdown", 1, 3, p1),
+		]);
+
+		const result = await reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.drift).toBeUndefined();
+
+		// The live driver's exact sequence for the same three completed units.
+		const live = freshCursor();
+		advanceCursor(live, "produce", p0, "assess");
+		advanceCursor(live, "judge", v0, "assess");
+		advanceCursor(live, "produce", p1, "assess");
+
+		expect(JSON.stringify(result.trailing?.cursor)).toBe(JSON.stringify(live));
+	});
+
+	it("REPLAY PARITY (C1): fanout trailing cursor matches the live transition", async () => {
+		const u1 = fakeOutput([fakeArtifact("builds/b1.md")]);
+		const units: FanoutFn = () => [
+			{ prompt: "u1", label: "phase 1/2", id: "phase-1" },
+			{ prompt: "u2", label: "phase 2/2", id: "phase-2" },
+		];
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "build",
+			stages: { build: produces({ outcome: makeOutcome("builds"), loop: fanout({ units }) }) },
+			edges: { build: "stop" },
+		} as Workflow;
+
+		writeRunStages([fanoutUnitRow("build", "phase-1", 0, 1, u1)]);
+
+		const result = await reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.drift).toBeUndefined();
+
+		const live = freshCursor();
+		advanceCursor(live, "produce", u1, "fanout");
+
+		expect(JSON.stringify(result.trailing?.cursor)).toBe(JSON.stringify(live));
 	});
 
 	it("named slot accumulates across completed rows for the same key (append order)", async () => {
@@ -905,6 +993,89 @@ describe("reconstructState — verify generations", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.trailing?.entryArgs).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// lastChainIndex (C16) — the fold reconstructs the chain index instead of
+// reusing the allocator's stageNumber (which counts every loop-unit row, so
+// the two diverge past any loop: a 10-unit loop made status show "stage 14/5").
+// ---------------------------------------------------------------------------
+
+describe("reconstructState — lastChainIndex", () => {
+	it("linear trail: one activation per row", async () => {
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{ stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
+		]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.lastChainIndex).toBe(1);
+	});
+
+	it("a loop generation counts as ONE activation, however many unit rows it wrote", async () => {
+		const units: FanoutFn = () => [
+			{ prompt: "u1", label: "phase 1/3", id: "phase-1" },
+			{ prompt: "u2", label: "phase 2/3", id: "phase-2" },
+			{ prompt: "u3", label: "phase 3/3", id: "phase-3" },
+		];
+		const wf: Workflow = {
+			name: "test-wf",
+			start: "plan",
+			stages: {
+				plan: produces({ outcome: makeOutcome("plans") }),
+				build: produces({ outcome: makeOutcome("builds"), loop: fanout({ units }) }),
+				deploy: produces({ outcome: makeOutcome("deploys") }),
+			},
+			edges: { plan: "build", build: "deploy", deploy: "stop" },
+		} as Workflow;
+
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			fanoutUnitRow("build", "phase-1", 0, 2, fakeOutput()),
+			fanoutUnitRow("build", "phase-2", 1, 3, fakeOutput()),
+			fanoutUnitRow("build", "phase-3", 2, 4, fakeOutput()),
+			{ stageNumber: 5, stage: "deploy", skill: "deploy", status: "failed", ts: "t5", errMsg: "boom" },
+		]);
+
+		const result = await reconstructState(tmpDir, wf, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		// plan(0) → build generation(1) → deploy(2). Pre-fix this was
+		// `last.stageNumber - 1` = 4.
+		expect(result.lastChainIndex).toBe(2);
+	});
+
+	it("a resume re-run of a failed stage keeps its activation index", async () => {
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{ stageNumber: 2, stage: "build", skill: "build", status: "failed", ts: "t2", errMsg: "boom" },
+			// resumed: build re-ran (same activation), then deploy failed
+			{ stageNumber: 3, stage: "build", skill: "build", status: "completed", ts: "t3", output: fakeOutput() },
+			{ stageNumber: 4, stage: "deploy", skill: "deploy", status: "failed", ts: "t4", errMsg: "boom" },
+		]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		// plan(0) → build(1, re-run folds into the same activation) → deploy(2).
+		expect(result.lastChainIndex).toBe(2);
+	});
+
+	it("a backward-jump revisit of a COMPLETED stage is a new activation", async () => {
+		writeRunStages([
+			{ stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1", output: fakeOutput() },
+			{ stageNumber: 2, stage: "build", skill: "build", status: "completed", ts: "t2", output: fakeOutput() },
+			// decision edge routed back to plan (retry loop) — distinct activation
+			{ stageNumber: 3, stage: "plan", skill: "plan", status: "completed", ts: "t3", output: fakeOutput() },
+		]);
+
+		const result = await reconstructState(tmpDir, linearWorkflow, baseHeader);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.lastChainIndex).toBe(2);
 	});
 });
 

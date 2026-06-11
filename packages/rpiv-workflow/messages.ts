@@ -149,6 +149,17 @@ export const MSG_AUDIT_WRITE_FAILED = (skill: string) =>
 export const ERR_AUDIT_WRITE_FAILED = (skill: string) =>
 	`${skill} completed but the JSONL audit row could not be appended; halting to keep in-memory state aligned with disk`;
 
+/**
+ * Notified when a TERMINAL failure/aborted row could not be appended. Unlike
+ * routing rows this is a reconstruction input: without it the trail's last
+ * row reads "completed" and a later resume would route onward past the stage
+ * that actually failed. The run is already halting — the user (and the
+ * result envelope's `droppedFailureRows`) must know the trail is unsafe to
+ * resume from.
+ */
+export const MSG_FAILURE_ROW_DROPPED = (stage: string) =>
+	`⚠ rpiv: failure row for ${stage} not persisted to audit trail — do not resume this run from disk`;
+
 export const MSG_CHAIN_ADVANCE_FAILED = (fromStage: string, reason: string) =>
 	`✗ chain advance after ${fromStage} failed: ${reason} — stopping workflow`;
 
@@ -157,11 +168,21 @@ export const MSG_CHAIN_ADVANCE_FAILED = (fromStage: string, reason: string) =>
  * `enforceSessionInvariants` violations, session-machinery errors, and any
  * other path that escapes `runStage` directly. Distinguished from
  * `MSG_CHAIN_ADVANCE_FAILED` (which is about an edge throwing AFTER a stage
- * succeeded) — the user needs to see *which* stage failed to start, not
- * which one preceded the failure.
+ * succeeded) — the user needs to see *which* stage failed, not which one
+ * preceded the failure. Wording is deliberately neutral ("failed", not
+ * "failed to start"): throws from mid-stage machinery land here too.
  */
 export const MSG_STAGE_THREW = (skill: string, reason: string) =>
-	`✗ stage ${skill} failed to start: ${reason} — stopping workflow`;
+	`✗ stage ${skill} failed: ${reason} — stopping workflow`;
+
+/**
+ * Collector/parser throws — `collect`/`parse` are the PRIMARY user extension
+ * points, so a throw is attributed to the throwing half (not folded into the
+ * generic stage-machinery wording). Lands in `state.termination.error` via
+ * the extraction fatal arm.
+ */
+export const ERR_COLLECTOR_THREW = (skill: string, reason: string) => `${skill}: outcome collector threw: ${reason}`;
+export const ERR_PARSER_THREW = (skill: string, reason: string) => `${skill}: outcome parser threw: ${reason}`;
 
 /**
  * Stage references a Pi skill that isn't registered with the running Pi
@@ -193,6 +214,15 @@ export const MSG_LIFECYCLE_THREW = (event: string, reason: string) =>
 	`⚠ rpiv: lifecycle listener (${event}) threw: ${reason}`;
 
 /**
+ * Outcome snapshot hook threw — the stage still runs (snapshot is best-effort)
+ * but diff-based collectors will see `snapshot: undefined`. Warned once per
+ * run so a consistently-throwing custom snapshot can't silently disable
+ * diffing for every stage.
+ */
+export const MSG_SNAPSHOT_FAILED = (stage: string, reason: string) =>
+	`⚠ rpiv: outcome snapshot for ${stage} threw (${reason}) — pre-stage diff degraded for this stage`;
+
+/**
  * Script stage's `run()` body threw. Distinct from `MSG_STAGE_THREW`
  * (which covers session-machinery and preflight throws) so users see
  * the failure surface attributed to the script function rather than to
@@ -208,6 +238,15 @@ export const ERR_SCRIPT_THREW = (stage: string, reason: string) => `${stage} scr
 // ---------------------------------------------------------------------------
 
 export const ERR_RESUME_NO_ROWS = (runId: string) => `rpiv: run ${runId} has no recorded stages — nothing to resume`;
+/**
+ * A stage-shaped row failed the deep shape guard. Resume REFUSES rather than
+ * skip: the fold replays the trail as its system of record, and a silently
+ * dropped row would replay a hole ("this stage never ran") and route onward
+ * past it.
+ */
+export const ERR_RESUME_MALFORMED_ROW = (detail: string) =>
+	`rpiv: cannot resume — the run's trail contains a malformed stage row (${detail}); ` +
+	`resume refuses rather than replay an incomplete history`;
 export const ERR_RESUME_STAGE_GONE = (stage: string, workflow: string) =>
 	`rpiv: cannot resume — stage "${stage}" from the run no longer exists in workflow "${workflow}" ` +
 	`(renamed or removed)`;
@@ -250,8 +289,14 @@ export const MSG_NAME_COLLISION = (name: string, runId: string) => `name '${name
 export const MSG_NAME_INDEX_WRITE_FAILED = (name: string) =>
 	`/wf: could not persist name "${name}" to the names index — run aborted (no run started). Check filesystem permissions for .rpiv/workflows/runs/`;
 
+export const MSG_HEADER_WRITE_FAILED = (runId: string) =>
+	`rpiv: could not write the run header for ${runId} — run aborted (no stage executed). Check filesystem permissions for .rpiv/workflows/runs/`;
+
 export const MSG_NAME_IGNORED_ON_RESUME =
 	"/wf: --name has no effect on @resume (the ref already identifies the run) — ignoring it";
+
+export const MSG_NAME_FLAG_MID_INPUT =
+	"/wf: --name is only honored as the first or last token — a mid-input --name is treated as workflow input text";
 
 export const MSG_LOAD_ABORTED = (count: number) =>
 	`/wf: ${count} ${count === 1 ? "config error" : "config errors"} — see warnings above (fix and re-run)`;

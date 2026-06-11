@@ -9,9 +9,8 @@
  */
 
 import type { Workflow } from "../api.js";
-import { resolveSkill } from "../internal-utils.js";
+import { isDispatchingStage, resolveSkill } from "../internal-utils.js";
 import { extractJsonSchema } from "../json-schema.js";
-import { isDispatchingStage } from "../load/alias.js";
 import type { ConsumesSpec, ProducesSpec, SkillContract } from "../skill-contract.js";
 import { getSkillContracts } from "./registry.js";
 

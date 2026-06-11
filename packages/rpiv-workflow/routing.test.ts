@@ -28,6 +28,7 @@ const makeState = (outputData?: Record<string, unknown>): RunState => ({
 	telemetry: {
 		backwardJumps: 0,
 		droppedRoutingRows: [],
+		droppedFailureRows: [],
 	},
 	termination: {
 		success: false,

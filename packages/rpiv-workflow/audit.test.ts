@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { decorateStage, unitRowFields } from "./audit.js";
-import type { UnitRef } from "./types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type AuditCtx, decorateStage, recordTerminalFailure, unitRowFields } from "./audit.js";
+import { LifecycleDispatcher } from "./lifecycle.js";
+import { MSG_FAILURE_ROW_DROPPED } from "./messages.js";
+import { readAllStages } from "./state/index.js";
+import type { RunState, UnitRef, WorkflowHostContext } from "./types.js";
 
 describe("decorateStage", () => {
 	it("renders a fanout/iterate unit tag as `parent (tag)`", () => {
@@ -37,5 +43,95 @@ describe("unitRowFields", () => {
 			unitId: undefined,
 			unitIndex: 0,
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// recordTerminalFailure — the failure row's append is checked (C6): a dropped
+// failure row makes the trail's tail read "completed", so a later resume would
+// route onward past the stage that actually failed.
+// ---------------------------------------------------------------------------
+
+describe("recordTerminalFailure", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-workflow-audit-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	const freshState = (): RunState => ({
+		originalInput: "x",
+		primaryArtifact: undefined,
+		output: undefined,
+		named: {},
+		stagesCompleted: 0,
+		lastAllocatedStageNumber: 0,
+		telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
+		termination: { success: false, error: undefined },
+	});
+
+	const makeCtx = () => {
+		const notifications: Array<{ msg: string; level: string }> = [];
+		const ctx = {
+			cwd: tmpDir,
+			ui: {
+				notify: (msg: string, level: string) => notifications.push({ msg, level }),
+				setStatus: () => {},
+			},
+		} as unknown as WorkflowHostContext;
+		return { ctx, notifications };
+	};
+
+	const auditFor = (cwd: string, state: RunState): AuditCtx => ({
+		cwd,
+		runId: "run-1",
+		state,
+		stageName: "build",
+		skill: "build",
+		lifecycle: new LifecycleDispatcher(undefined),
+		runIdentity: { workflow: "wf", totalStages: 2, trigger: { kind: "programmatic" } },
+	});
+
+	it("appends the failure row and leaves droppedFailureRows empty on success", async () => {
+		const { ctx, notifications } = makeCtx();
+		const state = freshState();
+
+		await recordTerminalFailure(ctx, auditFor(tmpDir, state), {
+			status: "failed",
+			notifyMsg: "boom",
+			notifyLevel: "error",
+			errMsg: "build failed",
+		});
+
+		expect(readAllStages(tmpDir, "run-1").map((r) => r.status)).toEqual(["failed"]);
+		expect(state.telemetry.droppedFailureRows).toEqual([]);
+		expect(notifications.map((n) => n.msg)).toEqual(["boom"]);
+	});
+
+	it("surfaces a dropped failure-row append: warning notify + telemetry entry (C6)", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { ctx, notifications } = makeCtx();
+			const state = freshState();
+
+			await recordTerminalFailure(ctx, auditFor("/dev/null/impossible", state), {
+				status: "failed",
+				notifyMsg: "boom",
+				notifyLevel: "error",
+				errMsg: "build failed",
+			});
+
+			expect(state.telemetry.droppedFailureRows).toEqual(["build"]);
+			expect(notifications).toContainEqual({ msg: MSG_FAILURE_ROW_DROPPED("build"), level: "warning" });
+			// The terminal bookkeeping still completes — error recorded, toast shown.
+			expect(state.termination.error).toBe("build failed");
+			expect(notifications).toContainEqual({ msg: "boom", level: "error" });
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 });

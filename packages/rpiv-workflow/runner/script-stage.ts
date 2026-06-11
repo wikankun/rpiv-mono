@@ -28,9 +28,9 @@
  */
 
 import type { ScriptContext } from "../api.js";
-import { auditCtxFor, nowIso, recordStage, recordTerminalFailure } from "../audit.js";
+import { allocateStageNumber, auditCtxFor, nowIso, recordStage, recordTerminalFailure } from "../audit.js";
 import type { Artifact } from "./../handle.js";
-import { applyCompletedStage } from "../internal-utils.js";
+import { applyCompletedStage, formatError } from "../internal-utils.js";
 import { scriptStageRef } from "../lifecycle.js";
 import {
 	ERR_AUDIT_WRITE_FAILED,
@@ -80,13 +80,18 @@ export async function runScript(
 	const maxRetries = stage.def.maxRetries ?? DEFAULT_VALIDATION_RETRIES;
 	const onInvalid = stage.def.onInvalid ?? "retry";
 
+	// One allocation per activation, BEFORE any output is built — the
+	// envelope, the success/failure row, and lifecycle bookkeeping share it
+	// (mirrors `produceAndValidateOutput` on the skill path).
+	const stageNumber = allocateStageNumber(run.state);
+
 	for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-		const invocation = await invokeRun(curCtx, stage, scriptCtx, ref, run);
+		const invocation = await invokeRun(curCtx, stage, scriptCtx, run, stageNumber);
 		if (!invocation.ok) return;
 
 		const output = finalizeOutput(invocation.raw, {
 			stage: stage.name,
-			stageNumber: run.state.lastAllocatedStageNumber + 1,
+			stageNumber,
 			ts: nowIso(),
 			runId: run.runId,
 		});
@@ -96,7 +101,7 @@ export async function runScript(
 			if (!validation.valid) {
 				const failureSummary = validation.failures.map(describeFailure).join("; ");
 				if (attempt > maxRetries || onInvalid === "halt") {
-					await recordTerminalFailure(curCtx, scriptAuditCtx(run, stage), {
+					await recordTerminalFailure(curCtx, scriptAuditCtx(run, stage, stageNumber), {
 						status: "failed",
 						notifyMsg: MSG_VALIDATION_EXHAUSTED(stage.name),
 						notifyLevel: "error",
@@ -109,7 +114,7 @@ export async function runScript(
 			}
 		}
 
-		if (!recordScriptSuccess(curCtx, stage, output, run.state, run.cwd, run.runId)) return;
+		if (!recordScriptSuccess(curCtx, stage, output, run.state, run.cwd, run.runId, stageNumber)) return;
 
 		await run.lifecycle.fire(curCtx, "onStageEnd", ref, output, lifecycleCtxFor(run));
 		await advanceChain(curCtx, stage.name, idx, run);
@@ -132,8 +137,8 @@ async function invokeRun(
 	curCtx: WorkflowHostContext,
 	stage: ResolvedStage,
 	scriptCtx: ScriptContext,
-	ref: ReturnType<typeof scriptStageRef>,
 	run: RunContext,
+	stageNumber: number,
 ): Promise<ScriptInvocationResult> {
 	try {
 		const result = await Promise.resolve(stage.def.run!(scriptCtx));
@@ -143,16 +148,15 @@ async function invokeRun(
 				: { kind: "side-effect", artifacts: [] as readonly Artifact[], data: {} as unknown };
 		return { ok: true, raw };
 	} catch (e) {
-		const reason = e instanceof Error ? e.message : String(e);
-		await recordTerminalFailure(curCtx, scriptAuditCtx(run, stage), {
+		const reason = formatError(e);
+		// `recordTerminalFailure` fires `onStageError` itself — the caller must
+		// not fire a second time on the `ok: false` return.
+		await recordTerminalFailure(curCtx, scriptAuditCtx(run, stage, stageNumber), {
 			status: "failed",
 			notifyMsg: MSG_SCRIPT_THREW(stage.name, reason),
 			notifyLevel: "error",
 			errMsg: ERR_SCRIPT_THREW(stage.name, reason),
 		});
-		// `recordTerminalFailure` already fired `onStageError`; suppress the
-		// `_ref` arg here so the caller doesn't fire a second time.
-		void ref;
 		return { ok: false };
 	}
 }
@@ -171,6 +175,7 @@ function recordScriptSuccess(
 	state: RunState,
 	cwd: string,
 	runId: string,
+	stageNumber: number,
 ): boolean {
 	const assigned = recordStage(
 		cwd,
@@ -179,6 +184,7 @@ function recordScriptSuccess(
 		// drops `undefined` so the JSONL row carries no skill field at all.
 		{ stage: stage.name, status: "completed", ts: nowIso(), output },
 		state,
+		stageNumber,
 	);
 	if (assigned === undefined) {
 		curCtx.ui.notify(MSG_AUDIT_WRITE_FAILED(stage.name), "error");
@@ -198,10 +204,11 @@ function recordScriptSuccess(
  * `onStageError` ref payload — using `stage.name` keeps the failure
  * attribution aligned with the success row's `stage` identity.
  */
-function scriptAuditCtx(run: RunContext, stage: ResolvedStage) {
+function scriptAuditCtx(run: RunContext, stage: ResolvedStage, stageNumber: number) {
 	// `skill` doubles as the notify-message subject (`MSG_VALIDATION_EXHAUSTED`,
 	// `MSG_STAGE_FAILED`); set to the stage name so the user sees the stage
 	// identity. `isScript: true` ensures the JSONL row drops the field and
 	// `onStageError` fires with `scriptStageRef` (no `skill` payload).
-	return auditCtxFor(run, stage.name, stage.name, { isScript: true });
+	// `allocatedStageNumber` lets a failure row reuse the activation's number.
+	return auditCtxFor(run, stage.name, stage.name, { isScript: true, allocatedStageNumber: stageNumber });
 }

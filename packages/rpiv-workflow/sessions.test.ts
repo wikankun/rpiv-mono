@@ -66,6 +66,7 @@ const freshRunState = (overrides: Partial<RunState> = {}): RunState => ({
 	telemetry: {
 		backwardJumps: 0,
 		droppedRoutingRows: [],
+		droppedFailureRows: [],
 	},
 	termination: {
 		success: true,
@@ -387,6 +388,114 @@ describe("sessions — validation retry loop", () => {
 
 		expect(onFailure).toHaveBeenCalledTimes(1);
 		expect(state.termination.error).toContain("outcome blew up mid-retry");
+	});
+
+	it("retry/end lifecycle refs and the row share ONE allocator-based stage number (C17/C18)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		// Simulate prior loop units having burned numbers 1..5 — graph index
+		// (stageIndex 0) and allocator value (6) diverge, so a retry ref built
+		// from `stageIndex + 1` would read 1 while the end ref reads 6.
+		const state = freshRunState({ lastAllocatedStageNumber: 5 });
+		const refs: Array<{ event: string; stageNumber: number }> = [];
+		const lifecycle = new LifecycleDispatcher({
+			onStageRetry: (ref) => void refs.push({ event: "retry", stageNumber: ref.stageNumber }),
+			onStageEnd: (ref) => void refs.push({ event: "end", stageNumber: ref.stageNumber }),
+		});
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				lifecycle,
+				stage: stage({
+					outputSchema: FOO_EQ_2_SCHEMA,
+					maxRetries: 2,
+					outcome: scriptedOutcome([okPayload({ foo: 1 }), okPayload({ foo: 2 })]),
+				}),
+			}),
+		);
+
+		// One numbering base for the whole activation — listeners can correlate.
+		expect(refs).toEqual([
+			{ event: "retry", stageNumber: 6 },
+			{ event: "end", stageNumber: 6 },
+		]);
+		// The JSONL row and the output envelope carry the same pre-allocated
+		// number — no `lastAllocatedStageNumber + 1` peek skew (C18).
+		const rows = readStageRows(tmpDir).filter((r) => typeof r.stageNumber === "number");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.stageNumber).toBe(6);
+		expect((rows[0]?.output as { meta?: { stageNumber?: number } })?.meta?.stageNumber).toBe(6);
+	});
+
+	it("a THROWING collector halts with attributed wording, not an escaped machinery throw (C20)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onFailure = vi.fn();
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				stage: stage({
+					outcome: {
+						collector: {
+							collect: () => {
+								throw new Error("custom collector bug");
+							},
+						},
+					},
+				}),
+				onFailure,
+			}),
+		);
+
+		expect(onFailure).toHaveBeenCalledTimes(1);
+		// Attributed to the collector — the primary extension point — not to
+		// stage-start machinery.
+		expect(state.termination.error).toContain("outcome collector threw");
+		expect(state.termination.error).toContain("custom collector bug");
+		expect(chain.notifications.some((n) => n.msg === MSG_STAGE_FAILED("test"))).toBe(true);
+	});
+
+	it("a THROWING parser halts with attributed wording (C20)", async () => {
+		const chain = createMockSessionChain({
+			cwd: tmpDir,
+			steps: [{ branch: [mockAssistantMessage("done")] }],
+		});
+		const state = freshRunState();
+		const onFailure = vi.fn();
+
+		await runStageSession(
+			chain.ctx as WorkflowHostContext,
+			stageSession({
+				cwd: tmpDir,
+				state,
+				stage: stage({
+					outcome: {
+						collector: { collect: () => ({ kind: "ok", artifacts: [{ handle: fsHandle("a.md") }] }) },
+						parser: {
+							parse: () => {
+								throw new Error("custom parser bug");
+							},
+						},
+					},
+				}),
+				onFailure,
+			}),
+		);
+
+		expect(onFailure).toHaveBeenCalledTimes(1);
+		expect(state.termination.error).toContain("outcome parser threw");
+		expect(state.termination.error).toContain("custom parser bug");
 	});
 
 	// Removed: "outcome returning undefined payload on retry" — the new

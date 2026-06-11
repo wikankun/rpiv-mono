@@ -34,9 +34,6 @@ export interface SnapshotCtx {
 	state: Readonly<RunState>;
 }
 
-/** Fail-soft: implementations catch and return undefined rather than throwing. */
-export type SnapshotFn<Snapshot = unknown> = (ctx: SnapshotCtx) => Promise<Snapshot> | Snapshot;
-
 // ---------------------------------------------------------------------------
 // Collector — discover what the stage produced
 // ---------------------------------------------------------------------------

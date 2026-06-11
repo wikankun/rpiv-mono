@@ -14,6 +14,7 @@
  */
 
 import { type EdgeContext, type EdgeFn, STOP, type Workflow } from "./api.js";
+import { formatError } from "./internal-utils.js";
 
 /**
  * Three-way return from `nextStage`. Matches the convention established by
@@ -62,10 +63,9 @@ function invokeEdgeFn(
 	try {
 		return { kind: "ok", value: fn(ctx) };
 	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
 		return {
 			kind: "err",
-			reason: `workflow edge function at "${current}" threw: ${msg}`,
+			reason: `workflow edge function at "${current}" threw: ${formatError(e)}`,
 		};
 	}
 }

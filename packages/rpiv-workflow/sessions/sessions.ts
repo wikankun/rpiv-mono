@@ -18,6 +18,7 @@
 
 import {
 	type AuditCtx,
+	currentStageRef,
 	nowIso,
 	recordCancellation,
 	recordStage,
@@ -50,7 +51,7 @@ import { handlerFor } from "./spawn.js";
 export async function runStageSession(ctx: WorkflowHostContext, s: StageSession): Promise<void> {
 	const handler = handlerFor(s.stage.sessionPolicy);
 	const { cancelled } = await handler.spawn(ctx, s.prompt, (sessionCtx) => postStage(sessionCtx, s), s.continueHost);
-	if (cancelled) await recordCancellation(ctx, auditFor(s));
+	if (cancelled) recordCancellation(ctx, auditFor(s));
 }
 
 // ===========================================================================
@@ -138,6 +139,9 @@ function tryRecordStage(
 			...unitRowFields(s.unit),
 		},
 		s.state,
+		// The activation's number was allocated before its output was built —
+		// the row reuses it, so `output.meta.stageNumber` and the row agree.
+		s.allocatedStageNumber,
 	);
 	if (assigned === undefined) return false;
 	if (row.output) s.state.output = row.output;
@@ -165,20 +169,16 @@ async function recordStageSuccess(ctx: WorkflowHostContext, s: StageSession, out
 			await s.lifecycle.fire(
 				ctx,
 				"onUnitEnd",
-				skillStageRef(s.unit.parent, s.state.lastAllocatedStageNumber, s.skill),
+				// Same allocator base as every other ref of this activation; the
+				// ref's NAME stays the parent stage key (graph identity).
+				skillStageRef(s.unit.parent, s.allocatedStageNumber ?? s.state.lastAllocatedStageNumber, s.skill),
 				unitEventOf(s),
 				output,
 				lifecycleCtxFromSession(s),
 			);
 		} else {
 			ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
-			await s.lifecycle.fire(
-				ctx,
-				"onStageEnd",
-				skillStageRef(s.stageName, s.state.lastAllocatedStageNumber, s.skill),
-				output,
-				lifecycleCtxFromSession(s),
-			);
+			await s.lifecycle.fire(ctx, "onStageEnd", currentStageRef(s), output, lifecycleCtxFromSession(s));
 		}
 		return true;
 	}
@@ -243,6 +243,9 @@ const auditFor = (s: StageSession): AuditCtx => ({
 	skill: s.skill,
 	lifecycle: s.lifecycle,
 	runIdentity: s.runIdentity,
+	// The activation's pre-allocated stage number (set once output production
+	// began) — a failure row reuses it instead of burning a second number.
+	allocatedStageNumber: s.allocatedStageNumber,
 	// Loop units thread their identity onto failure/cancellation rows so failed
 	// trailers carry the structured fields the resume drift guard consumes.
 	...(s.unit ? { unit: s.unit } : {}),

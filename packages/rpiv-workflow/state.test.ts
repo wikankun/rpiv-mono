@@ -10,6 +10,7 @@ import {
 	listArtifacts,
 	listRuns,
 	readAllStages,
+	readAllStagesForResume,
 	readHeader,
 	readLastStage,
 	readLoopCaps,
@@ -499,5 +500,75 @@ describe("listArtifacts", () => {
 		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
 		appendStage(tmpDir, runId, { stageNumber: 1, stage: "commit", skill: "commit", status: "completed", ts: "2026" });
 		expect(listArtifacts(tmpDir, runId)).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Deep stage guard + resume-grade strict reader (T9)
+// ---------------------------------------------------------------------------
+
+describe("deep stage guard + readAllStagesForResume (T9)", () => {
+	const runId = "t9-run";
+	const seed = () => {
+		writeHeader(tmpDir, { runId, workflow: "mid", input: "x", ts: "2026" });
+		appendStage(tmpDir, runId, { stageNumber: 1, stage: "plan", skill: "plan", status: "completed", ts: "t1" });
+	};
+	const appendRaw = (row: Record<string, unknown>) =>
+		appendFileSync(stateFilePath(tmpDir, runId), `${JSON.stringify(row)}\n`, "utf-8");
+
+	it("readAllStages SKIPS a row whose status is outside the enum; the strict reader REFUSES", () => {
+		seed();
+		appendRaw({ stageNumber: 2, stage: "build", skill: "build", status: "exploded", ts: "t2" });
+
+		expect(readAllStages(tmpDir, runId).map((s) => s.stage)).toEqual(["plan"]);
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(false);
+		if (strict.ok) return;
+		expect(strict.detail).toContain('stage row 2 ("build")');
+	});
+
+	it("refuses a row whose output lacks an artifacts array (downstream indexes it)", () => {
+		seed();
+		appendRaw({ stageNumber: 2, stage: "build", status: "completed", ts: "t2", output: "oops" });
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(false);
+	});
+
+	it("refuses a unit row (parent set) missing its numeric unitIndex (the drift guard compares it)", () => {
+		seed();
+		appendRaw({ stageNumber: 2, stage: "build (u1)", status: "completed", ts: "t2", parent: "build" });
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(false);
+	});
+
+	it("non-stage rows (header / routing / loop-cap) never trip the strict reader", () => {
+		seed();
+		appendRaw({ type: "routing", fromStageIndex: 1, fromStage: "plan", decision: "build", ts: "t2" });
+		appendRaw({ type: "loop-cap", stage: "build", count: 3, max: 3, ts: "t3" });
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(true);
+		if (!strict.ok) return;
+		expect(strict.rows.map((s) => s.stage)).toEqual(["plan"]);
+	});
+
+	it("a clean trail round-trips identically through both readers", () => {
+		seed();
+		appendStage(tmpDir, runId, {
+			stageNumber: 2,
+			stage: "build (u1)",
+			skill: "build",
+			status: "failed",
+			ts: "t2",
+			errMsg: "boom",
+			parent: "build",
+			role: "produce",
+			unitId: "u1",
+			unitIndex: 0,
+		});
+		const strict = readAllStagesForResume(tmpDir, runId);
+		expect(strict.ok).toBe(true);
+		if (!strict.ok) return;
+		expect(strict.rows).toEqual(readAllStages(tmpDir, runId));
+		expect(strict.rows).toHaveLength(2);
 	});
 });

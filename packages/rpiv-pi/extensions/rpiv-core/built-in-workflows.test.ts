@@ -279,6 +279,7 @@ describe("recordStage signals success and advances stageNumber monotonically", (
 		telemetry: {
 			backwardJumps: 0,
 			droppedRoutingRows: [],
+			droppedFailureRows: [],
 		},
 		termination: {
 			success: false,

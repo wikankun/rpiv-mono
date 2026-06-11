@@ -6,11 +6,13 @@
 
 import { parseArgs } from "./command.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
+import { formatError } from "./internal-utils.js";
 import { renderConfigLayer } from "./layers.js";
 import { findWorkflow, type Issue, loadWorkflows } from "./load/index.js";
 import {
 	MSG_INTERACTIVE_ONLY,
 	MSG_LOAD_ABORTED,
+	MSG_NAME_FLAG_MID_INPUT,
 	MSG_NAME_IGNORED_ON_RESUME,
 	MSG_NAME_INVALID,
 	MSG_NO_WORKFLOWS_REGISTERED,
@@ -37,6 +39,10 @@ export async function handleWorkflowCommand(host: WorkflowHost, args: string, ct
 
 	const workflowNames = new Set(loaded.workflows.map((w) => w.name));
 	const parsed = parseArgs(args, { workflowNames, default: loaded.default });
+
+	if (parsed.nameFlagIgnored) {
+		ctx.ui.notify(MSG_NAME_FLAG_MID_INPUT, "warning");
+	}
 
 	if (parsed.kind === "resume") {
 		if (parsed.droppedName !== undefined) {
@@ -101,8 +107,7 @@ export async function handleWorkflowCommand(host: WorkflowHost, args: string, ct
 			ctx.ui.notify(result.error, "error");
 		}
 	} catch (e) {
-		const reason = e instanceof Error ? e.message : String(e);
-		ctx.ui.notify(MSG_WORKFLOW_THREW(reason), "error");
+		ctx.ui.notify(MSG_WORKFLOW_THREW(formatError(e)), "error");
 	}
 }
 
@@ -126,7 +131,7 @@ async function handleResume(host: WorkflowHost, ctx: WorkflowHostContext, ref: s
 			ctx.ui.notify(result.error, "error");
 		}
 	} catch (e) {
-		ctx.ui.notify(MSG_WORKFLOW_THREW(e instanceof Error ? e.message : String(e)), "error");
+		ctx.ui.notify(MSG_WORKFLOW_THREW(formatError(e)), "error");
 	}
 }
 

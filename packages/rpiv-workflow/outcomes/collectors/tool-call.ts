@@ -22,6 +22,7 @@ import type { Artifact } from "../../handle.js";
 import type { ArtifactCollector } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
 import { iterToolUses } from "../../transcript.js";
+import { requireOpt } from "./require-opt.js";
 
 export interface ToolCall {
 	name: string;
@@ -45,9 +46,13 @@ export interface ToolCallCollectorOpts {
 }
 
 export function toolCallCollector(opts: ToolCallCollectorOpts): ArtifactCollector {
-	if (typeof opts.match !== "function" || typeof opts.toArtifact !== "function") {
-		throw new Error("toolCallCollector: `match` and `toArtifact` are required functions");
-	}
+	requireOpt("toolCallCollector", "match", "is required and must be a function", typeof opts.match === "function");
+	requireOpt(
+		"toolCallCollector",
+		"toArtifact",
+		"is required and must be a function",
+		typeof opts.toArtifact === "function",
+	);
 	const { match, toArtifact } = opts;
 	return defineCollector({
 		collect: (ctx) => {

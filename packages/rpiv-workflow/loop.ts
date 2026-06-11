@@ -68,8 +68,14 @@ export interface LoopDeps {
 		completedIdx: number,
 		run: RunContext,
 	) => Promise<void>;
-	/** Re-capture the outcome's pre-stage snapshot per unit. */
-	captureSnapshot: (def: StageDef, idx: number, run: RunContext) => Promise<unknown>;
+	/** Re-capture the outcome's pre-stage snapshot per unit (ctx + stage name for the fail-soft warning). */
+	captureSnapshot: (
+		curCtx: WorkflowHostContext,
+		stageName: string,
+		def: StageDef,
+		idx: number,
+		run: RunContext,
+	) => Promise<unknown>;
 	/** Record the terminal failure when `onCap: "halt"` trips — verify-worded for verify stages. */
 	haltLoop: (
 		curCtx: WorkflowHostContext,
@@ -131,6 +137,27 @@ export function freshCursor(): LoopCursor {
 
 /** Stable unit identity — `row.unitId`, the display tag, and the resume guard's join key. */
 export const unitTagOf = (u: Unit): string => u.id ?? u.label;
+
+/**
+ * THE cursor state machine — the ONE place a completed unit's output advances
+ * a `LoopCursor`. Shared by the live driver (`dispatchUnit.onSuccess`) and the
+ * resume fold (`foldUnitRow`); THE REPLAY CONTRACT requires the two paths to
+ * advance byte-identically, so neither may hand-roll the transition again.
+ * `ranThisInvocation` is deliberately NOT advanced here: it is live-dispatch
+ * accounting (the resume silence rule), not replayed state.
+ */
+export function advanceCursor(cursor: LoopCursor, role: UnitRole, output: Output, loopKind: LoopDef["kind"]): void {
+	if (role === "produce") {
+		cursor.accumulated.push(output);
+		cursor.lastProduce = { output, artifact: output.artifacts[0] };
+		if (loopKind === "assess") cursor.phase = "judge";
+		else cursor.index++;
+	} else {
+		cursor.lastVerdict = output;
+		cursor.phase = "produce";
+		cursor.index++;
+	}
+}
 
 /**
  * Synthetic `produces` def a judge unit runs on: the verdict is validated +
@@ -327,7 +354,7 @@ async function dispatchUnit(
 		lifecycleCtxOf(run),
 	);
 
-	const snapshot = await deps.captureSnapshot(u.def, e.stageIdx, run);
+	const snapshot = await deps.captureSnapshot(curCtx, e.name, u.def, e.stageIdx, run);
 
 	await deps.runStageSession(curCtx, {
 		cwd: run.cwd,
@@ -347,16 +374,7 @@ async function dispatchUnit(
 		onFailure: undefined,
 		onSuccess: (freshCtx, output) => {
 			cursor.ranThisInvocation++;
-			if (u.role === "produce") {
-				cursor.accumulated.push(output);
-				cursor.lastProduce = { output, artifact: output.artifacts[0] };
-				if (e.loop.kind === "assess") cursor.phase = "judge";
-				else cursor.index++;
-			} else {
-				cursor.lastVerdict = output;
-				cursor.phase = "produce";
-				cursor.index++;
-			}
+			advanceCursor(cursor, u.role, output, e.loop.kind);
 			return step(freshCtx, e, cursor, cap, run, deps);
 		},
 	});

@@ -122,7 +122,6 @@ function formatStageRow(idx: number, stageName: string, stage: StageDef, workflo
 }
 
 /**
-/**
  * Single tag per stage encoding the outcome shape. Custom outcomes
  * report `custom` (+`snapshot` when the collector declares a snapshot
  * hook, +`parser` when a parser is wired). Stages without an outcome

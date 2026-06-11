@@ -15,6 +15,7 @@ import {
 	defineWorkflow,
 	type EdgeFn,
 	gate,
+	marksReadsData,
 	type OutputSpec,
 	type ProducesScriptFn,
 	produces,
@@ -331,6 +332,24 @@ describe("defineRoute", () => {
 	it("accepts readsData: false to opt out of the outputSchema lint", () => {
 		const fn = defineRoute(["a", "b"], () => "a", { readsData: false });
 		expect(fn.targets).toEqual(["a", "b"]);
+	});
+
+	it("never mutates the caller's function — reusing one predicate keeps each route's targets (C8)", () => {
+		const predicate = () => "x";
+		const first = defineRoute(["x", "y"], predicate);
+		const second = defineRoute(["x"], predicate);
+		// Pre-fix the second call overwrote the first's targets (same object).
+		expect(first.targets).toEqual(["x", "y"]);
+		expect(second.targets).toEqual(["x"]);
+		expect((predicate as { targets?: readonly string[] }).targets).toBeUndefined();
+	});
+
+	it("readsData: false does not inherit a marker a prior call attached (C8)", () => {
+		const predicate = () => "a";
+		const marked = defineRoute(["a"], predicate); // default readsData: true
+		const unmarked = defineRoute(["a"], predicate, { readsData: false });
+		expect(marksReadsData(marked)).toBe(true);
+		expect(marksReadsData(unmarked)).toBe(false);
 	});
 });
 

@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { formatError } from "../../internal-utils.js";
 import type { ArtifactParser } from "../../output-spec.js";
 import { defineParser } from "../../output-spec.js";
 
@@ -40,10 +41,9 @@ export const jsonBodyParser: ArtifactParser<unknown, "json", unknown> = definePa
 			const data = JSON.parse(readFileSync(abs, "utf-8"));
 			return { kind: "ok", payload: { kind: "json", data } };
 		} catch (e) {
-			const reason = e instanceof Error ? e.message : String(e);
 			return {
 				kind: "fatal",
-				message: `${ctx.skill}: failed to parse JSON from ${primary.handle.path} — ${reason}`,
+				message: `${ctx.skill}: failed to parse JSON from ${primary.handle.path} — ${formatError(e)}`,
 			};
 		}
 	},

@@ -43,7 +43,7 @@
  *
  * Module map:
  *   ./paths.ts            — OverlayPaths + per-layer path helpers
- *   ./shape-guards.ts     — isWorkflow, isEnvelope, describe, formatError
+ *   ./shape-guards.ts     — isWorkflow, isEnvelope, describe
  *   ./normalize.ts        — normalizeDefaultExport + NormalizeResult
  *   ./merge.ts            — LoadAccumulator, LayerOutcome, loadLayer, mergeOverlay, loadError
  *   ./resolve-default.ts  — resolveDefault (first-workflow fallback)
@@ -54,6 +54,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Workflow } from "../api.js";
 import { flushBuiltInProviders, getBuiltIns } from "../built-ins.js";
+import { formatError } from "../internal-utils.js";
 import type { ConfigLayer } from "../layers.js";
 import { LEGACY_OVERLAY_NOTICE, LEGACY_RUNS_NOTICE, LEGACY_USER_CONFIG_NOTICE } from "../messages.js";
 import type { SkillContractMap } from "../skill-contract.js";
@@ -165,7 +166,7 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 		acc.issues.push({
 			kind: "load",
 			layer: "built-in",
-			message: `skill-contract provider failed: ${err instanceof Error ? err.message : String(err)}`,
+			message: `skill-contract provider failed: ${formatError(err)}`,
 			severity: "warning",
 		});
 	}
@@ -212,6 +213,22 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 	// so `produces` stages that don't declare an explicit `outcome` get one wired
 	// from the contract registry before validation checks
 	// `produces-without-outcome`.
+	//
+	// Deriver mutations (`stage.outcome = ...`) must land on PER-LOAD copies,
+	// never on shared sources: built-ins live in a process-global registry and
+	// unchanged overlay files come back BY REFERENCE from the mtime cache, so an
+	// in-place mutation would pin this load's derived outcome onto every future
+	// load — the deriver's `if (stage.outcome) continue` idempotency guard would
+	// then skip re-derivation even after a contract change. Shallow-copy each
+	// workflow's stage records first (same `{...stage}` copy `aliasSkills` uses).
+	if (getOutcomeDerivers().length > 0) {
+		for (const [name, w] of acc.workflowMap) {
+			acc.workflowMap.set(name, {
+				...w,
+				stages: Object.fromEntries(Object.entries(w.stages).map(([k, s]) => [k, { ...s }])),
+			});
+		}
+	}
 	for (const deriver of getOutcomeDerivers()) {
 		try {
 			deriver(acc.workflowMap.values(), skillContracts, (message, severity) => {
@@ -222,7 +239,7 @@ export async function loadWorkflows(cwd: string): Promise<LoadedWorkflows> {
 				kind: "load",
 				layer: "built-in",
 				severity: "error",
-				message: `outcome deriver failed: ${err instanceof Error ? err.message : String(err)}`,
+				message: `outcome deriver failed: ${formatError(err)}`,
 			});
 		}
 	}

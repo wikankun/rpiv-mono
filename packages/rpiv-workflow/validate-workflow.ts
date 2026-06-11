@@ -31,13 +31,13 @@ import {
 	type Workflow,
 } from "./api.js";
 import { loopSpecOf, verifyShapeIssues } from "./control-flow.js";
-import { resolvePublishName, resolveSkill } from "./internal-utils.js";
+import { isDispatchingStage, resolvePublishName, resolveSkill } from "./internal-utils.js";
 import { extractJsonSchema } from "./json-schema.js";
 import { judgeShapeIssues } from "./judge.js";
 import type { ConfigLayer } from "./layers.js";
 import { isSchemaCompatible } from "./schema-compat.js";
 import type { ProducesSpec, SkillContractMap } from "./skill-contract.js";
-import { getCompositionComparators } from "./skill-contracts/index.js";
+import { adjudicateChannel, getCompositionComparators } from "./skill-contracts/index.js";
 import {
 	MAX_VALIDATION_RETRIES,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
@@ -85,12 +85,11 @@ export function validateWorkflow(
 	}
 
 	checkEdgeKeys(workflow, issues);
-	checkEdgeTargets(workflow, issues);
-	checkMissingEdges(workflow, issues);
 	// Skip reachability when an EdgeFn lacks `.targets` — the BFS would emit
 	// "unreachable from start" cascades whose root cause is the upstream error
 	// already reported by checkEdgeTargets.
-	const hasUnenumerableEdge = issues.some((i) => /\.targets` metadata/.test(i.message));
+	const hasUnenumerableEdge = checkEdgeTargets(workflow, issues);
+	checkMissingEdges(workflow, issues);
 	if (!hasUnenumerableEdge) checkReachability(workflow, issues);
 	checkStageSemantics(workflow, issues);
 	checkPredicateSchemas(workflow, issues, opts?.skillContracts);
@@ -126,11 +125,14 @@ function checkEdgeKeys(w: Workflow, issues: WorkflowValidationIssue[]): void {
  * Every edge target must resolve to a declared stage or the `"stop"` sentinel.
  * String targets are checked directly. `EdgeFn` targets are checked via the
  * paired `checkEdgeFnTargets` (emits the no-`.targets` error) and enumerated
- * via the pure `enumerateTargets`.
+ * via the pure `enumerateTargets`. Returns true when any edge is an EdgeFn
+ * without `.targets` — the orchestrator consumes the boolean directly to skip
+ * reachability (no message-regex control flow).
  */
-function checkEdgeTargets(w: Workflow, issues: WorkflowValidationIssue[]): void {
+function checkEdgeTargets(w: Workflow, issues: WorkflowValidationIssue[]): boolean {
+	let hasUnenumerableEdge = false;
 	for (const [from, target] of Object.entries(w.edges)) {
-		checkEdgeFnTargets(target, { workflow: w.name, from }, issues);
+		if (checkEdgeFnTargets(target, { workflow: w.name, from }, issues)) hasUnenumerableEdge = true;
 		for (const candidate of enumerateTargets(target)) {
 			if (candidate === STOP) continue;
 			if (!w.stages[candidate]) {
@@ -140,6 +142,7 @@ function checkEdgeTargets(w: Workflow, issues: WorkflowValidationIssue[]): void 
 			}
 		}
 	}
+	return hasUnenumerableEdge;
 }
 
 /** Stages with no outgoing edge are implicit terminals — usually a missing connection. */
@@ -724,7 +727,11 @@ function checkPredicateSchemas(
 		if (!stage || stage.outputSchema) continue;
 		// Contract-sourced output schema covers the stage like its own `outputSchema`
 		// would — mirror `effectiveOutputSchema`'s fallback (same `resolveSkill` key).
-		const contractData = skillContracts?.get(resolveSkill(stage, from))?.produces?.data;
+		// Only DISPATCHING stages have a skill identity: a script/prompt stage whose
+		// record key matches a registered skill must not inherit its contract.
+		const contractData = isDispatchingStage(stage)
+			? skillContracts?.get(resolveSkill(stage, from))?.produces?.data
+			: undefined;
 		if (contractData) continue;
 		issues.push(
 			warning(
@@ -756,8 +763,14 @@ function checkEdgeSchemaCompat(
 		const fromStage = w.stages[from];
 		const toStage = w.stages[target];
 		if (!fromStage || !toStage) continue; // unknown stages already reported by edge-target checks
-		const producerContract = skillContracts?.get(resolveSkill(fromStage, from));
-		const consumerContract = skillContracts?.get(resolveSkill(toStage, target));
+		// Contract lookups only for DISPATCHING stages (script/prompt stages have
+		// no skill identity); their own output/input schemas still participate.
+		const producerContract = isDispatchingStage(fromStage)
+			? skillContracts?.get(resolveSkill(fromStage, from))
+			: undefined;
+		const consumerContract = isDispatchingStage(toStage)
+			? skillContracts?.get(resolveSkill(toStage, target))
+			: undefined;
 
 		const producer = producerContract?.produces?.data ?? extractJsonSchema(fromStage.outputSchema);
 		const consumer = consumerContract?.consumes?.data ?? extractJsonSchema(toStage.inputSchema);
@@ -783,9 +796,11 @@ function checkEdgeSchemaCompat(
  * ERRORS on a clean comparator incompatibility between two SIGNED contracts —
  * the "mechanically reject invalid wirings" guarantee, uniform across all stage
  * kinds, which is why no runtime reads gate is needed. Degrades (never errors)
- * when either side is unsigned, no comparator is registered, the channel isn't
- * declared, or the comparator throws. "No publisher at all" is
- * `checkReadsReferences`'s job, not this one's.
+ * when either side is unsigned or the shared `adjudicateChannel` gate skips
+ * (no comparator registered, or the consumer declares no `meta` requirement
+ * for the channel); a comparator throw surfaces as a WARNING (author defect —
+ * matching the deriver/provider precedent) rather than silently disabling the
+ * gate. "No publisher at all" is `checkReadsReferences`'s job, not this one's.
  */
 function checkReadsChannelCompat(
 	w: Workflow,
@@ -805,7 +820,10 @@ function checkReadsChannelCompat(
 		else publishersByChannel.set(channel, [{ stage, produces }]);
 	};
 	for (const [name, stage] of Object.entries(w.stages)) {
-		if (stage.kind === "produces") {
+		// Only DISPATCHING produces stages have a skill identity to sign with —
+		// a script/prompt stage named after a registered skill must not become
+		// a phantom signed publisher.
+		if (stage.kind === "produces" && isDispatchingStage(stage)) {
 			const produces = skillContracts.get(resolveSkill(stage, name))?.produces;
 			if (produces) indexPublisher(resolvePublishName(stage, name), name, produces);
 		}
@@ -819,26 +837,38 @@ function checkReadsChannelCompat(
 
 	for (const [consumerName, consumer] of Object.entries(w.stages)) {
 		if (!consumer.reads?.length) continue;
-		const consumes = skillContracts.get(resolveSkill(consumer, consumerName))?.consumes;
+		// Same dispatching gate as the publisher index — a non-dispatching
+		// consumer is unsigned by definition.
+		const consumes = isDispatchingStage(consumer)
+			? skillContracts.get(resolveSkill(consumer, consumerName))?.consumes
+			: undefined;
 		if (!consumes?.reads) continue; // unsigned consumer — degrade
 		for (const channel of consumer.reads) {
-			const comparator = comparators.get(channel);
-			if (!comparator || !consumes.reads[channel]) continue; // no adjudicator / undeclared channel — degrade
 			const publishers = publishersByChannel.get(channel);
 			if (!publishers) continue; // "no publisher at all" is checkReadsReferences's job
 			for (const { stage: producerName, produces } of publishers) {
-				let compat: { ok: boolean; reason?: string };
-				try {
-					compat = comparator(produces, consumes, channel);
-				} catch {
-					continue; // comparator threw — author defect, degrade
+				// THE shared adjudication rule (`adjudicateChannel`) — same gating and
+				// degrade posture as `canCompose`, so the adviser and this load gate
+				// can never disagree about one producer/consumer pair.
+				const verdict = adjudicateChannel(produces, consumes, channel, comparators);
+				if (verdict.kind === "ok" || verdict.kind === "skipped") continue;
+				if (verdict.kind === "comparator-threw") {
+					// Author-defect in the comparator: surfaced (matching the
+					// deriver/provider precedent), never silently disabling the gate.
+					issues.push(
+						warning(
+							w.name,
+							consumerName,
+							`stage "${consumerName}": composition comparator for channel "${channel}" threw (${verdict.error}) — reads-compat not adjudicated against publisher "${producerName}"`,
+						),
+					);
+					continue;
 				}
-				if (compat.ok) continue;
 				issues.push(
 					error(
 						w.name,
 						consumerName,
-						`stage "${consumerName}" reads channel "${channel}" but publisher "${producerName}" is incompatible — ${compat.reason ?? "named-channel meta incompatibility"}`,
+						`stage "${consumerName}" reads channel "${channel}" but publisher "${producerName}" is incompatible — ${verdict.reason ?? "named-channel meta incompatibility"}`,
 					),
 				);
 			}
@@ -870,7 +900,8 @@ function enumerateTargets(target: EdgeTarget): string[] {
 
 /**
  * Emits the "EdgeFn without `.targets` metadata" error for an `EdgeTarget`
- * that's a hand-rolled `EdgeFn` lacking the marker. Pairs with
+ * that's a hand-rolled `EdgeFn` lacking the marker, returning true when it
+ * fired (the orchestrator gates reachability on it). Pairs with
  * `enumerateTargets`: lint sites call both; reachability calls only the
  * enumerator. Users authoring routes by hand MUST go through
  * `defineRoute(targets, fn)` so the `.targets` metadata is structurally
@@ -880,9 +911,9 @@ function checkEdgeFnTargets(
 	target: EdgeTarget,
 	ctx: { workflow: string; from: string },
 	issues: WorkflowValidationIssue[],
-): void {
-	if (typeof target === "string") return;
-	if (Array.isArray(target.targets) && target.targets.length > 0) return;
+): boolean {
+	if (typeof target === "string") return false;
+	if (Array.isArray(target.targets) && target.targets.length > 0) return false;
 	issues.push(
 		error(
 			ctx.workflow,
@@ -890,6 +921,7 @@ function checkEdgeFnTargets(
 			`edges["${ctx.from}"] is an EdgeFn without \`.targets\` metadata — use defineRoute([...], fn) or gate() so reachability can enumerate branches`,
 		),
 	);
+	return true;
 }
 
 // ===========================================================================

@@ -97,13 +97,15 @@ export type SkillContractMap = ReadonlyMap<string, SkillContract>;
 /**
  * A consumer-supplied adjudicator for one named channel's `meta` compatibility.
  * The framework INVOKES it but never reads inside `meta` — the channel's
- * ontology lives entirely with the consumer. Registered per channel
- * via `registerCompositionComparator(channelName, comparator)` and consulted by
- * the three adjudication points (`canCompose`/`legalNextSkills`,
- * `checkEdgeSchemaCompat`, `ensureContractInputValid`) for any consumer
- * declaring `consumes.reads[channelName]`. Conservative by contract: return
- * `{ ok: true }` whenever there is nothing to compare (absent meta on either
- * side) so a missing tag degrades, never HALTs.
+ * ontology lives entirely with the consumer. Registered per channel via
+ * `registerCompositionComparator(channelName, comparator)` and invoked through
+ * ONE shared rule, `adjudicateChannel` (skill-contracts/composition.ts), at
+ * its two consumption points: `canCompose`/`legalNextSkills` (advisory query)
+ * and `checkReadsChannelCompat` (the load gate). The shared gate fires only
+ * for consumers declaring `consumes.reads[channelName]` with a `meta`
+ * requirement. Conservative by contract: return `{ ok: true }` whenever there
+ * is nothing to compare (absent meta on either side) so a missing tag
+ * degrades, never HALTs.
  */
 export type CompositionComparator = (
 	produces: ProducesSpec,

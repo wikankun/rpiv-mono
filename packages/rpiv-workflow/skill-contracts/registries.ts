@@ -40,8 +40,9 @@ export const getCompositionComparators = globalSlot(COMPARATORS_KEY, () => new M
 
 /**
  * Register a per-channel composition comparator. The framework invokes the
- * comparator at all three adjudication points for any consumer that declares
- * `consumes.reads[channelName]`, but never interprets the `meta` it compares —
+ * comparator through the ONE shared `adjudicateChannel` rule (composition.ts)
+ * for any consumer that declares `consumes.reads[channelName]` with a `meta`
+ * requirement, but never interprets the `meta` it compares —
  * the channel's ontology is the consumer's. Per-channel
  * (not a single global comparator) so different consumers own different channels
  * without collision. Idempotent on channel name (re-register replaces). Anchored
@@ -72,10 +73,11 @@ export function registerOutcomeDeriver(deriver: OutcomeDeriverFn): void {
 /**
  * Peek at registered outcome derivers (non-draining). `loadWorkflows` calls
  * this on every load after `buildEffectiveContracts` and invokes each deriver
- * with the merged workflow map and effective skill contracts. Derivers must
- * re-run on every load because their effects (mutating `stage.outcome`) live
- * on per-load workflow objects — fresh objects from cache re-imports carry no
- * outcome. The deriver is idempotent (`if (stage.outcome) continue`), so
+ * with the merged workflow map and effective skill contracts. The loader
+ * shallow-copies every workflow's stage records BEFORE invoking derivers, so
+ * deriver mutations land on per-load copies — never on shared built-ins or
+ * mtime-cached overlay objects — and a contract change between loads always
+ * re-derives. The deriver is idempotent (`if (stage.outcome) continue`), so
  * re-running on already-derived stages is safe. Internal — not on the public
  * barrel.
  */

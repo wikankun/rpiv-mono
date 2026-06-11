@@ -12,6 +12,7 @@ import {
 	ERR_STAGE_NO_RESPONSE,
 	ERR_STAGE_TOOL_STALLED,
 	ERR_STAGE_TRUNCATED,
+	MSG_FAILURE_ROW_DROPPED,
 	MSG_PARTIAL_ARTIFACTS,
 	MSG_STAGE_ABORTED,
 	MSG_STAGE_FAILED,
@@ -44,7 +45,7 @@ export const nowIso = (): string => new Date().toISOString();
  */
 export type AuditCtx = Pick<
 	SessionContext,
-	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity"
+	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity" | "allocatedStageNumber"
 > & {
 	isScript?: boolean;
 	unit?: UnitRef;
@@ -71,7 +72,7 @@ export function auditCtxFor(
 	run: RunContext,
 	stageName: string,
 	skill: string,
-	opts?: { isScript?: boolean; unit?: UnitRef },
+	opts?: { isScript?: boolean; unit?: UnitRef; allocatedStageNumber?: number },
 ): AuditCtx {
 	return {
 		cwd: run.cwd,
@@ -83,7 +84,22 @@ export function auditCtxFor(
 		runIdentity: runIdentityOf(run),
 		...(opts?.isScript ? { isScript: true } : {}),
 		...(opts?.unit ? { unit: opts.unit } : {}),
+		...(opts?.allocatedStageNumber !== undefined ? { allocatedStageNumber: opts.allocatedStageNumber } : {}),
 	};
+}
+
+/**
+ * Lifecycle ref for the CURRENT activation — ONE numbering base (the
+ * allocator value) for every event of one execution, so a listener can
+ * correlate a retry ref with the end/error ref it belongs to. Valid once the
+ * activation allocated its number (`allocatedStageNumber`); falls back to the
+ * last allocated number for record-time allocators (failure paths that never
+ * reached output production).
+ */
+export function currentStageRef(
+	s: Pick<SessionContext, "stageName" | "skill" | "state" | "allocatedStageNumber">,
+): ReturnType<typeof skillStageRef> {
+	return skillStageRef(s.stageName, s.allocatedStageNumber ?? s.state.lastAllocatedStageNumber, s.skill);
 }
 
 /**
@@ -109,23 +125,35 @@ export function unitRowFields(
 }
 
 /**
- * Allocates the next `stageNumber`, attempts the append, and returns the
- * assigned number on success (or undefined on I/O failure). `lastAllocatedStageNumber`
- * advances monotonically — once per call — so a transient failure doesn't
- * cause the next stage to reuse the lost row's number. Higher-level counters
+ * Advance the monotonic stage-number allocator and return the assigned
+ * number. Call ONCE per stage activation, BEFORE the activation's output
+ * envelope is built — the envelope's `meta.stageNumber`, the JSONL row, and
+ * every lifecycle ref for the activation then share one explicit value
+ * instead of peeking `lastAllocatedStageNumber + 1` and relying on a
+ * "no record in between" convention.
+ */
+export function allocateStageNumber(state: RunState): number {
+	state.lastAllocatedStageNumber += 1;
+	return state.lastAllocatedStageNumber;
+}
+
+/**
+ * Attempts the append and returns the assigned `stageNumber` on success (or
+ * undefined on I/O failure). The number comes from `preAllocated` when the
+ * activation already ran `allocateStageNumber` (output-producing paths), or
+ * is allocated here (pre-output halts). Either way the allocator advances
+ * monotonically — once per activation — so a transient failure doesn't cause
+ * the next stage to reuse the lost row's number. Higher-level counters
  * (e.g. `stagesCompleted`) gate on the returned value being defined.
- *
- * `wrapOutput`'s `state.lastAllocatedStageNumber + 1` peek aligns with this allocation
- * because the output is built BEFORE recordStage is called.
  */
 export function recordStage(
 	cwd: string,
 	runId: string,
 	stage: Omit<WorkflowStage, "stageNumber">,
 	state: RunState,
+	preAllocated?: number,
 ): number | undefined {
-	state.lastAllocatedStageNumber += 1;
-	const stageNumber = state.lastAllocatedStageNumber;
+	const stageNumber = preAllocated ?? allocateStageNumber(state);
 	return appendStage(cwd, runId, { stageNumber, ...stage }) ? stageNumber : undefined;
 }
 
@@ -148,7 +176,7 @@ export async function recordTerminalFailure(
 	},
 	onFailure?: (ctx: WorkflowHostContext) => void,
 ): Promise<void> {
-	recordStage(
+	const written = recordStage(
 		audit.cwd,
 		audit.runId,
 		// Script-stage failure rows omit `skill` (the row split landed in A.0);
@@ -164,7 +192,19 @@ export async function recordTerminalFailure(
 			...unitRowFields(audit.unit),
 		},
 		audit.state,
+		// Reuse the activation's pre-allocated number when output production
+		// already burned one — the failure row carries the SAME stage number
+		// the activation's output/lifecycle refs used (no gap, no skew).
+		audit.allocatedStageNumber,
 	);
+	if (written === undefined) {
+		// A dropped FAILURE row corrupts resume: the trail's last row reads
+		// "completed" and a resume would route onward past this stage. The run
+		// is already halting — surface loudly + flag the envelope so callers
+		// know the trail is unsafe to resume from.
+		ctx.ui.notify(MSG_FAILURE_ROW_DROPPED(audit.stageName), "warning");
+		audit.state.telemetry.droppedFailureRows.push(audit.stageName);
+	}
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(args.notifyMsg, args.notifyLevel);
 	onFailure?.(ctx);
@@ -256,15 +296,25 @@ function stopFailureArgs(
 }
 
 export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): void {
+	// `success: false` alone can't distinguish "cancelled" from "never started";
+	// the error string is the signal. Mirrored into the JSONL row's `errMsg`
+	// so post-mortems work from the trail alone (same posture as
+	// `recordTerminalFailure`).
+	const errMsg = `${audit.skill} cancelled by user`;
 	recordStage(
 		audit.cwd,
 		audit.runId,
-		{ stage: audit.stageName, skill: audit.skill, status: "skipped", ts: nowIso(), ...unitRowFields(audit.unit) },
+		{
+			stage: audit.stageName,
+			skill: audit.skill,
+			status: "skipped",
+			ts: nowIso(),
+			errMsg,
+			...unitRowFields(audit.unit),
+		},
 		audit.state,
 	);
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(MSG_WORKFLOW_CANCELLED, "info");
-	// `success: false` alone can't distinguish "cancelled" from "never started";
-	// the error string is the signal.
-	audit.state.termination.error = `${audit.skill} cancelled by user`;
+	audit.state.termination.error = errMsg;
 }

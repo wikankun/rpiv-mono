@@ -14,13 +14,10 @@ import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
 import type { CompositionComparator } from "./skill-contract.js";
 import { registerCompositionComparator, registerSkillContracts } from "./skill-contracts/index.js";
-import {
-	addNameToIndex,
-	appendRoutingDecision,
-	readHeader,
-	readNamesIndex,
-	readRoutingDecisions,
-} from "./state/index.js";
+import { appendRoutingDecision, readHeader, readNamesIndex, readRoutingDecisions } from "./state/index.js";
+// Deep import: addNameToIndex is deliberately NOT on the state barrels
+// (production code goes through claimName); tests seed collisions directly.
+import { addNameToIndex } from "./state/names.js";
 import { hasAssistantMessage, lastAssistantStopReason } from "./transcript.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 
@@ -2492,6 +2489,42 @@ describe("runWorkflow", () => {
 			const { stages } = readState(tmpDir);
 			expect(stages.map((s) => s.status)).toEqual(["completed", "completed"]);
 			expect(stages.some((s) => /stale/.test(String(s.errMsg ?? "")))).toBe(false);
+		});
+
+		it("a throwing outcome snapshot warns ONCE per run and the stages still complete (C19)", async () => {
+			// Pre-fix the bare `catch {}` silently disabled diffing for the whole
+			// run with zero diagnostics. The stage must still run (snapshot is
+			// best-effort) but the FIRST failure surfaces a warning.
+			const throwingSnapshotOutcome: OutputSpec = {
+				collector: {
+					snapshot: () => {
+						throw new Error("custom snapshot bug");
+					},
+					collect: () => ({ kind: "ok", artifacts: [{ handle: fsHandle("out.md"), role: "primary" }] }),
+				},
+			};
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("one")] }, { branch: [mockAssistantMessage("two")] }],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("snap", ["research", "design"], {
+					research: { outcome: throwingSnapshotOutcome },
+					design: { outcome: throwingSnapshotOutcome },
+				}),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+			const warns = chain.notifications.filter(
+				(n) => n.level === "warning" && /outcome snapshot for research threw/.test(n.msg),
+			);
+			expect(warns).toHaveLength(1);
+			expect(warns[0]?.msg).toContain("custom snapshot bug");
+			// Second stage's identical failure stays silent — one warning per run.
+			expect(chain.notifications.filter((n) => /outcome snapshot/.test(n.msg))).toHaveLength(1);
 		});
 
 		it("skips the check when pi is not provided (no registry to consult)", async () => {

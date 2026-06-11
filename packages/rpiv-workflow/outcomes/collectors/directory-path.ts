@@ -13,6 +13,7 @@
  */
 
 import type { ArtifactCollector } from "../../output-spec.js";
+import { requireOpt } from "./require-opt.js";
 import { transcriptPathCollector } from "./transcript-path.js";
 
 export interface DirectoryPathCollectorOpts {
@@ -26,9 +27,12 @@ export interface DirectoryPathCollectorOpts {
 }
 
 export function directoryPathCollector(opts: DirectoryPathCollectorOpts): ArtifactCollector {
-	if (typeof opts.dir !== "string" || opts.dir.length === 0) {
-		throw new Error("directoryPathCollector: `dir` is required and must be a non-empty string");
-	}
+	requireOpt(
+		"directoryPathCollector",
+		"dir",
+		"is required and must be a non-empty string",
+		typeof opts.dir === "string" && opts.dir.length > 0,
+	);
 	const escapedDir = escapeRegex(opts.dir);
 	const extPart = opts.ext ? escapeRegex(opts.ext) : "[a-zA-Z0-9]+";
 	const pattern = new RegExp(`${escapedDir}/[\\w.-]+\\.${extPart}`, "g");

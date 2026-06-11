@@ -27,6 +27,7 @@
  */
 
 import type { CapPolicy, Unit, UnitRole } from "./api.js";
+import { formatError, globalSlot } from "./internal-utils.js";
 import { MSG_LIFECYCLE_THREW } from "./messages.js";
 import type { Output } from "./output.js";
 import type { RunWorkflowResult } from "./runner/runner.js";
@@ -227,8 +228,7 @@ export class LifecycleDispatcher {
 			try {
 				await (fn as (...a: unknown[]) => unknown)(...(args as unknown[]));
 			} catch (e) {
-				const reason = e instanceof Error ? e.message : String(e);
-				host.ui.notify(MSG_LIFECYCLE_THREW(event, reason), "warning");
+				host.ui.notify(MSG_LIFECYCLE_THREW(event, formatError(e)), "warning");
 			}
 		}
 	}
@@ -245,17 +245,7 @@ export class LifecycleDispatcher {
  */
 const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:lifecycle");
 
-type Global = Record<symbol, unknown>;
-
-function getRegistry(): LifecycleListeners[] {
-	const g = globalThis as unknown as Global;
-	let registry = g[REGISTRY_KEY] as LifecycleListeners[] | undefined;
-	if (!registry) {
-		registry = [];
-		g[REGISTRY_KEY] = registry;
-	}
-	return registry;
-}
+const getRegistry = globalSlot(REGISTRY_KEY, () => [] as LifecycleListeners[]);
 
 /**
  * Register a cross-package lifecycle-listener bundle. Returns a disposer

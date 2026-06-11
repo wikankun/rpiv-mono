@@ -12,7 +12,13 @@
 import type { StageDef } from "../api.js";
 import { auditCtxFor, notifyPartialArtifacts, recordTerminalFailure, runIdentityOf } from "../audit.js";
 import { effectiveLoopOf } from "../control-flow.js";
-import { currentPrimaryArtifact, resolveSkill, resolveStagePrompt, stageEntryArgs } from "../internal-utils.js";
+import {
+	currentPrimaryArtifact,
+	formatError,
+	resolveSkill,
+	resolveStagePrompt,
+	stageEntryArgs,
+} from "../internal-utils.js";
 import type { Judge } from "../judge.js";
 import { skillStageRef } from "../lifecycle.js";
 import { freshCursor, type LoopDeps, type LoopEntry, runLoop } from "../loop.js";
@@ -26,6 +32,7 @@ import {
 	MSG_MISSING_ARTIFACT,
 	MSG_MISSING_NAMED_READ,
 	MSG_SKILL_NOT_REGISTERED,
+	MSG_SNAPSHOT_FAILED,
 	MSG_STAGE_THREW,
 	MSG_VERIFY_FAILED,
 	STATUS_KEY,
@@ -176,7 +183,7 @@ export async function runStage(
 
 	for (const check of POST_PROMPT_CHECKS) await check.run(stage, run);
 
-	const snapshot = await captureStageSnapshot(stage.def, idx, run);
+	const snapshot = await captureStageSnapshot(curCtx, stage.name, stage.def, idx, run);
 
 	// onStageStart fires after preflight, before the Pi session opens.
 	await run.lifecycle.fire(
@@ -341,7 +348,7 @@ export function buildLoopDeps(): LoopDeps {
 	return {
 		runStageSession,
 		advanceAfter: (freshCtx, name, completedIdx, ctx) => advanceChain(freshCtx, name, completedIdx, ctx),
-		captureSnapshot: (def, i, r) => captureStageSnapshot(def, i, r),
+		captureSnapshot: (ctx, name, def, i, r) => captureStageSnapshot(ctx, name, def, i, r),
 		haltLoop,
 	};
 }
@@ -477,7 +484,16 @@ function computeBranchOffset(curCtx: WorkflowHostContext, def: StageDef): number
 	return readBranch(curCtx).length;
 }
 
-export async function captureStageSnapshot(def: StageDef, idx: number, run: RunContext): Promise<unknown> {
+/** Runs whose snapshot-failure warning already fired — one notify per run, not per stage/unit. */
+const snapshotWarnedRuns = new WeakSet<RunContext>();
+
+export async function captureStageSnapshot(
+	curCtx: WorkflowHostContext,
+	stageName: string,
+	def: StageDef,
+	idx: number,
+	run: RunContext,
+): Promise<unknown> {
 	const snapshot = def.outcome?.collector.snapshot;
 	if (!snapshot) return undefined;
 	try {
@@ -487,8 +503,14 @@ export async function captureStageSnapshot(def: StageDef, idx: number, run: RunC
 			stageIndex: idx,
 			state: run.state,
 		});
-	} catch {
-		// Snapshot capture failure doesn't prevent stage execution.
+	} catch (e) {
+		// Snapshot capture failure doesn't prevent stage execution — but a
+		// consistently-throwing custom snapshot must not silently disable
+		// diffing for the whole run, so the first failure warns.
+		if (!snapshotWarnedRuns.has(run)) {
+			snapshotWarnedRuns.add(run);
+			curCtx.ui.notify(MSG_SNAPSHOT_FAILED(stageName, formatError(e)), "warning");
+		}
 		return undefined;
 	}
 }

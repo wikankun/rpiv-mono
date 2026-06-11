@@ -19,16 +19,10 @@
  * thin diff primitive.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { type Artifact, fs as fsHandle } from "../../handle.js";
 import type { ArtifactCollector, CollectCtx, SnapshotCtx } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
-
-const execFileAsync = promisify(execFile);
-
-/** Same budget as gitCommitCollector — generous for local repos, short enough that a hung mount can't pin the stage. */
-const GIT_EXEC_TIMEOUT_MS = 5_000;
+import { execFileAsync, GIT_EXEC_TIMEOUT_MS } from "../exec.js";
 
 export interface WorkspaceDiffSnapshot {
 	/** Post-stage diff compares against this set of (path, statusCode) pairs captured pre-stage. */

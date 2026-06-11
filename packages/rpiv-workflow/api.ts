@@ -799,7 +799,11 @@ export function defineRoute(targets: readonly string[], fn: EdgePredicate, opts?
 	if (targets.length === 0) {
 		throw new Error("defineRoute: targets must declare at least one possible return value");
 	}
-	const wrapped = fn as EdgeFn;
+	// Fresh delegating wrapper — NEVER mutate the caller's function. Reusing
+	// one predicate across two defineRoute calls must not alias their targets
+	// (the second call would overwrite the first's), and `readsData: false`
+	// must not inherit a marker a prior call attached.
+	const wrapped: EdgeFn = (ctx) => fn(ctx);
 	wrapped.targets = [...targets];
 	if (opts?.readsData !== false) (wrapped as unknown as Record<symbol, boolean>)[READS_DATA] = true;
 	return wrapped;

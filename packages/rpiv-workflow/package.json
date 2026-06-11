@@ -34,7 +34,6 @@
 		"index.ts",
 		"internal.ts",
 		"api.ts",
-		"artifacts-layout.ts",
 		"audit.ts",
 		"built-ins.ts",
 		"command.ts",

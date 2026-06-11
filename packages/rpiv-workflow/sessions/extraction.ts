@@ -16,12 +16,18 @@
  */
 
 import type { StageDef, StageSchema } from "../api.js";
-import { nowIso } from "../audit.js";
+import { allocateStageNumber, currentStageRef, nowIso } from "../audit.js";
 import type { Artifact } from "../handle.js";
-import { assertNever, withTimeout } from "../internal-utils.js";
+import { assertNever, formatError, withTimeout } from "../internal-utils.js";
 import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
-import { buildLifecycleContext, skillStageRef } from "../lifecycle.js";
-import { ERR_SCHEMA_TIMEOUT, MSG_VALIDATION_RETRY, MSG_VALIDATION_RETRY_PROMPT } from "../messages.js";
+import { buildLifecycleContext } from "../lifecycle.js";
+import {
+	ERR_COLLECTOR_THREW,
+	ERR_PARSER_THREW,
+	ERR_SCHEMA_TIMEOUT,
+	MSG_VALIDATION_RETRY,
+	MSG_VALIDATION_RETRY_PROMPT,
+} from "../messages.js";
 import { sideEffectOutcome } from "../outcomes/index.js";
 import { finalizeOutput, type Output } from "../output.js";
 import type { CollectCtx, OutputSpec } from "../output-spec.js";
@@ -53,6 +59,10 @@ export async function produceAndValidateOutput(
 	branch: BranchEntry[],
 	branchOffset: number | undefined,
 ): Promise<OutputProduction> {
+	// Allocate the activation's stage number ONCE, before any output envelope
+	// is built — the envelope's `meta.stageNumber`, the eventual audit row
+	// (success or failure), and every lifecycle ref share this value.
+	s.allocatedStageNumber ??= allocateStageNumber(s.state);
 	const outcome = resolveOutcome(s.stage, s.skill);
 	const collectCtx = buildCollectCtx(s, branch, branchOffset);
 	const finalize = (parts: { kind: string; artifacts: readonly Artifact[]; data: unknown }) => wrapOutput(s, parts);
@@ -117,7 +127,10 @@ function wrapOutput(s: StageSession, parts: { kind: string; artifacts: readonly 
 	return finalizeOutput(parts, {
 		stage: s.stageName,
 		skill: s.skill,
-		stageNumber: s.state.lastAllocatedStageNumber + 1,
+		// Pre-allocated by `produceAndValidateOutput` before any finalize runs —
+		// no `lastAllocatedStageNumber + 1` peek, no temporal coupling with
+		// recordStage.
+		stageNumber: s.allocatedStageNumber!,
 		ts: nowIso(),
 		runId: s.runId,
 	});
@@ -129,13 +142,23 @@ type RunOutcomeResult = { kind: "ok"; output: Output } | { kind: "fatal"; messag
  * The collector → parser pipeline. When `parser` is omitted, the
  * output emits `kind: "artifacts"` with `data = artifacts` — a stage
  * that only needs to enumerate doesn't have to write a parser.
+ *
+ * `collect`/`parse` are the PRIMARY user extension points, so a throw from
+ * either is guarded here and attributed ("collector threw…"), folding into
+ * the same fatal arm a tagged `{ kind: "fatal" }` return takes — instead of
+ * escaping to the runner's generic catch and reading as a machinery failure.
  */
 async function runOutcome(
 	outcome: OutputSpec,
 	ctx: CollectCtx,
 	finalize: (parts: { kind: string; artifacts: readonly Artifact[]; data: unknown }) => Output,
 ): Promise<RunOutcomeResult> {
-	const collected = await outcome.collector.collect(ctx);
+	let collected: Awaited<ReturnType<typeof outcome.collector.collect>>;
+	try {
+		collected = await outcome.collector.collect(ctx);
+	} catch (e) {
+		return { kind: "fatal", message: ERR_COLLECTOR_THREW(ctx.skill, formatError(e)) };
+	}
 	if (collected.kind === "fatal") return collected;
 
 	if (!outcome.parser) {
@@ -145,7 +168,12 @@ async function runOutcome(
 		};
 	}
 
-	const parsed = await outcome.parser.parse({ ...ctx, artifacts: collected.artifacts });
+	let parsed: Awaited<ReturnType<typeof outcome.parser.parse>>;
+	try {
+		parsed = await outcome.parser.parse({ ...ctx, artifacts: collected.artifacts });
+	} catch (e) {
+		return { kind: "fatal", message: ERR_PARSER_THREW(ctx.skill, formatError(e)) };
+	}
 	if (parsed.kind === "fatal") return parsed;
 	return {
 		kind: "ok",
@@ -233,10 +261,13 @@ async function retryUntilValid(
 	while (!result.valid && attempts < maxRetries && s.stage.onInvalid !== "halt") {
 		attempts++;
 		// onStageRetry fires before the agent is re-prompted; `attempt` is 1-based.
+		// Ref shares the activation's ALLOCATOR number (currentStageRef) so
+		// listeners can correlate this retry with the end/error event it
+		// belongs to — graph position (`stageIndex + 1`) diverges past any loop.
 		await s.lifecycle.fire(
 			ctx,
 			"onStageRetry",
-			skillStageRef(s.stageName, s.stageIndex + 1, s.skill),
+			currentStageRef(s),
 			attempts,
 			buildLifecycleContext({
 				cwd: s.cwd,
@@ -250,8 +281,7 @@ async function retryUntilValid(
 		try {
 			await askAgentToFix(ctx, s, attempts, result.failures, timeoutMs);
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
-			return { kind: "fatal", message: msg };
+			return { kind: "fatal", message: formatError(e) };
 		}
 
 		const retryBranch = readBranch(ctx);
@@ -292,8 +322,7 @@ async function validateOrFatal(
 		);
 		return { kind: "ok", result };
 	} catch (e) {
-		const reason = e instanceof Error ? e.message : String(e);
-		return { kind: "fatal", message: `${skill}: ${reason}` };
+		return { kind: "fatal", message: `${skill}: ${formatError(e)}` };
 	}
 }
 

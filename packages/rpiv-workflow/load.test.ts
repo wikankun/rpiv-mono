@@ -20,6 +20,7 @@ import type { SkillContract } from "./skill-contract.js";
 import {
 	__resetSkillContracts,
 	getSkillContracts,
+	registerOutcomeDeriver,
 	registerSkillContracts,
 	registerSkillContractsProvider,
 } from "./skill-contracts/index.js";
@@ -986,5 +987,60 @@ describe("loadWorkflows — skillContracts", () => {
 		);
 		expect(providerIssue).toBeDefined();
 		expect(providerIssue?.message).toContain("test provider failure");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Outcome derivers — per-load stage copies (C3)
+// ---------------------------------------------------------------------------
+
+describe("loadWorkflows — outcome derivers (C3)", () => {
+	/**
+	 * A representative deriver (rpiv-pi's shape): mutates `stage.outcome` in
+	 * place on produces stages that lack one, keyed off the contract registry.
+	 * The loader must hand it PER-LOAD stage copies — a mutation pinned onto a
+	 * shared built-in would survive the next load, and the idempotency guard
+	 * (`if (stage.outcome) continue`) would then skip re-derivation even after
+	 * the contract changed.
+	 */
+	const kindDeriver: Parameters<typeof registerOutcomeDeriver>[0] = (workflows, contracts) => {
+		for (const w of workflows) {
+			for (const [name, stage] of Object.entries(w.stages)) {
+				if (stage.kind !== "produces" || stage.outcome) continue;
+				const meta = contracts.get(stage.skill ?? name)?.produces?.meta as { artifactKind?: string } | undefined;
+				if (meta?.artifactKind) stage.outcome = { collector: noopCollector, name: `derived-${meta.artifactKind}` };
+			}
+		}
+	};
+
+	const planContract = (artifactKind: string): SkillContract => ({
+		source: "declared",
+		produces: { kind: "produces", meta: { artifactKind } },
+	});
+
+	it("a contract change between loads refreshes the derived outcome; shared built-ins stay pristine", async () => {
+		const bare = defineWorkflow({
+			name: "derived-wf",
+			start: "plan",
+			stages: { plan: producesRaw() }, // no outcome — the deriver supplies it
+			edges: { plan: "stop" },
+		});
+		__resetBuiltIns();
+		registerBuiltIns([bare]);
+		registerOutcomeDeriver(kindDeriver);
+
+		registerSkillContracts([["plan", planContract("plan")]], "test-owner");
+		const first = await loadWorkflows(TEST_TMP);
+		const firstStage = first.workflows.find((w) => w.name === "derived-wf")?.stages.plan;
+		expect(firstStage?.outcome?.name).toBe("derived-plan");
+		// The shared built-in registry object was never mutated.
+		expect(bare.stages.plan?.outcome).toBeUndefined();
+
+		// Contract changes between /reload's — the derived outcome must follow.
+		registerSkillContracts([["plan", planContract("design")]], "test-owner");
+		const second = await loadWorkflows(TEST_TMP);
+		const secondStage = second.workflows.find((w) => w.name === "derived-wf")?.stages.plan;
+		expect(secondStage?.outcome?.name).toBe("derived-design");
+		expect(bare.stages.plan?.outcome).toBeUndefined();
 	});
 });

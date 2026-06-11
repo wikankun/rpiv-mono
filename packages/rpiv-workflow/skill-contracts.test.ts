@@ -2,9 +2,10 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, produces as producesRaw, type StageDef } from "./api.js";
 import { noopCollector } from "./outcomes/index.js";
-import type { CompositionComparator, SkillContract, SkillContractMap } from "./skill-contract.js";
+import type { CompositionComparator, ProducesSpec, SkillContract, SkillContractMap } from "./skill-contract.js";
 import {
 	__resetSkillContracts,
+	adjudicateChannel,
 	canCompose,
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
@@ -419,6 +420,62 @@ describe("skill-contracts", () => {
 		});
 		it("degrades (ok) when no comparator is registered", () => {
 			expect(canCompose("design", "implement", contracts).ok).toBe(true);
+		});
+		it("degrades (ok) when the comparator throws — the advisory query never propagates a defect (C14)", () => {
+			registerCompositionComparator("plans", () => {
+				throw new Error("comparator bug");
+			});
+			expect(() => canCompose("design", "implement", contracts)).not.toThrow();
+			expect(canCompose("design", "implement", contracts).ok).toBe(true);
+			// legalNextSkills no longer aborts wholesale on one throwing comparator.
+			expect(legalNextSkills("design", contracts)).toContain("implement");
+		});
+	});
+
+	describe("adjudicateChannel — THE shared channel rule (C14)", () => {
+		const planProduces: ProducesSpec = { kind: "produces", meta: { artifactKind: "plan" } };
+		const kindComparator: CompositionComparator = (produces, consumes, ch) => {
+			const want = (consumes.reads?.[ch]?.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			const got = (produces.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			return !want || !got || want === got ? { ok: true } : { ok: false, reason: "artifactKind mismatch" };
+		};
+
+		it("skips when no comparator is registered for the channel", () => {
+			const verdict = adjudicateChannel(
+				planProduces,
+				{ reads: { plans: { meta: { artifactKind: "plan" } } } },
+				"plans",
+			);
+			expect(verdict).toEqual({ kind: "skipped" });
+		});
+
+		it("skips when the consumer declares no meta requirement (nothing to compare)", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(adjudicateChannel(planProduces, { reads: { plans: {} } }, "plans")).toEqual({ kind: "skipped" });
+			expect(adjudicateChannel(planProduces, { reads: {} }, "plans")).toEqual({ kind: "skipped" });
+		});
+
+		it("returns ok / mismatch (with reason) from the comparator", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(
+				adjudicateChannel(planProduces, { reads: { plans: { meta: { artifactKind: "plan" } } } }, "plans"),
+			).toEqual({ kind: "ok" });
+			expect(
+				adjudicateChannel(planProduces, { reads: { plans: { meta: { artifactKind: "design" } } } }, "plans"),
+			).toEqual({ kind: "mismatch", reason: "artifactKind mismatch" });
+		});
+
+		it("captures a comparator throw instead of propagating it", () => {
+			registerCompositionComparator("plans", () => {
+				throw new Error("comparator bug");
+			});
+			const verdict = adjudicateChannel(
+				planProduces,
+				{ reads: { plans: { meta: { artifactKind: "plan" } } } },
+				"plans",
+			);
+			expect(verdict.kind).toBe("comparator-threw");
+			if (verdict.kind === "comparator-threw") expect(verdict.error).toContain("comparator bug");
 		});
 	});
 

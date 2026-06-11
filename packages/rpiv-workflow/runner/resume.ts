@@ -27,11 +27,11 @@
 import type { LoopDef, StageDef, Unit, Workflow } from "../api.js";
 import { effectiveLoopOf } from "../control-flow.js";
 import type { Artifact } from "../handle.js";
-import { applyCompletedStage, stageEntryArgs } from "../internal-utils.js";
-import { freshCursor, judgeStageDef, type LoopCursor, projectResult, unitTagOf } from "../loop.js";
+import { applyCompletedStage, formatError, stageEntryArgs } from "../internal-utils.js";
+import { advanceCursor, freshCursor, judgeStageDef, type LoopCursor, projectResult, unitTagOf } from "../loop.js";
 import { ERR_RESUME_LOOP_MISMATCH } from "../messages.js";
 import type { Output } from "../output.js";
-import { readAllStages } from "../state/index.js";
+import { readAllStagesForResume } from "../state/index.js";
 import type { WorkflowHeader, WorkflowStage } from "../state/state.js";
 import type { RunState } from "../types.js";
 
@@ -58,6 +58,14 @@ export type ReconstructResult =
 			ok: true;
 			state: RunState;
 			lastStageNumber: number;
+			/**
+			 * 0-based chain index of the trail's LAST activation — the fold's
+			 * reconstruction of the `idx` the live chain was at (one activation per
+			 * top-level stage row or loop generation; a resume re-run of a failed
+			 * stage keeps its index). NOT `stageNumber - 1`: the allocator counts
+			 * every row including loop units, so the two diverge past any loop.
+			 */
+			lastChainIndex: number;
 			visited: Set<string>;
 			rows: WorkflowStage[];
 			/** Open generation at trail end, un-projected (the driver projects at its advance). */
@@ -65,30 +73,47 @@ export type ReconstructResult =
 			/** Guard tripped mid-fold — the resume entry records this as a terminal failure. */
 			drift?: { parent: string; errMsg: string };
 	  }
-	| { ok: false; reason: "no-rows" | "stage-gone"; detail: string };
+	| { ok: false; reason: "no-rows" | "stage-gone" | "malformed-row"; detail: string };
+
+/**
+ * A pristine `RunState`. New runs start here (`runWorkflow`); the fold starts
+ * here too and replays the trail on top — ONE construction site, so a new
+ * `RunState` field can never silently diverge between live runs and resumes.
+ * (Phase 3 moves this beside `buildRunContext` in `runner/run-context.ts`.)
+ */
+export function freshRunState(originalInput: string): RunState {
+	return {
+		originalInput,
+		primaryArtifact: undefined,
+		output: undefined,
+		named: {},
+		stagesCompleted: 0,
+		lastAllocatedStageNumber: 0,
+		telemetry: { backwardJumps: 0, droppedRoutingRows: [], droppedFailureRows: [] },
+		termination: { success: false, error: undefined },
+	};
+}
 
 export async function reconstructState(
 	cwd: string,
 	workflow: Workflow,
 	header: WorkflowHeader,
 ): Promise<ReconstructResult> {
-	const rows = readAllStages(cwd, header.runId);
+	// Strict reader: a stage-shaped row failing the deep guard REFUSES here —
+	// the fold replays the trail as its system of record, so a silently
+	// skipped row would replay a hole and route onward past it.
+	const read = readAllStagesForResume(cwd, header.runId);
+	if (!read.ok) return { ok: false, reason: "malformed-row", detail: read.detail };
+	const rows = read.rows;
 	if (rows.length === 0) return { ok: false, reason: "no-rows", detail: header.runId };
 
 	const acc: FoldAcc = {
 		cwd,
-		state: {
-			originalInput: header.input,
-			primaryArtifact: undefined,
-			output: undefined,
-			named: {},
-			stagesCompleted: 0,
-			lastAllocatedStageNumber: 0,
-			telemetry: { backwardJumps: 0, droppedRoutingRows: [] },
-			termination: { success: false, error: undefined },
-		},
+		state: freshRunState(header.input),
 		visited: new Set<string>(),
 		lastStageNumber: 0,
+		chainIndex: -1,
+		prevNode: undefined,
 		gen: undefined,
 		drift: undefined,
 	};
@@ -104,6 +129,7 @@ export async function reconstructState(
 		// Unknown key refuses — including LEGACY decorated rows (pre-redesign
 		// runs carry no `parent`, so their unit rows land here): stage-gone.
 		if (!def) return { ok: false, reason: "stage-gone", detail: row.stage };
+		noteChainNode(acc, row.stage, row.status !== "completed");
 		foldKnownStage(acc, def, row);
 	}
 
@@ -113,6 +139,7 @@ export async function reconstructState(
 		ok: true,
 		state: acc.state,
 		lastStageNumber: acc.lastStageNumber,
+		lastChainIndex: acc.chainIndex,
 		visited: acc.visited,
 		rows,
 		trailing: acc.gen ? toPoint(acc.gen) : undefined,
@@ -148,8 +175,23 @@ interface FoldAcc {
 	state: RunState;
 	visited: Set<string>;
 	lastStageNumber: number;
+	/** 0-based index of the current activation — see `ReconstructResult.lastChainIndex`. */
+	chainIndex: number;
+	/**
+	 * Last chain-node activation. `reentrant` = a following row of the SAME
+	 * stage continues this activation instead of opening a new one: a
+	 * failed/aborted/skipped row (resume re-runs it at the same index) or a
+	 * loop generation (its halt row and any resume re-entry belong to it).
+	 */
+	prevNode: { stage: string; reentrant: boolean } | undefined;
 	gen: OpenGeneration | undefined;
 	drift: { parent: string; errMsg: string } | undefined;
+}
+
+/** Advance the chain index for one activation — unless the row continues the previous one. */
+function noteChainNode(acc: FoldAcc, stage: string, reentrant: boolean): void {
+	if (!(acc.prevNode?.stage === stage && acc.prevNode.reentrant)) acc.chainIndex++;
+	acc.prevNode = { stage, reentrant };
 }
 
 /** Normal-stage fold — unchanged semantics from today. */
@@ -183,6 +225,9 @@ async function foldUnitRow(
 		// loop here; without it every verify-stage trailer would refuse stage-gone.
 		const loop = def ? effectiveLoopOf(def) : undefined;
 		if (!def || !loop) return { ok: false, reason: "stage-gone", detail: row.stage };
+		// One generation = one chain-node activation. Always reentrant: a halt
+		// row for the parent or a resumed re-entry continues this activation.
+		noteChainNode(acc, row.parent!, true);
 		acc.gen = {
 			parent: row.parent!,
 			loop,
@@ -230,18 +275,16 @@ async function foldUnitRow(
 			row.stage,
 			row.output,
 		);
-		gen.cursor.lastVerdict = row.output;
-		gen.cursor.phase = "produce";
-		gen.cursor.index = (row.unitIndex ?? gen.cursor.index) + 1;
+		// `guardRow` already verified `row.unitIndex === cursor.index` (drift
+		// otherwise), so the shared transition lands the same cursor the live
+		// driver had.
+		advanceCursor(gen.cursor, row.role, row.output, gen.loop.kind);
 		return undefined;
 	}
 
 	// produce row — fanout/iterate units and assess producers alike
 	applyCompletedStage(acc.state, gen.def, row.stage, row.output);
-	gen.cursor.accumulated.push(row.output);
-	gen.cursor.lastProduce = { output: row.output, artifact: row.output.artifacts[0] };
-	if (gen.loop.kind === "assess") gen.cursor.phase = "judge";
-	else gen.cursor.index++;
+	advanceCursor(gen.cursor, "produce", row.output, gen.loop.kind);
 	gen.expected = undefined; // consumed
 	return undefined;
 }
@@ -301,7 +344,7 @@ async function guarded<T>(acc: FoldAcc, parent: string, fn: () => T | Promise<T>
 	try {
 		return await fn();
 	} catch (e) {
-		acc.drift = { parent, errMsg: e instanceof Error ? e.message : String(e) };
+		acc.drift = { parent, errMsg: formatError(e) };
 		return undefined;
 	}
 }

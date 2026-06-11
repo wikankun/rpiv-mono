@@ -15,7 +15,7 @@
  * halting only on timeouts.
  */
 
-import { SchemaTimeoutError, withTimeout } from "../internal-utils.js";
+import { formatError, SchemaTimeoutError, withTimeout } from "../internal-utils.js";
 import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
 import { ERR_INPUT_VALIDATION_FAILED, ERR_SCHEMA_TIMEOUT, MSG_INPUT_VALIDATION_FAILED } from "../messages.js";
 import type { RunContext } from "../types.js";
@@ -75,7 +75,7 @@ async function validateOrThrow(
 		result = await withTimeout(Promise.resolve(validateOutputData(schema, data)), timeoutMs, timeoutError);
 	} catch (e) {
 		if (errorPolicy === "degrade-on-non-timeout" && !(e instanceof SchemaTimeoutError)) return;
-		const reason = e instanceof Error ? e.message : String(e);
+		const reason = formatError(e);
 		throw new StagePreflightError(
 			"halt",
 			stage.skill,

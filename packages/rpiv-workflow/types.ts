@@ -87,6 +87,15 @@ export interface RunState {
 		 * in the common case.
 		 */
 		droppedRoutingRows: Array<{ fromStageIndex: number; fromStage: string; decision: string }>;
+		/**
+		 * Stages whose terminal failure/aborted row failed to append. Unlike
+		 * routing rows these ARE reconstruction inputs — a trail missing its
+		 * failure row reads "completed" at the tail and a later resume would
+		 * route onward past the stage that actually failed. Surfaced in
+		 * `RunWorkflowResult.droppedFailureRows`; consumers holding entries
+		 * must not resume the run from disk. Empty in the common case.
+		 */
+		droppedFailureRows: string[];
 	};
 
 	// ── Termination (set once at end-of-run) ───────────────────────────
@@ -222,6 +231,15 @@ export interface SessionContext {
 		totalStages: number;
 		trigger: RunTrigger;
 	};
+	/**
+	 * The activation's allocated JSONL stage number. Assigned ONCE (via
+	 * `allocateStageNumber`) when output production begins, BEFORE the output
+	 * envelope is built — the envelope's `meta.stageNumber`, the audit row
+	 * (success or failure), and every lifecycle ref for this activation then
+	 * agree on one explicit value. Undefined until the activation reaches
+	 * output production; pre-output halts allocate at record time instead.
+	 */
+	allocatedStageNumber?: number;
 }
 
 /**

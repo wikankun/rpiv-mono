@@ -4,7 +4,7 @@
  * re-exports only the symbols the rest of the package consumes.
  */
 
-export { canCompose, legalNextSkills } from "./composition.js";
+export { adjudicateChannel, type ChannelAdjudication, canCompose, legalNextSkills } from "./composition.js";
 
 export { buildEffectiveContracts, harvestStageContracts } from "./harvest.js";
 export {

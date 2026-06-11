@@ -111,12 +111,25 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("extracts --name and strips it from the input", () => {
-		expect(parseArgs("mid --name auth-spike Add dark mode", built)).toEqual({
+	it("extracts a LEADING --name and strips it from the input", () => {
+		expect(parseArgs("--name auth-spike mid Add dark mode", built)).toEqual({
 			kind: "run",
 			workflow: "mid",
 			input: "Add dark mode",
 			name: "auth-spike",
+		});
+	});
+
+	it("leaves a MID-INPUT --name in the prompt text untouched and flags it (C11)", () => {
+		// `/wf mid fix the --name handling bug` — the flag tokens are the user's
+		// own prompt text; silently claiming "handling" as a run name would
+		// corrupt the input seed.
+		expect(parseArgs("mid fix the --name handling bug", built)).toEqual({
+			kind: "run",
+			workflow: "mid",
+			input: "fix the --name handling bug",
+			name: undefined,
+			nameFlagIgnored: true,
 		});
 	});
 
@@ -266,17 +279,27 @@ describe("/wf — --name flag", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("wf")?.handler("mid --name 1bad go", ctx);
+		await captured.commands.get("wf")?.handler("mid go --name 1bad", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("invalid name"), "error");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
 
-	it("threads a valid --name through to runWorkflow", async () => {
+	it("threads a valid trailing --name through to runWorkflow", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("wf")?.handler("mid --name auth go", ctx);
+		await captured.commands.get("wf")?.handler("mid go --name auth", ctx);
 		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.name).toBe("auth");
+	});
+
+	it("warns on a mid-input --name and keeps it in the workflow input (C11)", async () => {
+		const { pi, captured } = createMockPi();
+		registerWorkflowCommand(pi);
+		const ctx = createMockCommandCtx({ hasUI: true });
+		await captured.commands.get("wf")?.handler("mid fix the --name handling bug", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("first or last token"), "warning");
+		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.name).toBeUndefined();
+		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.input).toBe("fix the --name handling bug");
 	});
 
 	it("surfaces a pre-flight collision rejection (success:false, no runId)", async () => {

@@ -1,19 +1,26 @@
 /**
  * Git commit outcome + pre-stage git HEAD snapshot.
  *
- * Split into a collector (detects the commit and emits an `opaque(sha)`
- * handle) and a parser (parses commit metadata into `GitCommitData`).
- * `gitCommitOutcome` is the wired-up pair authors plug into a stage;
- * `gitCommitCollector` and `gitCommitParser` are individually exposed
- * so authors can compose them with other parsers / collectors.
+ * Split along the ENUMERATE/INTERPRET seam: the collector owns ALL git I/O
+ * (HEAD detection plus subject/files-changed interrogation, recorded on the
+ * artifact's `meta`); the parser is PURE — it validates the `meta` shape and
+ * projects it into `GitCommitData`, never re-shelling git at parse time
+ * (parse may re-run during validation retries, when the working tree has
+ * already moved on).
+ *
+ * Failure posture distinguishes the three cases:
+ *   - not a git repo / git unavailable at snapshot time → no-op data
+ *     (`baselineMissing`), the workflow keeps moving;
+ *   - HEAD unchanged after the stage → honest no-op data;
+ *   - git WORKED at snapshot time but fails after the stage → `fatal` (the
+ *     environment broke mid-stage; fabricating `noOp: true` here would let
+ *     `gate` route on invented data).
  *
  * Shells out asynchronously via `execFile` so a slow `git` invocation
  * (network-backed working tree, hung FS, large `--shortstat`) can't
  * pin the event loop.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { type Artifact, opaque } from "../handle.js";
 import type {
 	ArtifactCollector,
@@ -23,8 +30,7 @@ import type {
 	ParseCtx,
 	SnapshotCtx,
 } from "../output-spec.js";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync, GIT_EXEC_TIMEOUT_MS } from "./exec.js";
 
 /**
  * Output data shape produced by `gitCommitParser` — co-located with
@@ -46,8 +52,21 @@ export interface GitHeadSnapshot {
 	baselineSha: string;
 }
 
-/** Per git command. 5 s is generous for `rev-parse` / `log -1` / `diff --shortstat` on local repos. */
-const GIT_EXEC_TIMEOUT_MS = 5_000;
+/**
+ * The complete fact the collector records on its artifact's `meta` — the
+ * parser's ONLY input (it never shells git). `subject`/`filesChanged` are
+ * interrogated at collect time, while the SHAs still resolve.
+ */
+export interface GitCommitArtifactMeta {
+	baselineSha: string;
+	headSha: string;
+	/** Snapshot found no baseline — not a git repo / git unavailable before the stage. */
+	baselineMissing: boolean;
+	/** HEAD did not move (or no baseline existed) — `subject`/`filesChanged` are empty/zero. */
+	noOp: boolean;
+	subject: string;
+	filesChanged: number;
+}
 
 /** Run a git command from `cwd`, returning trimmed stdout. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -78,60 +97,119 @@ export async function gitHeadSnapshot(ctx: SnapshotCtx): Promise<GitHeadSnapshot
 }
 
 // ---------------------------------------------------------------------------
-// Collector — detect "did HEAD move during this stage?"
+// Collector — detect "did HEAD move during this stage?" + interrogate the fact
 // ---------------------------------------------------------------------------
 
 /**
- * Collector always emits exactly one artifact — even on no-op (HEAD
- * unchanged) or git-unavailable, with the handle's `id` carrying the
- * post-stage SHA (or empty string). The parser interprets the
- * `noOp` flag from the artifact's `meta`. This shape keeps the
- * collector's contract uniform (always one fact) while letting the
- * parser produce the rich `GitCommitData` downstream consumers expect.
+ * Collector emits exactly one artifact on every non-fatal path — no-op (HEAD
+ * unchanged) and git-unavailable-at-snapshot included — with the COMPLETE
+ * `GitCommitArtifactMeta` fact attached, so the parser stays pure. Fatal only
+ * when git worked at snapshot time and then failed after the stage: that's an
+ * environment break, not a no-op, and routing must not see fabricated data.
  */
 export const gitCommitCollector: ArtifactCollector<GitHeadSnapshot | undefined> = {
 	snapshot: gitHeadSnapshot,
 	async collect(ctx: CollectCtx<GitHeadSnapshot | undefined>) {
-		const baselineSha = ctx.snapshot?.baselineSha ?? "";
-		const headSha = await safeHead(ctx.cwd);
-		const artifact: Artifact = {
-			handle: opaque(headSha || baselineSha),
-			role: "commit",
-			meta: { baselineSha, headSha, baselineMissing: !ctx.snapshot },
-		};
-		return { kind: "ok", artifacts: [artifact] };
+		const baselineSha = ctx.snapshot?.baselineSha;
+		if (!baselineSha) {
+			// Deliberate degrade: the stage ran outside a (working) git repo.
+			return ok(noOpMeta("", "", { baselineMissing: true }));
+		}
+		let headSha: string;
+		try {
+			headSha = await git(ctx.cwd, "rev-parse", "HEAD");
+		} catch (e) {
+			return fatal(ctx.skill, `git rev-parse HEAD failed after the stage: ${describeError(e)}`);
+		}
+		if (!headSha || headSha === baselineSha) {
+			// Honest no-op — HEAD genuinely did not move.
+			return ok(noOpMeta(baselineSha, headSha));
+		}
+		try {
+			const [subject, filesChanged] = await Promise.all([
+				git(ctx.cwd, "log", "-1", "--format=%s", headSha),
+				countFilesChanged(ctx.cwd, baselineSha, headSha),
+			]);
+			return ok({ baselineSha, headSha, baselineMissing: false, noOp: false, subject, filesChanged });
+		} catch (e) {
+			// A commit LANDED but its interrogation failed — fabricating noOp
+			// would route `gate` on invented data; halt with the real cause.
+			return fatal(ctx.skill, `commit ${headSha} landed but interrogating it failed: ${describeError(e)}`);
+		}
 	},
 };
 
-async function safeHead(cwd: string): Promise<string> {
-	try {
-		return await git(cwd, "rev-parse", "HEAD");
-	} catch {
-		return "";
-	}
+const ok = (meta: GitCommitArtifactMeta): { kind: "ok"; artifacts: readonly Artifact[] } => ({
+	kind: "ok",
+	artifacts: [{ handle: opaque(meta.headSha || meta.baselineSha), role: "commit", meta: { ...meta } }],
+});
+
+const fatal = (skill: string, reason: string): { kind: "fatal"; message: string } => ({
+	kind: "fatal",
+	message: `${skill}: ${reason}`,
+});
+
+const noOpMeta = (
+	baselineSha: string,
+	headSha: string,
+	opts?: { baselineMissing?: boolean },
+): GitCommitArtifactMeta => ({
+	baselineSha,
+	headSha,
+	baselineMissing: opts?.baselineMissing ?? false,
+	noOp: true,
+	subject: "",
+	filesChanged: 0,
+});
+
+const describeError = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Parse `git diff --shortstat` output for the "N files changed" count. */
+async function countFilesChanged(cwd: string, baselineSha: string, headSha: string): Promise<number> {
+	const diffStat = await git(cwd, "diff", "--shortstat", baselineSha, headSha);
+	const match = diffStat.match(/^(\d+) files? changed/);
+	return match ? parseInt(match[1]!, 10) : 0;
 }
 
 // ---------------------------------------------------------------------------
-// Parser — turn the collected commit handle into typed GitCommitData
+// Parser — PURE projection of the collected meta into typed GitCommitData
 // ---------------------------------------------------------------------------
 
+/** Structural guard for the collector-emitted meta — the parser's input contract. */
+function isGitCommitMeta(meta: unknown): meta is GitCommitArtifactMeta {
+	const m = meta as Partial<GitCommitArtifactMeta> | undefined;
+	return (
+		typeof m?.baselineSha === "string" &&
+		typeof m.headSha === "string" &&
+		typeof m.baselineMissing === "boolean" &&
+		typeof m.noOp === "boolean" &&
+		typeof m.subject === "string" &&
+		typeof m.filesChanged === "number"
+	);
+}
+
+/**
+ * Pure: validates the artifact's `meta` shape (fatal on mismatch — a blind
+ * cast here would coerce a foreign collector's artifact into fabricated
+ * commit data) and projects it into `GitCommitData`. No I/O.
+ */
 export const gitCommitParser: ArtifactParser<GitHeadSnapshot | undefined, "git-commit", GitCommitData> = {
-	async parse(ctx: ParseCtx<GitHeadSnapshot | undefined>) {
+	parse(ctx: ParseCtx<GitHeadSnapshot | undefined>) {
 		const artifact = ctx.artifacts[0];
-		if (!artifact) {
-			// Defensive — gitCommitCollector always emits one, but a composed
-			// collector may not. Treat as no-op against the baseline.
-			return { kind: "ok", payload: { kind: "git-commit", data: noOpData(ctx.snapshot?.baselineSha ?? "") } };
+		const meta = artifact?.meta;
+		if (!isGitCommitMeta(meta)) {
+			return {
+				kind: "fatal",
+				message:
+					`${ctx.skill}: gitCommitParser requires the meta gitCommitCollector emits ` +
+					`(baselineSha/headSha/baselineMissing/noOp/subject/filesChanged) — ` +
+					(artifact ? "got an artifact with a foreign meta shape" : "got no artifact") +
+					"; compose it with gitCommitCollector",
+			};
 		}
-		const meta = artifact.meta as { baselineSha: string; headSha: string; baselineMissing: boolean } | undefined;
-		const baselineSha = meta?.baselineSha ?? "";
-		const headSha = meta?.headSha ?? "";
-
-		if (meta?.baselineMissing) {
-			return { kind: "ok", payload: { kind: "git-commit", data: noOpData("") } };
-		}
-
-		const data = (await collectCommitData(ctx.cwd, baselineSha, headSha)) ?? noOpData(baselineSha);
+		const data: GitCommitData = meta.noOp
+			? { sha: meta.headSha, prevSha: meta.baselineSha, subject: "", filesChanged: 0, noOp: true }
+			: { sha: meta.headSha, prevSha: meta.baselineSha, subject: meta.subject, filesChanged: meta.filesChanged };
 		return { kind: "ok", payload: { kind: "git-commit", data } };
 	},
 };
@@ -152,41 +230,3 @@ export const gitCommitOutcome: OutputSpec<GitHeadSnapshot | undefined, "git-comm
 	collector: gitCommitCollector,
 	parser: gitCommitParser,
 };
-
-// ---------------------------------------------------------------------------
-// Commit-data collection
-// ---------------------------------------------------------------------------
-
-/**
- * Build `GitCommitData` given pre/post SHAs already gathered by the
- * collector. Returns `null` if any follow-up git call throws — caller
- * substitutes a baseline-aware no-op payload so the workflow keeps
- * moving.
- */
-async function collectCommitData(cwd: string, baselineSha: string, headSha: string): Promise<GitCommitData | null> {
-	try {
-		if (!headSha || headSha === baselineSha) return noOpData(baselineSha, headSha);
-		const [subject, filesChanged] = await Promise.all([
-			git(cwd, "log", "-1", "--format=%s", headSha),
-			countFilesChanged(cwd, baselineSha, headSha),
-		]);
-		return { sha: headSha, prevSha: baselineSha, subject, filesChanged };
-	} catch {
-		return null;
-	}
-}
-
-/** Parse `git diff --shortstat` output for the "N files changed" count. */
-async function countFilesChanged(cwd: string, baselineSha: string, headSha: string): Promise<number> {
-	const diffStat = await git(cwd, "diff", "--shortstat", baselineSha, headSha);
-	const match = diffStat.match(/^(\d+) files? changed/);
-	return match ? parseInt(match[1]!, 10) : 0;
-}
-
-const noOpData = (prevSha: string, sha = ""): GitCommitData => ({
-	sha,
-	prevSha,
-	subject: "",
-	filesChanged: 0,
-	noOp: true,
-});

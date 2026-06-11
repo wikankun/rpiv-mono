@@ -16,12 +16,12 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Workflow } from "../api.js";
+import { formatError } from "../internal-utils.js";
 import type { ConfigLayer } from "../layers.js";
 import { cachedImport } from "./cache.js";
 import type { Issue } from "./index.js";
 import { type FileKind, normalizeDefaultExport, type ParsedConfig } from "./normalize.js";
 import type { OverlayPaths } from "./paths.js";
-import { formatError } from "./shape-guards.js";
 
 /**
  * Mutable bag of state threaded through `loadLayer` → `loadOverlayFile`

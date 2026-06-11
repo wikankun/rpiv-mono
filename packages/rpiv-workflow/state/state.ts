@@ -137,13 +137,13 @@ export interface RoutingDecision {
 // ---------------------------------------------------------------------------
 
 export {
-	addNameToIndex,
 	type ClaimResult,
 	claimName,
 	isValidName,
 	type NamesIndex,
 	readNamesIndex,
 	rebuildIndex,
+	releaseName,
 	VALID_NAME,
 } from "./names.js";
 export { generateRunId, namesFilePath, runsDir, stateFilePath } from "./paths.js";
@@ -151,6 +151,7 @@ export {
 	listArtifacts,
 	listRuns,
 	readAllStages,
+	readAllStagesForResume,
 	readHeader,
 	readLastStage,
 	readLoopCaps,

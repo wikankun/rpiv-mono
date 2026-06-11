@@ -15,7 +15,6 @@ export type {
 	WorkflowStage,
 } from "./state.js";
 export {
-	addNameToIndex,
 	appendLoopCap,
 	appendRoutingDecision,
 	appendStage,
@@ -26,12 +25,14 @@ export {
 	listRuns,
 	namesFilePath,
 	readAllStages,
+	readAllStagesForResume,
 	readHeader,
 	readLastStage,
 	readLoopCaps,
 	readNamesIndex,
 	readRoutingDecisions,
 	rebuildIndex,
+	releaseName,
 	resolveRun,
 	runsDir,
 	stateFilePath,

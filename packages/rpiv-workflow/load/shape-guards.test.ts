@@ -6,10 +6,13 @@
  * (`normalizeDefaultExport` handles Arrays before reaching `describe`;
  * jiti's `default: true` extraction rewrites `null` / `undefined`
  * defaults). These tests pin the contract at the unit level.
+ * (`formatError` now lives in `../internal-utils.ts` but is pinned here
+ * alongside its original siblings.)
  */
 
 import { describe, expect, it } from "vitest";
-import { describe as describeValue, formatError, isEnvelope, isWorkflow } from "./shape-guards.js";
+import { formatError } from "../internal-utils.js";
+import { describe as describeValue, isEnvelope, isWorkflow } from "./shape-guards.js";
 
 describe("describe", () => {
 	it("returns 'null' for null", () => {

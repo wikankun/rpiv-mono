@@ -1,19 +1,22 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	addNameToIndex,
 	claimName,
 	generateRunId,
 	isValidName,
 	listRuns,
 	readNamesIndex,
 	rebuildIndex,
+	releaseName,
 	resolveRun,
 	stateFilePath,
 	writeHeader,
 } from "./state/index.js";
+// Deep import: addNameToIndex is deliberately NOT on the state barrels
+// (production code goes through claimName); unit tests exercise it directly.
+import { addNameToIndex } from "./state/names.js";
 
 let tmpDir: string;
 
@@ -78,6 +81,53 @@ describe("claimName", () => {
 	});
 });
 
+describe("releaseName", () => {
+	it("rolls back a claim, freeing the name for re-claim", () => {
+		claimName(tmpDir, "auth", "r1");
+		releaseName(tmpDir, "auth", "r1");
+		expect(readNamesIndex(tmpDir)).toEqual({});
+		expect(claimName(tmpDir, "auth", "r2")).toEqual({ ok: true });
+	});
+
+	it("never clobbers an entry held by a DIFFERENT run", () => {
+		addNameToIndex(tmpDir, "auth", "r0");
+		releaseName(tmpDir, "auth", "r1");
+		expect(readNamesIndex(tmpDir)).toEqual({ auth: "r0" });
+	});
+
+	it("is a no-op when the index is absent", () => {
+		expect(() => releaseName(tmpDir, "auth", "r1")).not.toThrow();
+		expect(readNamesIndex(tmpDir)).toBeUndefined();
+	});
+
+	it("leaves sibling entries intact", () => {
+		addNameToIndex(tmpDir, "auth", "r1");
+		addNameToIndex(tmpDir, "perf", "r2");
+		releaseName(tmpDir, "auth", "r1");
+		expect(readNamesIndex(tmpDir)).toEqual({ perf: "r2" });
+	});
+});
+
+describe("names.json atomic write path (C9)", () => {
+	it("claim / release / rebuild leave no temp residue in the runs dir", () => {
+		claimName(tmpDir, "auth", "r1");
+		releaseName(tmpDir, "auth", "r1");
+		seedRun("r2", "perf");
+		rebuildIndex(tmpDir);
+
+		const files = readdirSync(join(tmpDir, ".rpiv", "workflows", "runs"));
+		expect(files.filter((f) => f.includes(".tmp"))).toEqual([]);
+		expect(readNamesIndex(tmpDir)).toEqual({ perf: "r2" });
+	});
+
+	it("addNameToIndex writes the caller-provided snapshot (claimName's single-read path)", () => {
+		// claimName reads the index ONCE and threads it through — no second
+		// read between the collision check and the write.
+		expect(addNameToIndex(tmpDir, "auth", "r1", { existing: "r0" })).toBe(true);
+		expect(readNamesIndex(tmpDir)).toEqual({ existing: "r0", auth: "r1" });
+	});
+});
+
 describe("resolveRun", () => {
 	it("resolves a human-readable name to its header", () => {
 		const runId = generateRunId();
@@ -95,6 +145,23 @@ describe("resolveRun", () => {
 	it("returns undefined for a stale name whose JSONL was deleted (literal fallback also misses)", () => {
 		addNameToIndex(tmpDir, "ghost", "missing-run-id");
 		expect(resolveRun(tmpDir, "ghost")).toBeUndefined();
+	});
+
+	it("recovers a named run when names.json is missing, by rebuilding from headers", () => {
+		const runId = generateRunId();
+		seedRun(runId, "auth");
+		// No addNameToIndex call — names.json was never written (lost/deleted).
+		expect(readNamesIndex(tmpDir)).toBeUndefined();
+		expect(resolveRun(tmpDir, "auth")?.runId).toBe(runId);
+		// The recovery rebuilt + persisted the index for subsequent O(1) lookups.
+		expect(readNamesIndex(tmpDir)).toEqual({ auth: runId });
+	});
+
+	it("does NOT rescan for an unresolvable runId-shaped ref (digits lead — not a valid name)", () => {
+		seedRun(generateRunId(), "auth");
+		expect(resolveRun(tmpDir, "2099-01-01_00-00-00-dead")).toBeUndefined();
+		// rebuildIndex would have persisted names.json; an invalid-name ref must not trigger it.
+		expect(readNamesIndex(tmpDir)).toBeUndefined();
 	});
 
 	it("resolves a runId ref carrying a trailing .jsonl extension (autosuggest paste)", () => {
