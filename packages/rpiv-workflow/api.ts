@@ -409,29 +409,13 @@ export const STOP = "stop" as const;
 export type EdgeTarget = string | typeof STOP | EdgeFn;
 
 /**
- * A stage in the workflow graph. The stage's identity is the surrounding
- * `Workflow.stages` record key. `skill` is the Pi skill body to invoke —
- * defaulted to the record key by the runner when omitted, so the
- * authoring-time call site usually doesn't restate the name. Set `skill`
- * explicitly only when the stage id and the Pi skill differ (aliased
- * stages like `implement-after-revise` invoking the `implement` skill).
- *
- * Pi resolves the skill at run time; there's no allowlist gate. If Pi
- * can't load the skill, the runner halts with a clear error pointing
- * at this stage.
- *
- * TYPING MODEL (T2): `<TIn, TOut>` are LOCAL inference helpers — they tie a
- * factory call's `inputSchema`/`outputSchema`/`run` together, then erase at
- * the `Workflow.stages` boundary (`Record<string, StageDef>`). They do NOT
- * carry types across edges; inter-stage typing is runtime-contract-based
- * (schemas validate `output.data` at run time, skill contracts adjudicate
- * composition at load). A typed builder API is a roadmap item.
+ * Knobs shared by every stage regardless of how it dispatches — the base the
+ * three `StageDef` arms extend. Not exported: authors name the arms (or just
+ * `StageDef`), never the base.
  */
-export interface StageDef<TIn = unknown, TOut = unknown> {
-	skill?: string;
+interface StageDefBase<TIn = unknown, TOut = unknown> {
 	kind: StageKind;
 	sessionPolicy: SessionPolicy;
-	outcome?: Outcome;
 	/**
 	 * Standard Schema v1 validator run against `output.data` after the
 	 * stage's `Outcome` produces it (the typed record parsed out of the
@@ -451,6 +435,38 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	maxRetries?: number;
 	validateTimeoutMs?: number;
 	/**
+	 * Whether the stage inherits the chain's primary artifact from
+	 * upstream `produces` stages. Default `true`. Set to `false` on a
+	 * terminal side-effect — the stage's prompt receives `originalInput`
+	 * instead of the upstream artifact handle, the `ensureUpstreamArtifact`
+	 * preflight is bypassed, and the rolling primary slot is cleared on
+	 * success so any stage following also starts without an inherited
+	 * artifact.
+	 *
+	 * Authored via the `terminal()` factory; the flag is the underlying
+	 * mechanism. Meaningless on `kind: "produces"` stages (they emit their
+	 * own outcome) — `validateWorkflow` warns when set there.
+	 */
+	inheritsArtifacts?: boolean;
+}
+
+/**
+ * The default dispatch arm: the runner sends `/skill:<skill>` into the
+ * stage's session. `skill` defaults to the surrounding `Workflow.stages`
+ * record key — set it explicitly only when the stage id and the Pi skill
+ * differ (aliased stages like `implement-after-revise` invoking the
+ * `implement` skill). Pi resolves the skill at run time; there's no
+ * allowlist gate — if Pi can't load it, the runner halts pointing at this
+ * stage.
+ *
+ * The `run?: never` / `prompt?: never` members make the other arms'
+ * discriminators structurally unsettable here — an object literal mixing
+ * dispatches fails to type-check (see `StageDef`).
+ */
+export interface SkillStage<TIn = unknown, TOut = unknown> extends StageDefBase<TIn, TOut> {
+	skill?: string;
+	outcome?: Outcome;
+	/**
 	 * Opt-in unit loop. When set, the runner expands this stage into one Pi
 	 * session per unit through ONE driver (`loop.ts`); the constructor picked
 	 * the kind:
@@ -461,10 +477,8 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	 *     `kind: "produces"` + `outcome.name`.
 	 *   - `assess({...})`  — producer→judge rounds; requires `kind: "produces"`
 	 *     + `outcome.name` (the producer is a collecting unit too).
-	 * Mutually exclusive with `run` and `sessionPolicy: "continue"`; `prompt`
-	 * composes with `assess` only (round 0 = the resolved prompt; retries =
-	 * `feedForward` raw) — fanout/iterate units own their prompts. (validated
-	 * at load + at preflight.)
+	 * Mutually exclusive with `sessionPolicy: "continue"` (validated at load +
+	 * at preflight).
 	 */
 	loop?: LoopDef;
 	/**
@@ -481,51 +495,10 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	 * stage). The verdict publishes to `state.named[verify.judge.outcome.name]`.
 	 *
 	 * Requires `kind: "produces"` (the judge grades the attempt's artifact).
-	 * Composes with `reads` and with `prompt` dispatch (attempt 0 sends the
-	 * stage's resolved `prompt`; retries send `feedForward`'s output raw).
-	 * Mutually exclusive with `loop`, `run`, and `sessionPolicy: "continue"`
-	 * (validated at load).
+	 * Composes with `reads`. Mutually exclusive with `loop` and
+	 * `sessionPolicy: "continue"` (validated at load).
 	 */
 	verify?: VerifySpec;
-	/**
-	 * Whether the stage inherits the chain's primary artifact from
-	 * upstream `produces` stages. Default `true`. Set to `false` on a
-	 * terminal side-effect — the stage's prompt receives `originalInput`
-	 * instead of the upstream artifact handle, the `ensureUpstreamArtifact`
-	 * preflight is bypassed, and the rolling primary slot is cleared on
-	 * success so any stage following also starts without an inherited
-	 * artifact.
-	 *
-	 * Authored via the `terminal()` factory; the flag is the underlying
-	 * mechanism. Meaningless on `kind: "produces"` stages (they emit their
-	 * own outcome) — `validateWorkflow` warns when set there.
-	 */
-	inheritsArtifacts?: boolean;
-	/**
-	 * Skillless script stage: when present, the runner calls this
-	 * function instead of dispatching `/skill:<skill>`. Presence of
-	 * `run` is the skill-vs-script discriminator. Authored via
-	 * `produces.script(...)`, `acts.script(...)`, or
-	 * `terminal.script(...)`.
-	 *
-	 * Stages with `run` set CANNOT also set `skill`, `outcome`,
-	 * `fanout`, or `sessionPolicy: "continue"` — rejected at load time
-	 * by `validateWorkflow`.
-	 */
-	run?: ProducesScriptFn<string, TOut> | ActsScriptFn;
-	/**
-	 * Raw-prompt dispatch: when set, the runner sends this text (resolved per
-	 * the `PromptFn`, or the literal string) into the stage's session instead
-	 * of `/skill:<skill>`. The stage runs the model with no skill body and no
-	 * skill-registry check. Presence of `prompt` is the third dispatch
-	 * discriminator alongside `run`.
-	 *
-	 * Mutually exclusive with `skill` (explicit), `run`, `reads`, and
-	 * `fanout`/`iterate` loops. Composes with `kind`, `sessionPolicy`, `assess`
-	 * loops, and `verify` (the prompt is round/attempt 0's message; retries
-	 * dispatch `feedForward`'s output raw). (validated at load + preflight.)
-	 */
-	prompt?: string | PromptFn;
 	/**
 	 * Names this stage consumes from `state.named` to build its prompt.
 	 * When set, the runner replaces the default single-artifact prompt
@@ -541,7 +514,83 @@ export interface StageDef<TIn = unknown, TOut = unknown> {
 	 * catches the "haven't reached the producer yet" case at runtime).
 	 */
 	reads?: ReadonlyArray<string>;
+	run?: never;
+	prompt?: never;
 }
+
+/**
+ * Skillless script stage: the runner calls `run` instead of dispatching a Pi
+ * skill — presence of `run` is the dispatch discriminator. Authored via
+ * `produces.script(...)`, `acts.script(...)`, or `terminal.script(...)`.
+ *
+ * `skill`/`outcome`/`loop`/`verify`/`prompt` are structurally unsettable
+ * (`never`): the function IS the work and returns the `Output` envelope
+ * directly — there is no skill body, no transcript for a collector to scan,
+ * no session for a judge to grade, and a TS function writes its own loops.
+ * `sessionPolicy: "continue"` is additionally rejected at load (no Pi
+ * session exists to continue) — kept as a load rule because jiti-loaded
+ * literals erase these types.
+ */
+export interface ScriptStage<TIn = unknown, TOut = unknown> extends StageDefBase<TIn, TOut> {
+	run: ProducesScriptFn<string, TOut> | ActsScriptFn;
+	/** Same named-channel consumption as a skill stage — `ScriptContext.state.named` still needs the producer gate. */
+	reads?: ReadonlyArray<string>;
+	skill?: never;
+	outcome?: never;
+	loop?: never;
+	verify?: never;
+	prompt?: never;
+}
+
+/**
+ * Raw-prompt dispatch: the runner sends this text (resolved per the
+ * `PromptFn`, or the literal string) into the stage's session instead of
+ * `/skill:<skill>`. The stage runs the model with no skill body and no
+ * skill-registry check. Presence of `prompt` is the third dispatch
+ * discriminator alongside `run`.
+ *
+ * `skill`/`run`/`reads` are structurally unsettable (`never`): you're either
+ * invoking a skill or sending raw text, and a prompt stage's text is
+ * author-owned — read `state.named` from the `PromptFn` instead of `reads`.
+ * `loop` is narrowed to `AssessLoop` (fanout/iterate units own their
+ * prompts); `verify` composes (the prompt is round/attempt 0's message;
+ * retries dispatch `feedForward`'s output raw).
+ */
+export interface PromptStage<TIn = unknown, TOut = unknown> extends StageDefBase<TIn, TOut> {
+	prompt: string | PromptFn;
+	/** A `produces` prompt stage runs the `outcome` collector and publishes like any other producer. */
+	outcome?: Outcome;
+	/** Model-judged refinement rounds over this prompt stage — assess only. */
+	loop?: AssessLoop;
+	verify?: VerifySpec;
+	skill?: never;
+	run?: never;
+	reads?: never;
+}
+
+/**
+ * A stage in the workflow graph — a discriminated union over the DISPATCH
+ * axis (T1): skill (`SkillStage`, the default), script (`ScriptStage`,
+ * `run` present), or raw prompt (`PromptStage`, `prompt` present). The
+ * stage's identity is the surrounding `Workflow.stages` record key.
+ *
+ * Illegal dispatch combinations (`run` + `skill`, `prompt` + `reads`, …)
+ * are unrepresentable on typed call sites — the `never` members fail the
+ * assignability check. The load-time validator re-checks the same rules for
+ * hand-rolled literals because jiti erases TS types (same posture as the
+ * `Judge` union + `judgeShapeIssues`).
+ *
+ * TYPING MODEL (T2): `<TIn, TOut>` are LOCAL inference helpers — they tie a
+ * factory call's `inputSchema`/`outputSchema`/`run` together, then erase at
+ * the `Workflow.stages` boundary (`Record<string, StageDef>`). They do NOT
+ * carry types across edges; inter-stage typing is runtime-contract-based
+ * (schemas validate `output.data` at run time, skill contracts adjudicate
+ * composition at load). A typed builder API is a roadmap item.
+ */
+export type StageDef<TIn = unknown, TOut = unknown> =
+	| SkillStage<TIn, TOut>
+	| ScriptStage<TIn, TOut>
+	| PromptStage<TIn, TOut>;
 
 /**
  * A complete workflow. `name` is what users type as `/wf <name>`; `start`
@@ -567,22 +616,26 @@ export function defineWorkflow(spec: Workflow): Workflow {
 }
 
 /**
- * Options accepted by `produces.script({ run, ... })`. Subset of the
- * skill-stage `StageDef` knobs that semantically apply to a pure TS
- * function: validation (`inputSchema` / `outputSchema` + retry knobs)
- * and artifact-inheritance opt-out. `kind` and `sessionPolicy` are not
- * configurable — script stages are always `"produces"` + `"fresh"`.
- * `skill`, `outcome`, and `loop` are unauthorisable here.
+ * Builder options are PROJECTIONS of the union arms (T13): each interface
+ * `Pick`s its fields from the arm the factory constructs, and the factory
+ * spreads the options over the arm's fixed fields. Adding a knob to an arm
+ * is one edit here (extend the `Pick` key list — a stale key no longer on
+ * the arm fails compilation); the spread means the factory can never
+ * silently drop it.
  */
-interface ProducesScriptOptions<TIn = unknown, TOut = unknown> {
+
+/**
+ * Options accepted by `produces.script({ run, ... })`. The validation +
+ * inheritance knobs that semantically apply to a pure TS function. `kind`
+ * and `sessionPolicy` are not configurable — script stages are always
+ * `"produces"` + `"fresh"`.
+ */
+interface ProducesScriptOptions<TIn = unknown, TOut = unknown>
+	extends Pick<
+		ScriptStage<TIn, TOut>,
+		"outputSchema" | "inputSchema" | "onInvalid" | "maxRetries" | "validateTimeoutMs" | "inheritsArtifacts" | "reads"
+	> {
 	run: ProducesScriptFn<string, TOut>;
-	outputSchema?: StageSchema<unknown, TOut>;
-	inputSchema?: StageSchema<unknown, TIn>;
-	onInvalid?: OnInvalid;
-	maxRetries?: number;
-	validateTimeoutMs?: number;
-	inheritsArtifacts?: boolean;
-	reads?: ReadonlyArray<string>;
 }
 
 /**
@@ -591,36 +644,24 @@ interface ProducesScriptOptions<TIn = unknown, TOut = unknown> {
  * the produces variant: side-effect stages have no `outputSchema`
  * (they emit no data envelope), so the retry knobs don't apply.
  */
-interface ActsScriptOptions<TIn = unknown> {
+interface ActsScriptOptions<TIn = unknown>
+	extends Pick<ScriptStage<TIn, void>, "inputSchema" | "inheritsArtifacts" | "reads"> {
 	run: ActsScriptFn;
-	inputSchema?: StageSchema<unknown, TIn>;
-	inheritsArtifacts?: boolean;
-	reads?: ReadonlyArray<string>;
 }
 
 /**
  * Options accepted by `produces.prompt({ prompt, outcome, ... })` — the typed
- * builder for a raw-prompt `produces` stage. The dispatch-conflicting fields
- * (`skill`, `run`, `reads`) are STRUCTURALLY ABSENT, so an object-literal call
- * site that sets one fails TypeScript's excess-property check — the load-time
- * exclusion becomes compile-time for the idiomatic path. `loop` is narrowed to
- * `AssessLoop` (fanout/iterate units own their prompts — un-typable here, and
- * rejected at load on the bare-field form); `verify` composes (attempt 0 sends
- * the resolved prompt; retries send `feedForward`'s output raw). `outcome` is
- * required (a `produces` stage always needs one).
+ * builder for a raw-prompt `produces` stage. Dispatch-conflicting fields
+ * (`skill`, `run`, `reads`) are structurally absent (the `PromptStage` arm
+ * pins them `never`). `outcome` is required (a `produces` stage always needs
+ * one); `loop` is `AssessLoop` per the arm.
  */
-interface ProducesPromptOptions<TIn = unknown, TOut = unknown> {
-	prompt: string | PromptFn;
+interface ProducesPromptOptions<TIn = unknown, TOut = unknown>
+	extends Pick<
+		PromptStage<TIn, TOut>,
+		"prompt" | "outputSchema" | "inputSchema" | "onInvalid" | "maxRetries" | "validateTimeoutMs" | "loop" | "verify"
+	> {
 	outcome: Outcome;
-	outputSchema?: StageSchema<unknown, TOut>;
-	inputSchema?: StageSchema<unknown, TIn>;
-	onInvalid?: OnInvalid;
-	maxRetries?: number;
-	validateTimeoutMs?: number;
-	/** Model-judged refinement rounds over this prompt stage — assess only. */
-	loop?: AssessLoop;
-	/** Post-condition judge gating the prompt stage's output. */
-	verify?: VerifySpec;
 	/** `"continue"` makes this a follow-up turn on a session a prior stage populated. */
 	sessionPolicy?: SessionPolicy;
 }
@@ -628,53 +669,38 @@ interface ProducesPromptOptions<TIn = unknown, TOut = unknown> {
 /**
  * Options accepted by `acts.prompt({ prompt, ... })` — the typed builder for a
  * raw-prompt side-effect stage (a pure chat turn). Narrower than the produces
- * variant: no `outcome` (nothing collected). Dispatch-conflicting fields are
- * structurally absent. For a collecting side-effect prompt stage, use the bare
- * `acts({ prompt, outcome })` field form instead.
+ * variant: no `outcome` (nothing collected). For a collecting side-effect
+ * prompt stage, use the bare `acts({ prompt, outcome })` field form instead.
  */
-interface ActsPromptOptions<TIn = unknown> {
-	prompt: string | PromptFn;
-	inputSchema?: StageSchema<unknown, TIn>;
+interface ActsPromptOptions<TIn = unknown> extends Pick<PromptStage<TIn, void>, "prompt" | "inputSchema"> {
 	/** `"continue"` makes this a follow-up turn on a session a prior stage populated. */
 	sessionPolicy?: SessionPolicy;
 }
 
 function producesFn(overrides: Partial<StageDef> = {}): StageDef {
+	// The cast is the factory's one concession: a `Partial` of a union can't be
+	// proven to complete a single arm. Call sites stay arm-checked (an object
+	// literal mixing dispatches fails before it reaches the spread).
 	return {
 		kind: "produces",
 		sessionPolicy: "fresh",
 		...overrides,
-	};
+	} as StageDef;
 }
 
 function producesScript<TIn = unknown, TOut = unknown>(opts: ProducesScriptOptions<TIn, TOut>): StageDef<TIn, TOut> {
 	return {
 		kind: "produces",
 		sessionPolicy: "fresh",
-		run: opts.run as ProducesScriptFn<string, TOut>,
-		outputSchema: opts.outputSchema,
-		inputSchema: opts.inputSchema,
-		onInvalid: opts.onInvalid,
-		maxRetries: opts.maxRetries,
-		validateTimeoutMs: opts.validateTimeoutMs,
-		inheritsArtifacts: opts.inheritsArtifacts,
-		reads: opts.reads,
+		...opts,
 	};
 }
 
 function producesPrompt<TIn = unknown, TOut = unknown>(opts: ProducesPromptOptions<TIn, TOut>): StageDef<TIn, TOut> {
 	return {
 		kind: "produces",
+		...opts,
 		sessionPolicy: opts.sessionPolicy ?? "fresh",
-		prompt: opts.prompt,
-		outcome: opts.outcome,
-		outputSchema: opts.outputSchema,
-		inputSchema: opts.inputSchema,
-		onInvalid: opts.onInvalid,
-		maxRetries: opts.maxRetries,
-		validateTimeoutMs: opts.validateTimeoutMs,
-		loop: opts.loop,
-		verify: opts.verify,
 	};
 }
 
@@ -683,15 +709,14 @@ function actsFn(overrides: Partial<StageDef> = {}): StageDef {
 		kind: "side-effect",
 		sessionPolicy: "fresh",
 		...overrides,
-	};
+	} as StageDef;
 }
 
 function actsPrompt<TIn = unknown>(opts: ActsPromptOptions<TIn>): StageDef<TIn, void> {
 	return {
 		kind: "side-effect",
+		...opts,
 		sessionPolicy: opts.sessionPolicy ?? "fresh",
-		prompt: opts.prompt,
-		inputSchema: opts.inputSchema,
 	};
 }
 
@@ -699,15 +724,12 @@ function actsScript<TIn = unknown>(opts: ActsScriptOptions<TIn>): StageDef<TIn, 
 	return {
 		kind: "side-effect",
 		sessionPolicy: "fresh",
-		run: opts.run,
-		inputSchema: opts.inputSchema,
-		inheritsArtifacts: opts.inheritsArtifacts,
-		reads: opts.reads,
+		...opts,
 	};
 }
 
 function terminalFn(overrides: Partial<StageDef> = {}): StageDef {
-	return actsFn({ ...overrides, inheritsArtifacts: false });
+	return actsFn({ ...overrides, inheritsArtifacts: false } as Partial<StageDef>);
 }
 
 function terminalScript<TIn = unknown>(opts: ActsScriptOptions<TIn>): StageDef<TIn, void> {

@@ -209,13 +209,17 @@ function checkStageEnums(stage: StageDef, report: ReportFn): void {
  */
 function checkPromptInvariants(stage: StageDef, isStart: boolean, report: ReportFn): void {
 	if (stage.prompt === undefined) return;
-	if (stage.skill !== undefined) {
+	// The narrowed PromptStage arm pins `reads` to `never` — exactly why this
+	// gate exists: a jiti-loaded literal can still ship the field. Probe the
+	// erased shape, not the arm.
+	const erased = stage as { skill?: unknown; reads?: readonly string[] };
+	if (erased.skill !== undefined) {
 		report("prompt-with-skill");
 	}
 	if (stage.loop && stage.loop.kind !== "assess") {
 		report("prompt-with-loop", { kind: stage.loop.kind });
 	}
-	if (stage.reads?.length) {
+	if (erased.reads?.length) {
 		report("prompt-with-reads");
 	}
 	if (typeof stage.prompt === "string" && stage.prompt.trim() === "") {

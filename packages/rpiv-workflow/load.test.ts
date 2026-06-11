@@ -43,7 +43,7 @@ function stripSymbols(value: unknown): unknown {
 // minimal scaffolding per fixture.
 const STUB_ARTIFACT_OUTCOME = { collector: noopCollector };
 const produces = (overrides: Partial<StageDef> = {}): StageDef =>
-	producesRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides });
+	producesRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides } as Partial<StageDef>);
 
 // ---------------------------------------------------------------------------
 // Test fixtures

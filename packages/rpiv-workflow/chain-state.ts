@@ -11,7 +11,7 @@
  * `internal-utils.ts`; anything in this file is workflow-chain domain logic.
  */
 
-import type { PromptFn, StageDef } from "./api.js";
+import type { PromptFn, SkillStage, StageDef } from "./api.js";
 import { type Artifact, handleToString } from "./handle.js";
 import type { Output } from "./output.js";
 import type { RunState } from "./types.js";
@@ -59,8 +59,12 @@ export function resolveSkill(def: StageDef, stageName: string): string {
  * remap + its no-op warning, contract harvest, and the validator's contract
  * lookups must all agree, or a script/prompt stage whose record key matches a
  * registered skill inherits that skill's contract by accident.
+ *
+ * A TYPE GUARD since the StageDef union (T1): a positive narrows to
+ * `SkillStage`, so callers that wire skill-derived data onto the stage
+ * (the alias remap, outcome derivers) get the writable arm.
  */
-export function isDispatchingStage(stage: StageDef): boolean {
+export function isDispatchingStage(stage: StageDef): stage is SkillStage {
 	return stage.run == null && stage.prompt == null;
 }
 

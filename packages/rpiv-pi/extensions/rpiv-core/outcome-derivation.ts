@@ -60,6 +60,13 @@ export const deriveOutcomes: OutcomeDeriverFn = (workflows, skillContracts, onIs
 			if (stage.outcome) continue;
 			// Only `produces` stages need an outcome — `side-effect` / `acts` are fine without
 			if (stage.kind !== "produces") continue;
+			// SCRIPT stages can never carry an outcome (the run function IS the
+			// envelope — `script-with-outcome` is a load ERROR), so deriving one
+			// would break the workflow. PROMPT stages DO derive: a produces prompt
+			// stage under a contracted record key collects the same artifact kind
+			// the skill would (polish's `validate` relies on this — see the
+			// equivalence test in outcome-derivation.test.ts).
+			if (stage.run != null) continue;
 
 			const skillName = stage.skill ?? stageName;
 			const contract = skillContracts.get(skillName);

@@ -174,7 +174,7 @@ describe("runWorkflow", () => {
 				kind: defaultStrategy,
 				sessionPolicy: "fresh",
 			};
-			const merged: StageDef = { ...base, ...(stageOverrides[id] ?? {}) };
+			const merged = { ...base, ...(stageOverrides[id] ?? {}) } as StageDef;
 			// produces stages get a test-local transcript-scan outcome (the
 			// framework no longer ships a default). Decide based on the FINAL
 			// strategy after overrides — if a test overrides to side-effect, we

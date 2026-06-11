@@ -20,6 +20,7 @@ import {
 	type ProducesScriptFn,
 	produces,
 	type ScriptContext,
+	type StageDef,
 	takeRouteNote,
 	terminal,
 	type Workflow,
@@ -425,5 +426,38 @@ describe("composition smoke", () => {
 		expect(typeof w.edges["code-review"]).toBe("function");
 		expect(w.edges.research).toBe("code-review");
 		expect(w.edges.commit).toBe("stop");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// StageDef discriminated union (T1) — illegal dispatch combos unrepresentable
+// ---------------------------------------------------------------------------
+
+describe("StageDef union (T1)", () => {
+	const scriptBody: ActsScriptFn = () => {};
+
+	it("legal arms assign cleanly (skill / script / prompt)", () => {
+		const skillArm: StageDef = {
+			kind: "produces",
+			sessionPolicy: "fresh",
+			outcome: { collector: (() => null) as never },
+		};
+		const scriptArm: StageDef = { kind: "side-effect", sessionPolicy: "fresh", run: scriptBody };
+		const promptArm: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "say hi" };
+		expect([skillArm, scriptArm, promptArm].every((s) => s.kind.length > 0)).toBe(true);
+	});
+
+	it("type-level: mixed dispatches fail assignability (verified by tsc — the runtime values here are never used)", () => {
+		// @ts-expect-error script + skill — the run function IS the work
+		const a: StageDef = { kind: "produces", sessionPolicy: "fresh", run: scriptBody, skill: "x" };
+		// @ts-expect-error script + outcome — the run function IS the Outcome
+		const b: StageDef = { kind: "produces", sessionPolicy: "fresh", run: scriptBody, outcome: {} };
+		// @ts-expect-error script + prompt — one dispatch only
+		const c: StageDef = { kind: "side-effect", sessionPolicy: "fresh", run: scriptBody, prompt: "x" };
+		// @ts-expect-error prompt + skill — raw text, not /skill:<skill>
+		const d: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "x", skill: "implement" };
+		// @ts-expect-error prompt + reads — read state.named from the PromptFn instead
+		const e: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "x", reads: ["plans"] };
+		expect([a, b, c, d, e].length).toBe(5);
 	});
 });

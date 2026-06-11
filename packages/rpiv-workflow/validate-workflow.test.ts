@@ -38,7 +38,7 @@ import { validateWorkflow } from "./validate-workflow.js";
 // fixture exercises the rule it actually cares about.
 const STUB_ARTIFACT_OUTCOME = { collector: noopCollector };
 const produces = (overrides: Partial<StageDef> = {}): StageDef =>
-	producesRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides });
+	producesRaw({ outcome: STUB_ARTIFACT_OUTCOME, ...overrides } as Partial<StageDef>);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -246,7 +246,7 @@ describe("validateWorkflow — semantic stage constraints", () => {
 	const baseWithStage = (overrides: Partial<import("./api.js").StageDef>): Workflow => ({
 		name: "semantic",
 		start: "a",
-		stages: { a: { ...produces(), ...overrides } },
+		stages: { a: { ...produces(), ...overrides } as StageDef },
 		edges: { a: "stop" },
 	});
 
@@ -644,7 +644,9 @@ describe("validateWorkflow — script stage invariants", () => {
 	});
 
 	it("rejects `skill` alongside `run`", () => {
-		const e = errors(wf({ kind: "produces", sessionPolicy: "fresh", run: noopProducesScript, skill: "x" }));
+		const e = errors(
+			wf({ kind: "produces", sessionPolicy: "fresh", run: noopProducesScript, skill: "x" } as unknown as StageDef),
+		);
 		expect(e.some((i) => i.code === "script-with-skill")).toBe(true);
 	});
 
@@ -655,7 +657,7 @@ describe("validateWorkflow — script stage invariants", () => {
 				sessionPolicy: "fresh",
 				run: noopProducesScript,
 				outcome: { collector: noopCollector },
-			}),
+			} as unknown as StageDef),
 		);
 		expect(e.some((i) => i.code === "script-with-outcome")).toBe(true);
 	});
@@ -667,7 +669,7 @@ describe("validateWorkflow — script stage invariants", () => {
 				sessionPolicy: "fresh",
 				run: noopActsScript,
 				loop: fanout({ units: () => [] }),
-			}),
+			} as unknown as StageDef),
 		);
 		expect(e.some((i) => i.code === "script-with-loop")).toBe(true);
 	});
@@ -792,13 +794,14 @@ describe("validateWorkflow — assess loop invariants", () => {
 	const skillJudge = () => judge({ skill: "grade", outcome: verdictOutcome });
 	const wellFormed = () => assess({ judge: skillJudge(), done: () => true, feedForward: () => "decompose further" });
 
-	const base = (overrides: Partial<StageDef> = {}): StageDef => ({
-		kind: "produces",
-		sessionPolicy: "fresh",
-		outcome: producerOutcome,
-		loop: wellFormed(),
-		...overrides,
-	});
+	const base = (overrides: Partial<StageDef> = {}): StageDef =>
+		({
+			kind: "produces",
+			sessionPolicy: "fresh",
+			outcome: producerOutcome,
+			loop: wellFormed(),
+			...overrides,
+		}) as StageDef;
 
 	// Hand-rolled loop literal — bypasses the constructor's construction-time
 	// throws so the defensive LOAD gate can be exercised (jiti erases TS types,
@@ -931,13 +934,14 @@ describe("validateWorkflow — verify invariants", () => {
 	const skillJudge = () => judge({ skill: "grade", outcome: verdictOutcome });
 	const wellFormed = () => verify({ judge: skillJudge(), done: () => true });
 
-	const base = (overrides: Partial<StageDef> = {}): StageDef => ({
-		kind: "produces",
-		sessionPolicy: "fresh",
-		outcome: producerOutcome,
-		verify: wellFormed(),
-		...overrides,
-	});
+	const base = (overrides: Partial<StageDef> = {}): StageDef =>
+		({
+			kind: "produces",
+			sessionPolicy: "fresh",
+			outcome: producerOutcome,
+			verify: wellFormed(),
+			...overrides,
+		}) as StageDef;
 
 	// Hand-rolled verify literal — bypasses the constructor's construction-time
 	// throws so the defensive LOAD gate can be exercised (jiti erases TS types).
@@ -1030,12 +1034,13 @@ describe("validateWorkflow — verify invariants", () => {
 
 describe("validateWorkflow — judge verdict channels are published names", () => {
 	const noop = noopCollector;
-	const baseStage = (over: Partial<StageDef> = {}): StageDef => ({
-		kind: "produces",
-		sessionPolicy: "fresh",
-		outcome: { name: "impl", collector: noop },
-		...over,
-	});
+	const baseStage = (over: Partial<StageDef> = {}): StageDef =>
+		({
+			kind: "produces",
+			sessionPolicy: "fresh",
+			outcome: { name: "impl", collector: noop },
+			...over,
+		}) as StageDef;
 
 	it("reads of a verify verdict channel passes at load (was a false error for judge channels)", () => {
 		const w: Workflow = {
@@ -1109,7 +1114,9 @@ describe("validateWorkflow — prompt invariants", () => {
 	});
 
 	it("rejects a prompt stage that also sets an explicit skill", () => {
-		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", skill: "implement" }));
+		const e = errors(
+			wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", skill: "implement" } as unknown as StageDef),
+		);
 		expect(e.some((i) => i.code === "prompt-with-skill")).toBe(true);
 	});
 
@@ -1121,7 +1128,7 @@ describe("validateWorkflow — prompt invariants", () => {
 				prompt: "x",
 				outcome: { name: "p", collector: noopCollector },
 				loop: iterate({ next: () => null }),
-			}),
+			} as unknown as StageDef),
 		);
 		expect(e.some((i) => i.code === "prompt-with-loop" && i.params.kind === "iterate")).toBe(true);
 	});
@@ -1133,7 +1140,7 @@ describe("validateWorkflow — prompt invariants", () => {
 				sessionPolicy: "fresh",
 				prompt: "x",
 				loop: fanout({ units: () => [] }),
-			}),
+			} as unknown as StageDef),
 		);
 		expect(e.some((i) => i.code === "prompt-with-loop" && i.params.kind === "fanout")).toBe(true);
 	});
@@ -1156,12 +1163,16 @@ describe("validateWorkflow — prompt invariants", () => {
 	});
 
 	it("rejects prompt + reads", () => {
-		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", reads: ["plans"] }));
+		const e = errors(
+			wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", reads: ["plans"] } as unknown as StageDef),
+		);
 		expect(e.some((i) => i.code === "prompt-with-reads")).toBe(true);
 	});
 
 	it("rejects prompt + run (a script stage cannot set a raw prompt)", () => {
-		const e = errors(wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", run: noopActsScript }));
+		const e = errors(
+			wf({ kind: "side-effect", sessionPolicy: "fresh", prompt: "x", run: noopActsScript } as unknown as StageDef),
+		);
 		expect(e.some((i) => i.code === "script-with-prompt")).toBe(true);
 	});
 
@@ -1223,7 +1234,7 @@ describe("validateWorkflow — issue shape", () => {
 		const w: Workflow = {
 			name: "bad",
 			start: "s",
-			stages: { s: { ...produces(), sessionPolicy: "continue", loop: iterate({ next: () => null }) } },
+			stages: { s: { ...produces(), sessionPolicy: "continue", loop: iterate({ next: () => null }) } as StageDef },
 			edges: { s: "stop" },
 		};
 		const issues = validateWorkflow(w);

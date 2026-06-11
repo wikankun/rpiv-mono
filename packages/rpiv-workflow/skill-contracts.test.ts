@@ -171,7 +171,7 @@ describe("skill-contracts", () => {
 	describe("harvestStageContracts", () => {
 		const STUB_OUTCOME = { collector: noopCollector };
 		const produces = (overrides: Partial<StageDef> = {}): StageDef =>
-			producesRaw({ outcome: STUB_OUTCOME, ...overrides });
+			producesRaw({ outcome: STUB_OUTCOME, ...overrides } as Partial<StageDef>);
 
 		it("harvests produces.data and consumes.data from typeboxSchema stages", () => {
 			const w = defineWorkflow({

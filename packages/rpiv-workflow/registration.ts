@@ -33,12 +33,15 @@ export {
 	type OnInvalid,
 	type ProducesScriptFn,
 	type PromptFn,
+	type PromptStage,
 	produces,
 	READS_DATA,
 	type ResultProjection,
 	type ScriptContext,
+	type ScriptStage,
 	SESSION_POLICIES,
 	type SessionPolicy,
+	type SkillStage,
 	STAGE_KINDS,
 	STOP,
 	type StageDef,
@@ -52,6 +55,10 @@ export {
 	type Workflow,
 } from "./api.js";
 export { registerBuiltIns, registerBuiltInsProvider } from "./built-ins.js";
+// The shared dispatch predicate (and SkillStage type guard) — public so
+// extension points that key on a stage's skill identity (outcome derivers,
+// contract tooling) apply the same gate the loader/validator/harvest use.
+export { isDispatchingStage } from "./chain-state.js";
 export {
 	assess,
 	DEFAULT_ASSESS_MAX,

@@ -74,12 +74,13 @@ const freshRunState = (overrides: Partial<RunState> = {}): RunState => ({
 });
 
 /** Minimal skill stage — fresh policy, side-effect (no artifact extraction by default). */
-const stage = (overrides: Partial<StageDef> = {}): StageDef => ({
-	skill: "test",
-	kind: "side-effect",
-	sessionPolicy: "fresh",
-	...overrides,
-});
+const stage = (overrides: Partial<StageDef> = {}): StageDef =>
+	({
+		skill: "test",
+		kind: "side-effect",
+		sessionPolicy: "fresh",
+		...overrides,
+	}) as StageDef;
 
 /**
  * Build a StageSession with sensible defaults. Caller MUST supply cwd + state
