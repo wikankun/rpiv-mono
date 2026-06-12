@@ -91,8 +91,17 @@ export function getOutcomeDerivers(): OutcomeDeriverFn[] {
 	return getDerivers();
 }
 
-/** artifactKind → bucket name mappings registered by consumers. */
-export const getBucketKindMappings = globalSlot(BUCKETS_KEY, () => new Map<string, string>());
+/** Live registry slot — module-private; all mutation goes through the registrars below. */
+const getLiveBucketKindMappings = globalSlot(BUCKETS_KEY, () => new Map<string, string>());
+
+/**
+ * artifactKind → bucket name mappings registered by consumers. Returns a
+ * defensive copy (same posture as `getSkillContracts`) — mutating the result
+ * does not touch the registry; use `registerBucketKindMapping`.
+ */
+export function getBucketKindMappings(): Map<string, string> {
+	return new Map(getLiveBucketKindMappings());
+}
 
 /**
  * Register a mapping from an artifactKind to a bucket name for outcome
@@ -103,7 +112,7 @@ export const getBucketKindMappings = globalSlot(BUCKETS_KEY, () => new Map<strin
  * double module-load.
  */
 export function registerBucketKindMapping(artifactKind: string, bucket: string): void {
-	getBucketKindMappings().set(artifactKind, bucket);
+	getLiveBucketKindMappings().set(artifactKind, bucket);
 }
 
 /**
@@ -113,5 +122,5 @@ export function registerBucketKindMapping(artifactKind: string, bucket: string):
 export function __resetExtensionPoints(): void {
 	getCompositionComparators().clear();
 	getDerivers().length = 0;
-	getBucketKindMappings().clear();
+	getLiveBucketKindMappings().clear();
 }
