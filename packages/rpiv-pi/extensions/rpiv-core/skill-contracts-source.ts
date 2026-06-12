@@ -11,8 +11,9 @@
  * declare one.
  */
 
-import { readFileSync } from "node:fs";
-import { loadSkillsFromDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
+import { getAgentDir, loadSkills, loadSkillsFromDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type {
 	ConsumesSpec,
 	ProducesSpec,
@@ -121,19 +122,16 @@ export function artifactKindComparator(
 }
 
 /**
- * Scan rpiv-pi's bundled skills dir for `contract:` frontmatter blocks. Returns
- * `[skillName, SkillContract]` entries keyed by skill name (which matches the
- * resolved `stage.skill` the registry keys on). Never throws — a malformed or
- * unreadable skill is skipped (loader-never-throws spirit).
+ * Harvest `contract:` frontmatter blocks from a list of resolved skill files.
+ * Returns `[skillName, SkillContract]` entries keyed by skill name (which
+ * matches the resolved `stage.skill` the registry keys on). Never throws —
+ * a malformed or unreadable skill is skipped (loader-never-throws spirit).
+ * Shared by the bundled-dir and user-skills builders below.
  */
-export function buildSkillContractsFromFrontmatter(skillsDir: string): Array<[string, SkillContract]> {
+function contractEntriesFrom(
+	skills: ReadonlyArray<{ name: string; filePath: string }>,
+): Array<[string, SkillContract]> {
 	const entries: Array<[string, SkillContract]> = [];
-	let skills: ReadonlyArray<{ name: string; filePath: string }>;
-	try {
-		skills = loadSkillsFromDir({ dir: skillsDir, source: "rpiv-pi" }).skills;
-	} catch {
-		return entries;
-	}
 	for (const skill of skills) {
 		try {
 			const { frontmatter } = parseFrontmatter(readFileSync(skill.filePath, "utf-8"));
@@ -145,6 +143,85 @@ export function buildSkillContractsFromFrontmatter(skillsDir: string): Array<[st
 		}
 	}
 	return entries;
+}
+
+/**
+ * Scan rpiv-pi's bundled skills dir for `contract:` frontmatter blocks.
+ * Never throws — a missing/unreadable dir yields an empty list.
+ */
+export function buildSkillContractsFromFrontmatter(skillsDir: string): Array<[string, SkillContract]> {
+	try {
+		return contractEntriesFrom(loadSkillsFromDir({ dir: skillsDir, source: "rpiv-pi" }).skills);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * True iff `filePath` lives inside rpiv-pi's bundled skills dir. Both sides
+ * are realpath'd so a workspace/npm-link symlink (node_modules entry →
+ * package source) can't defeat the check, and the comparison is
+ * separator-safe (`skills-extra` is NOT inside `skills`). Fail-soft: if
+ * realpath misses (file vanished mid-scan), falls back to a separator-safe
+ * literal prefix check.
+ */
+export function isBundledSkillPath(filePath: string): boolean {
+	try {
+		const rel = relative(realpathSync(BUNDLED_SKILLS_DIR), realpathSync(filePath));
+		return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+	} catch {
+		return filePath === BUNDLED_SKILLS_DIR || filePath.startsWith(BUNDLED_SKILLS_DIR + sep);
+	}
+}
+
+/**
+ * Build skill contracts from user-installed skills by enumerating the SAME
+ * default locations Pi's own loader reads (`<agentDir>/skills` +
+ * `<cwd>/.pi/skills`), via Pi's exported `loadSkills` — so name-collision
+ * precedence matches what Pi actually dispatches.
+ *
+ * Filesystem-based rather than `pi.getCommands()`: Pi invalidates every
+ * captured `pi` handle on any session replacement or `/reload` ("extension
+ * ctx is stale"), and this builder runs inside a lazy contract provider
+ * whose flush time is the first `/wf` load — which can postdate either.
+ * The filesystem read has no handle lifetime.
+ *
+ * Skills shipped by OTHER Pi packages (their `pi.skills` manifest /
+ * settings-declared skill paths) are intentionally out of scope — the
+ * owning package registers its own contracts via `registerSkillContracts`,
+ * exactly as rpiv-pi does for its bundled skills. Bundled rpiv-pi skills
+ * are excluded by path (already covered by the `"rpiv-pi"` owner).
+ */
+export function buildUserSkillContracts(cwd: string = process.cwd()): Array<[string, SkillContract]> {
+	let skills: ReadonlyArray<{ name: string; filePath: string }>;
+	try {
+		skills = loadSkills({ cwd, agentDir: getAgentDir(), skillPaths: [], includeDefaults: true }).skills;
+	} catch {
+		return [];
+	}
+	return contractEntriesFrom(skills.filter((s) => !isBundledSkillPath(s.filePath)));
+}
+
+/**
+ * Register a lazy provider that builds contracts from user-installed skill
+ * frontmatter (filesystem enumeration — see `buildUserSkillContracts`).
+ * Runs at flush time (first `/wf` load); re-registration on `/reload`
+ * re-flushes, so the `"user-skills"` owner snapshot prunes contracts for
+ * skills removed since. Missing sibling resolves to a no-op; any other
+ * failure re-throws.
+ */
+export async function registerUserSkillContractsSource(): Promise<void> {
+	try {
+		const { registerSkillContracts, registerSkillContractsProvider } = await import(
+			"@juicesharp/rpiv-workflow/startup"
+		);
+		registerSkillContractsProvider(() => {
+			registerSkillContracts(buildUserSkillContracts(), "user-skills");
+		});
+	} catch (err) {
+		if (isModuleNotFound(err)) return; // sibling absent — /rpiv-setup prompts the user
+		throw err;
+	}
 }
 
 /**

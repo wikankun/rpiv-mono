@@ -19,7 +19,7 @@ import type { StageDef } from "./api.js";
 import { applyCompletedStage, resolveSkill } from "./chain-state.js";
 import type { Artifact } from "./handle.js";
 import { fs as fsHandle } from "./handle.js";
-import { globalSlot, withTimeout } from "./internal-utils.js";
+import { globalSlot, lazyProviderRegistry, withTimeout } from "./internal-utils.js";
 import type { Output } from "./output.js";
 import type { RunState } from "./types.js";
 import { SchemaTimeoutError } from "./validate-output.js";
@@ -288,5 +288,108 @@ describe("globalSlot", () => {
 		const afterReset = getSlot();
 		expect(initCount).toBe(2);
 		expect(afterReset).not.toBe(first);
+	});
+});
+
+describe("lazyProviderRegistry", () => {
+	/** Fresh registry per test — unique key so global slots don't leak across tests. */
+	let seq = 0;
+	const fresh = (opts?: { onError: (err: unknown) => void }) => {
+		const registry = lazyProviderRegistry(`test:lazy-provider-${++seq}`, opts);
+		registry.reset();
+		return registry;
+	};
+
+	it("runs each provider exactly once across repeated flushes", async () => {
+		const registry = fresh();
+		let runs = 0;
+		registry.register(() => {
+			runs++;
+		});
+		await registry.flush();
+		await registry.flush();
+		await registry.flush();
+		expect(runs).toBe(1);
+	});
+
+	it("providers registered AFTER a flush run on the NEXT flush (the /reload re-registration path)", async () => {
+		const registry = fresh();
+		const ran: string[] = [];
+		registry.register(() => {
+			ran.push("gen-1");
+		});
+		await registry.flush();
+		expect(ran).toEqual(["gen-1"]);
+
+		// Pi /reload re-runs the extension entry → the provider re-registers
+		// while the global slots survive. The next flush MUST run it —
+		// otherwise a skill installed mid-session can never refresh its
+		// contract and owner-scoped pruning never fires.
+		registry.register(() => {
+			ran.push("gen-2");
+		});
+		await registry.flush();
+		expect(ran).toEqual(["gen-1", "gen-2"]);
+	});
+
+	it("a later generation runs strictly AFTER the prior flush settles (ordering chained)", async () => {
+		const registry = fresh();
+		const ran: string[] = [];
+		let releaseFirst!: () => void;
+		const gate = new Promise<void>((r) => {
+			releaseFirst = r;
+		});
+		registry.register(async () => {
+			await gate;
+			ran.push("slow-first");
+		});
+		const first = registry.flush();
+		registry.register(() => {
+			ran.push("second");
+		});
+		const second = registry.flush();
+		releaseFirst();
+		await first;
+		await second;
+		expect(ran).toEqual(["slow-first", "second"]);
+	});
+
+	it("onError isolates a throwing provider; later registrations still flush", async () => {
+		const errors: unknown[] = [];
+		const registry = fresh({ onError: (e) => errors.push(e) });
+		registry.register(() => {
+			throw new Error("boom");
+		});
+		await registry.flush();
+		expect(errors).toHaveLength(1);
+
+		let ran = false;
+		registry.register(() => {
+			ran = true;
+		});
+		await registry.flush();
+		expect(ran).toBe(true);
+	});
+
+	it("a provider throw without onError rejects that flush only — later registrations recover", async () => {
+		const registry = fresh();
+		registry.register(() => {
+			throw new Error("boom");
+		});
+		await expect(registry.flush()).rejects.toThrow("boom");
+
+		// The /reload re-registration path must survive a bad provider: the
+		// chain is not poisoned and the new provider runs.
+		let ran = false;
+		registry.register(() => {
+			ran = true;
+		});
+		await registry.flush();
+		expect(ran).toBe(true);
+	});
+
+	it("flush with nothing pending and nothing flushed resolves immediately", async () => {
+		const registry = fresh();
+		await expect(registry.flush()).resolves.toBeUndefined();
 	});
 });

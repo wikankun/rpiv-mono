@@ -53,7 +53,10 @@ export const BUCKET_BY_KIND: Readonly<Record<string, string>> = {
  *
  * Mutates `stage.outcome` in place on qualifying stages.
  */
-export const deriveOutcomes: OutcomeDeriverFn = (workflows, skillContracts, onIssue) => {
+export const deriveOutcomes: OutcomeDeriverFn = (workflows, skillContracts, onIssue, bucketKindMappings) => {
+	// One shadow warning per artifactKind per derivation pass — N stages
+	// sharing a kind would otherwise repeat it N times in one load.
+	const shadowWarned = new Set<string>();
 	for (const w of workflows) {
 		for (const [stageName, stage] of Object.entries(w.stages)) {
 			// Rung 1: explicit outcome wins — skip
@@ -85,11 +88,32 @@ export const deriveOutcomes: OutcomeDeriverFn = (workflows, skillContracts, onIs
 				continue;
 			}
 
-			const bucket = BUCKET_BY_KIND[artifactKind];
+			const registered = bucketKindMappings.get(artifactKind);
+			const hardcoded = BUCKET_BY_KIND[artifactKind];
+			// A registered mapping that redirects a built-in kind silently
+			// reroutes where every stage of that kind publishes — consumers
+			// reading the canonical bucket (`reads: ["<hardcoded>"]`) would
+			// halt at runtime with a missing named read, far from the cause.
+			// Surface the redirect at load time, where it is actionable.
+			if (
+				registered !== undefined &&
+				hardcoded !== undefined &&
+				registered !== hardcoded &&
+				!shadowWarned.has(artifactKind)
+			) {
+				shadowWarned.add(artifactKind);
+				onIssue(
+					`outcome derivation: registered bucket mapping "${artifactKind}" → "${registered}" overrides the ` +
+						`built-in bucket "${hardcoded}" — workflows reading "${hardcoded}" will not see artifacts ` +
+						`published under this kind`,
+					"warning",
+				);
+			}
+			const bucket = registered ?? hardcoded;
 			if (!bucket) {
 				onIssue(
 					`outcome derivation: skill "${skillName}" declares artifactKind "${artifactKind}" ` +
-						`but BUCKET_BY_KIND has no entry for it — add the mapping to outcome-derivation.ts`,
+						`but no bucket mapping exists for it — register one via registerBucketKindMapping or add to BUCKET_BY_KIND`,
 					"error",
 				);
 				continue;

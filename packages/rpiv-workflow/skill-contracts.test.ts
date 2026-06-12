@@ -10,10 +10,12 @@ import {
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getBucketKindMappings,
 	getCompositionComparators,
 	getSkillContracts,
 	harvestStageContracts,
 	legalNextSkills,
+	registerBucketKindMapping,
 	registerCompositionComparator,
 	registerSkillContracts,
 	registerSkillContractsProvider,
@@ -501,6 +503,26 @@ describe("skill-contracts", () => {
 			expect(getCompositionComparators().size).toBe(1);
 			__resetSkillContracts();
 			expect(getCompositionComparators().size).toBe(0);
+		});
+	});
+
+	describe("bucket-kind mappings", () => {
+		it("registers a mapping from artifactKind to bucket", () => {
+			registerBucketKindMapping("custom-artifact", "custom-bucket");
+			expect(getBucketKindMappings().get("custom-artifact")).toBe("custom-bucket");
+		});
+
+		it("is idempotent on artifactKind (re-register replaces)", () => {
+			registerBucketKindMapping("custom-artifact", "bucket-a");
+			registerBucketKindMapping("custom-artifact", "bucket-b");
+			expect(getBucketKindMappings().get("custom-artifact")).toBe("bucket-b");
+		});
+
+		it("__resetSkillContracts clears the bucket-kind mappings", () => {
+			registerBucketKindMapping("custom-artifact", "custom-bucket");
+			expect(getBucketKindMappings().size).toBe(1);
+			__resetSkillContracts();
+			expect(getBucketKindMappings().size).toBe(0);
 		});
 	});
 });

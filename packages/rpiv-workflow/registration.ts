@@ -164,8 +164,10 @@ export type {
 } from "./skill-contract.js";
 export {
 	canCompose,
+	getBucketKindMappings,
 	legalNextSkills,
 	type OutcomeDeriverFn,
+	registerBucketKindMapping,
 	registerCompositionComparator,
 	registerOutcomeDeriver,
 	registerSkillContracts,

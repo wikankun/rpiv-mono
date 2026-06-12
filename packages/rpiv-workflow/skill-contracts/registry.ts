@@ -84,19 +84,24 @@ export function registerSkillContracts(contracts: Iterable<readonly [string, Ski
 }
 
 /**
- * Register a LAZY contract provider. The thunk runs once on the first
- * `flushSkillContractProviders()` (which `loadWorkflows` awaits), letting a
- * sibling defer reading skill frontmatter off startup and onto first `/wf`.
- * Register before the first read.
+ * Register a LAZY contract provider. The thunk runs once, on the next
+ * `flushSkillContractProviders()` (which `loadWorkflows` awaits before every
+ * registry read), letting a sibling defer reading skill frontmatter off
+ * startup and onto first `/wf`. Re-registration after `/reload` (Pi re-runs
+ * extension entries; these slots survive on `globalThis`) is the supported
+ * refresh path — the next load flushes the new provider, whose owner-scoped
+ * `registerSkillContracts` call then prunes contracts for skills the owner
+ * dropped since.
  */
 export function registerSkillContractsProvider(provider: () => void | Promise<void>): void {
 	providers.register(provider);
 }
 
 /**
- * Run all pending providers once, then memoize. Concurrency-safe (callers
- * await the same promise). Error posture: recorded, not propagated — see the
- * `lazyProviderRegistry` construction comment above.
+ * Run every not-yet-run provider (each runs at most once; providers
+ * registered after a flush run on the next one — see `lazyProviderRegistry`).
+ * Concurrency-safe (callers await the same promise). Error posture:
+ * recorded, not propagated — see the construction comment above.
  */
 export function flushSkillContractProviders(): Promise<void> {
 	return providers.flush();

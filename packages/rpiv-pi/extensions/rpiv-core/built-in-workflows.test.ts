@@ -76,7 +76,7 @@ const withDerivedOutcomes = (
 	for (const [name, stage] of Object.entries(wf.stages)) {
 		(mutable.stages as Record<string, typeof stage>)[name] = { ...stage };
 	}
-	deriveOutcomes([mutable], skillContracts ?? DECLARED_CONTRACTS, () => {});
+	deriveOutcomes([mutable], skillContracts ?? DECLARED_CONTRACTS, () => {}, new Map());
 	return mutable;
 };
 

@@ -5,7 +5,7 @@
  * build the effective registry (declared ⊕ harvested), and invoke the
  * registered outcome derivers against per-load stage copies.
  *
- * Extracted from `loadWorkflows` (M11) so the orchestrator reads as a
+ * Extracted from `loadWorkflows` so the orchestrator reads as a
  * sequence of phases. Every issue this phase emits is attributed to
  * `"framework"` — these are failures of provider/deriver machinery, not of
  * any config file (the old `layer: "built-in"` attribution was a lie).
@@ -18,6 +18,7 @@ import {
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getBucketKindMappings,
 	getOutcomeDerivers,
 } from "../skill-contracts/index.js";
 import type { LoadAccumulator } from "./merge.js";
@@ -71,9 +72,14 @@ export async function applySkillContractPhase(acc: LoadAccumulator): Promise<Ski
 	}
 	for (const deriver of getOutcomeDerivers()) {
 		try {
-			deriver(acc.workflowMap.values(), skillContracts, (message, severity) => {
-				acc.issues.push({ kind: "load", layer: "framework", severity, message });
-			});
+			deriver(
+				acc.workflowMap.values(),
+				skillContracts,
+				(message, severity) => {
+					acc.issues.push({ kind: "load", layer: "framework", severity, message });
+				},
+				getBucketKindMappings(),
+			);
 		} catch (err) {
 			acc.issues.push({
 				kind: "load",

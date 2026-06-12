@@ -7,11 +7,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **User-installed skill contracts.** A new lazy contract provider (owner `"user-skills"`) harvests `contract:` frontmatter from skills in Pi's default user locations (`<agentDir>/skills` + `<cwd>/.pi/skills`) and registers them alongside the bundled set, so workflows naming user skills get contract-driven validation and outcome derivation. Enumeration is filesystem-based via Pi's `loadSkills` (no captured `pi` handle — those go stale on session replacement / `/reload`); bundled skills are excluded by a realpath-safe path check. Skills shipped by other Pi packages register their own contracts via `registerSkillContracts`.
+- **Outcome derivation consults registered bucket mappings.** `deriveOutcomes` resolves `artifactKind → bucket` through `registerBucketKindMapping` entries first, falling back to the built-in `BUCKET_BY_KIND` table — user skills with novel artifact kinds can route to their own buckets. Overriding a built-in kind's bucket surfaces a load-time warning (once per kind per load): workflows reading the canonical bucket would otherwise halt at runtime far from the cause.
+
 ### Changed
 - The built-in workflows' loop stages migrate to the new `loop:` field + `fanout()` / `iterate()` / `assess()` constructors (no behavior change): `FRONTMATTER_PHASE_FANOUT` / `PLANS_PHASE_FANOUT` become `fanout({ units })`, and `REVIEW_PHASE_ITERATE` becomes `iterate({ next })`. `implement` still fans out one pass per plan phase; polish's `blueprint` still iterates one pass per review phase.
 
 ### Added
 - Per-unit model resolution for loop stages via the new `onUnitStart` lifecycle hook — a judge or per-phase unit's dispatched skill now resolves its model through the existing `models.json` `skills.<name>` cascade with no new configuration axes.
+
+### Removed
+- **Agent-manifest v1 migration + `.rpiv-managed.v2` sentinel.** The v1 (string-array) manifest format never reached production, so the one-shot "package wins" migration window and its sentinel marker are gone. `syncBundledAgents` now applies the smart gate uniformly: a file with no recorded hash, or whose content differs from it, is gated as `pendingUpdate`/`pendingRemove` and `/rpiv-update-agents` force-resolves. A leftover `.rpiv-managed.v2` file from earlier builds is inert.
 
 ## [1.19.1] - 2026-06-10
 

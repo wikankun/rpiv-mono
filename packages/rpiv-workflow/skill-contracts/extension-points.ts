@@ -11,6 +11,7 @@ import type { CompositionComparator, SkillContractMap } from "../skill-contract.
 
 const COMPARATORS_KEY = Symbol.for("@juicesharp/rpiv-workflow:composition-comparators");
 const DERIVERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:outcome-derivers");
+const BUCKETS_KEY = Symbol.for("@juicesharp/rpiv-workflow:bucket-kind-mappings");
 
 /**
  * A callback that derives `Outcome` outcomes for `produces` stages from the
@@ -28,11 +29,16 @@ const DERIVERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:outcome-derivers");
  * missing artifactKind). The callback maps directly to `acc.issues.push(...)`;
  * the deriver only populates `message` and `severity` — the loader sets `kind`
  * and `layer`.
+ *
+ * `bucketKindMappings` is the consumer-registered `artifactKind → bucket`
+ * extension table (see `registerBucketKindMapping`), passed by the loader so
+ * derivers stay pure functions of their arguments.
  */
 export type OutcomeDeriverFn = (
 	workflows: Iterable<Workflow>,
 	skillContracts: SkillContractMap,
 	onIssue: (message: string, severity: "error" | "warning") => void,
+	bucketKindMappings: ReadonlyMap<string, string>,
 ) => void;
 
 /** channel name → consumer-supplied composition comparator. */
@@ -85,11 +91,27 @@ export function getOutcomeDerivers(): OutcomeDeriverFn[] {
 	return getDerivers();
 }
 
+/** artifactKind → bucket name mappings registered by consumers. */
+export const getBucketKindMappings = globalSlot(BUCKETS_KEY, () => new Map<string, string>());
+
 /**
- * Partial reset (comparator + deriver registries). The barrel's
+ * Register a mapping from an artifactKind to a bucket name for outcome
+ * derivation. Extends the hardcoded BUCKET_BY_KIND table — user-installed
+ * skills with novel artifactKind values can register their own mappings.
+ * Idempotent on artifactKind (re-register replaces). Anchored on a
+ * `Symbol.for` slot like the rest of the registry, so it survives Pi's
+ * double module-load.
+ */
+export function registerBucketKindMapping(artifactKind: string, bucket: string): void {
+	getBucketKindMappings().set(artifactKind, bucket);
+}
+
+/**
+ * Partial reset (comparator + deriver + bucket-kind registries). The barrel's
  * `__resetSkillContracts` calls `__resetContractRegistry` plus this.
  */
 export function __resetExtensionPoints(): void {
 	getCompositionComparators().clear();
 	getDerivers().length = 0;
+	getBucketKindMappings().clear();
 }

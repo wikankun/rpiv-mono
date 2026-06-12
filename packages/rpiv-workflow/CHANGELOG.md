@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Consumer extension points — bucket-kind mappings + provider refresh
+
+#### Added
+- **`registerBucketKindMapping(artifactKind, bucket)` / `getBucketKindMappings()`** — a `Symbol.for`-anchored registry letting consumers extend the `artifactKind → bucket` ontology used by outcome derivation (user-installed skills with novel artifact kinds). Idempotent on kind (re-register replaces); cleared by `__resetSkillContracts`. Exported from `registration`, `startup`, and the internal test surface.
+
+#### Changed
+- **`OutcomeDeriverFn` takes a 4th parameter.** The loader now passes the registered bucket-kind mappings (`bucketKindMappings: ReadonlyMap<string, string>`) into every deriver call, so derivers are pure functions of their arguments instead of reading the registry through a side channel.
+- **Lazy provider registries re-flush post-flush registrations.** `lazyProviderRegistry.flush()` (built-in workflows + skill contracts) is no longer a one-shot process latch: each provider still runs at most once, but providers registered after a flush run on the next one, chained in order. A provider throw (no-`onError` variant) rejects only that flush — the chain recovers, so later registrations still run. `/reload` re-registration now actually refreshes registries — a skill installed mid-session gets its contract on the next `/wf` load, and the owner-scoped prune-on-reload semantics of `registerSkillContracts` can fire.
+
 ### Session-backed stage rows + fine-grained resume (issue #70)
 
 #### Added

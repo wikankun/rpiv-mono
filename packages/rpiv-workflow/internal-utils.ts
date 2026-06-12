@@ -53,7 +53,7 @@ export function globalSlot<T>(key: symbol, init: () => T): () => T {
 }
 
 /**
- * Register-providers / flush-once / memoize lifecycle over global slots —
+ * Register-providers / flush-on-demand lifecycle over global slots —
  * the shared structure behind `registerBuiltInsProvider`/`flushBuiltInProviders`
  * and their skill-contract twins, which were implemented twice near
  * line-for-line (D2). The one real divergence — error posture — is the
@@ -62,18 +62,33 @@ export function globalSlot<T>(key: symbol, init: () => T): () => T {
  * when omitted, a throw rejects the flush promise (trusted in-process
  * providers).
  *
- * State (provider list + flush latch) is anchored on `Symbol.for` slots
+ * Flush semantics: each provider runs AT MOST ONCE, but the flush is not a
+ * one-shot process latch — providers registered after a flush run on the
+ * NEXT flush, chained after everything that already ran. This is what makes
+ * `/reload` work: Pi re-runs extension entries (which re-register their
+ * providers) while these slots survive on `globalThis`; the next consumer
+ * read then flushes the re-registered providers, so owner-scoped
+ * registrations refresh (the contract registry's prune-on-reload semantics
+ * depend on this).
+ *
+ * State (provider list + flush chain) is anchored on `Symbol.for` slots
  * derived from `key`, so a duplicate module load shares one process-wide
- * lifecycle — same rationale as `globalSlot` itself. The latch is a mutable
+ * lifecycle — same rationale as `globalSlot` itself. The chain is a mutable
  * box because the slot value must never be reset to `undefined` (globalSlot
  * would re-init), only its contents.
  */
 export interface LazyProviderRegistry {
-	/** Register a lazy thunk — runs once on the first `flush()`. Register before the first read. */
+	/** Register a lazy thunk — runs once, on the next `flush()`. */
 	register(provider: () => void | Promise<void>): void;
-	/** Run all pending providers once, then memoize. Concurrency-safe (callers await the same promise). */
+	/**
+	 * Run every not-yet-run provider, chained after prior flushes; memoized
+	 * when nothing new is pending. Concurrency-safe (callers await the same
+	 * promise; a provider registered mid-flight runs on the next call). A
+	 * provider throw (no-onError variant) rejects only that flush — later
+	 * registrations run on subsequent flushes.
+	 */
 	flush(): Promise<void>;
-	/** Test reset: clears pending providers and the flush latch. */
+	/** Test reset: clears pending providers and the flush chain. */
 	reset(): void;
 }
 
@@ -90,14 +105,20 @@ export function lazyProviderRegistry(key: string, opts?: { onError: (err: unknow
 		},
 		flush() {
 			const box = getFlushBox();
-			if (box.flushed) return box.flushed;
 			const pending = getProviders().splice(0);
-			box.flushed = Promise.all(
-				pending.map((p) => {
-					const run = Promise.resolve().then(p);
-					return onError ? run.catch(onError) : run;
-				}),
-			).then(() => undefined);
+			if (pending.length === 0) return box.flushed ?? Promise.resolve();
+			const run = () =>
+				Promise.all(
+					pending.map((p) => {
+						const r = Promise.resolve().then(p);
+						return onError ? r.catch(onError) : r;
+					}),
+				).then(() => undefined);
+			// Chain after the prior flush — settled either way — so registration
+			// order is preserved across reload generations and a rejection (no-
+			// onError variant) only fails the callers awaiting THAT flush; later
+			// registrations still run, so `/reload` can recover from a bad provider.
+			box.flushed = box.flushed ? box.flushed.then(run, run) : run();
 			return box.flushed;
 		},
 		reset() {

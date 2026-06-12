@@ -20,7 +20,7 @@
  * production state. Reach for it sparingly; prefer making the
  * production module itself idempotent across `beforeEach` resets.
  *
- * KNOWN DEBT (M15, deliberately deferred): most of these exist because the
+ * KNOWN DEBT (deliberately deferred): most of these exist because the
  * built-in/contract registries are process-global singletons (a deliberate
  * choice — siblings register across package-instance boundaries via
  * `Symbol.for` slots). Making them instantiable and threading an instance
@@ -36,10 +36,15 @@ export { __resetLifecycleRegistry } from "./events.js";
 export { __resetLoadCache } from "./load/cache.js";
 export {
 	__resetSkillContracts,
+	buildEffectiveContracts,
+	drainSkillContractCollisions,
+	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getBucketKindMappings,
 	getCompositionComparators,
 	getSkillContracts,
 	harvestStageContracts,
+	registerBucketKindMapping,
 } from "./skill-contracts/index.js";
 // Layout-coupled path helpers — test fixtures that WRITE synthetic run files
 // need them; production consumers use the opaque `runFileFor` instead.

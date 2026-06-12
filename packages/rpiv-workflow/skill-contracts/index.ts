@@ -12,9 +12,11 @@ export {
 	legalNextSkills,
 } from "./composition.js";
 export {
+	getBucketKindMappings,
 	getCompositionComparators,
 	getOutcomeDerivers,
 	type OutcomeDeriverFn,
+	registerBucketKindMapping,
 	registerCompositionComparator,
 	registerOutcomeDeriver,
 } from "./extension-points.js";

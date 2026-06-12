@@ -26,11 +26,13 @@ import { globalSlot, lazyProviderRegistry } from "./internal-utils.js";
 const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:built-ins");
 
 const getRegistry = globalSlot(REGISTRY_KEY, () => [] as Workflow[]);
-// Provider lifecycle (register / flush-once / memoize) via the shared
-// `lazyProviderRegistry` helper — same global-slot strategy as the registry,
-// so a duplicate module load shares one process-wide state. No `onError`:
-// built-in providers are trusted in-process code, a throw propagates to the
-// awaiting `loadWorkflows` caller.
+// Provider lifecycle (register / flush-on-demand; each provider runs once,
+// post-flush registrations run on the next flush — `/reload` re-registration
+// refreshes) via the shared `lazyProviderRegistry` helper — same global-slot
+// strategy as the registry, so a duplicate module load shares one
+// process-wide state. Safe to re-flush: `registerBuiltIns` replaces by name.
+// No `onError`: built-in providers are trusted in-process code, a throw
+// propagates to the awaiting `loadWorkflows` caller.
 const providers = lazyProviderRegistry("@juicesharp/rpiv-workflow:built-in-providers");
 
 /**
