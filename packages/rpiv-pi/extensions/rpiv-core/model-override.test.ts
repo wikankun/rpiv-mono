@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { StageRef, UnitEvent } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetModelOverrideState,
@@ -15,14 +16,17 @@ const LIFECYCLE_KEY = Symbol.for("@juicesharp/rpiv-workflow:lifecycle");
 
 interface LifecycleBundle {
 	onWorkflowStart?: (ctx: unknown) => unknown | Promise<unknown>;
-	onStageStart?: (stage: { name: string; skill?: string }, ctx: { workflow: string }) => unknown | Promise<unknown>;
-	onUnitStart?: (
-		stage: { name: string },
-		unit: { skill: string },
-		ctx: { workflow: string },
-	) => unknown | Promise<unknown>;
+	onStageStart?: (stage: StageRef, ctx: { workflow: string }) => unknown | Promise<unknown>;
+	onUnitStart?: (stage: StageRef, unit: UnitEvent, ctx: { workflow: string }) => unknown | Promise<unknown>;
 	onWorkflowEnd?: (result: unknown, ctx: unknown) => unknown | Promise<unknown>;
 }
+
+// StageRef/UnitEvent fixtures — the runner always sends the discriminated
+// StageRef shape, so the listener's `stage.kind === "skill"` narrowing only
+// sees the skills cascade rung on the "skill" arm.
+const scriptStage = (name: string): StageRef => ({ kind: "script", name, stageNumber: 1 });
+const skillStage = (name: string, skill: string): StageRef => ({ kind: "skill", name, stageNumber: 1, skill });
+const unit = (skill: string): UnitEvent => ({ role: "produce", index: 0, label: skill, skill });
 
 function lastListener(): LifecycleBundle {
 	const reg = ((globalThis as Record<symbol, unknown>)[LIFECYCLE_KEY] ?? []) as LifecycleBundle[];
@@ -87,7 +91,7 @@ describe("model-override", () => {
 			await registerModelOverrideLifecycle(pi);
 			const lc = lastListener();
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 			await lc.onWorkflowEnd?.({}, {});
 
 			expect(setModel).toHaveBeenCalledWith({ provider: "anthropic", id: "opus" });
@@ -107,7 +111,7 @@ describe("model-override", () => {
 
 			const lc = lastListener();
 			await lc.onWorkflowStart?.({}); // freezes capturedModel
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			// A stage's newSession re-fires session_start with a DIFFERENT model.
 			const overrideModel = { provider: "openai", id: "o3-pro" };
@@ -139,7 +143,7 @@ describe("model-override", () => {
 			writeModels({ stages: { plan: { model: "openai:o3-pro", thinking: "high" } } });
 			const { setModel, setThinkingLevel, registry, lc } = await setup();
 
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(registry.find).toHaveBeenCalledWith("openai", "o3-pro");
 			expect(setModel).toHaveBeenLastCalledWith({ provider: "openai", id: "o3-pro" });
@@ -150,7 +154,7 @@ describe("model-override", () => {
 			writeModels({ stages: { plan: { model: "openai:o3-pro", thinking: "off" } } });
 			const { setThinkingLevel, lc } = await setup();
 
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(setThinkingLevel).toHaveBeenLastCalledWith("off");
 		});
@@ -160,9 +164,9 @@ describe("model-override", () => {
 			const { setModel, setThinkingLevel, lc } = await setup();
 
 			// Stage 1 sets the override model.
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 			// Stage 2 is unconfigured → must revert to baseline, not stage 1's model.
-			await lc.onStageStart?.({ name: "implement" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("implement"), { workflow: "test-wf" });
 
 			expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
 			expect(setThinkingLevel).toHaveBeenLastCalledWith("medium");
@@ -180,7 +184,7 @@ describe("model-override", () => {
 			const lc = lastListener();
 			await lc.onWorkflowStart?.({});
 
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining("model not found"));
 			expect(fake.setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
@@ -192,7 +196,7 @@ describe("model-override", () => {
 			writeModels({ stages: { plan: { model: "openai:o3-pro", thinking: "high" } } });
 			const { setThinkingLevel, lc } = await setup({ setModelResult: false });
 
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining("setModel failed"));
 			// Thinking is still applied — the failure does not abort the stage hook.
@@ -208,7 +212,7 @@ describe("model-override", () => {
 			const lc = lastListener();
 
 			// onStageStart before onWorkflowStart → must early-return.
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(fake.setModel).not.toHaveBeenCalled();
 			expect(fake.setThinkingLevel).not.toHaveBeenCalled();
@@ -225,7 +229,7 @@ describe("model-override", () => {
 				});
 				const { setModel, setThinkingLevel, lc } = await setup();
 
-				await lc.onStageStart?.({ name: "plan", skill: "plan" }, { workflow: "ship" });
+				await lc.onStageStart?.(skillStage("plan", "plan"), { workflow: "ship" });
 
 				expect(setModel).toHaveBeenLastCalledWith({ provider: "openai", id: "gpt-5.5" });
 				expect(setThinkingLevel).toHaveBeenLastCalledWith("high");
@@ -238,7 +242,7 @@ describe("model-override", () => {
 				});
 				const { setModel, lc } = await setup();
 
-				await lc.onStageStart?.({ name: "plan", skill: "plan" }, { workflow: "ship" });
+				await lc.onStageStart?.(skillStage("plan", "plan"), { workflow: "ship" });
 
 				expect(setModel).toHaveBeenLastCalledWith({ provider: "anthropic", id: "opus" });
 			});
@@ -247,7 +251,7 @@ describe("model-override", () => {
 				writeModels({ skills: { commit: { model: "zai/glm-4-7" } } });
 				const { setModel, lc } = await setup();
 
-				await lc.onStageStart?.({ name: "commit", skill: "commit" }, { workflow: "polish" });
+				await lc.onStageStart?.(skillStage("commit", "commit"), { workflow: "polish" });
 
 				expect(setModel).toHaveBeenLastCalledWith({ provider: "zai", id: "glm-4-7" });
 			});
@@ -260,7 +264,7 @@ describe("model-override", () => {
 				const { setModel, lc } = await setup();
 
 				// Script stage: stage.skill undefined → skills rung skipped → defaults wins.
-				await lc.onStageStart?.({ name: "tally" }, { workflow: "polish" });
+				await lc.onStageStart?.(scriptStage("tally"), { workflow: "polish" });
 
 				expect(setModel).toHaveBeenLastCalledWith({ provider: "anthropic", id: "opus" });
 			});
@@ -272,7 +276,7 @@ describe("model-override", () => {
 				});
 				const { setModel, setThinkingLevel, lc } = await setup();
 
-				await lc.onStageStart?.({ name: "plan", skill: "plan" }, { workflow: "ship" });
+				await lc.onStageStart?.(skillStage("plan", "plan"), { workflow: "ship" });
 
 				expect(setModel).toHaveBeenLastCalledWith({ provider: "anthropic", id: "opus" });
 				expect(setThinkingLevel).toHaveBeenLastCalledWith("high");
@@ -284,7 +288,7 @@ describe("model-override", () => {
 
 				// workflow "polish" has no preset entry; stage "research" not in flat
 				// stages; skill "research" not in skills → defaults absent → baseline.
-				await lc.onStageStart?.({ name: "research", skill: "research" }, { workflow: "polish" });
+				await lc.onStageStart?.(skillStage("research", "research"), { workflow: "polish" });
 
 				expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
 				expect(setThinkingLevel).toHaveBeenLastCalledWith("medium"); // baseline thinking
@@ -314,7 +318,7 @@ describe("model-override", () => {
 			writeModels({ skills: { "grade-breakdown": { model: "zai/glm-4-7", thinking: "high" } } });
 			const { setModel, setThinkingLevel, registry, lc } = await setup();
 
-			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
+			await lc.onUnitStart?.(skillStage("breakdown", "breakdown"), unit("grade-breakdown"), { workflow: "polish" });
 
 			expect(registry.find).toHaveBeenCalledWith("zai", "glm-4-7");
 			expect(setModel).toHaveBeenLastCalledWith({ provider: "zai", id: "glm-4-7" });
@@ -327,8 +331,8 @@ describe("model-override", () => {
 			writeModels({ skills: { "grade-breakdown": { model: "zai/glm-4-7" } } });
 			const { setModel, setThinkingLevel, lc } = await setup();
 
-			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
-			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "breakdown" }, { workflow: "polish" });
+			await lc.onUnitStart?.(skillStage("breakdown", "breakdown"), unit("grade-breakdown"), { workflow: "polish" });
+			await lc.onUnitStart?.(skillStage("breakdown", "breakdown"), unit("breakdown"), { workflow: "polish" });
 
 			expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
 			expect(setThinkingLevel).toHaveBeenLastCalledWith("medium");
@@ -340,8 +344,8 @@ describe("model-override", () => {
 			writeModels({ skills: { implement: { model: "openai/o3-pro", thinking: "high" } } });
 			const { setModel, setThinkingLevel, lc } = await setup();
 
-			await lc.onUnitStart?.({ name: "implement" }, { skill: "implement" }, { workflow: "ship" });
-			await lc.onUnitStart?.({ name: "implement" }, { skill: "implement" }, { workflow: "ship" });
+			await lc.onUnitStart?.(skillStage("implement", "implement"), unit("implement"), { workflow: "ship" });
+			await lc.onUnitStart?.(skillStage("implement", "implement"), unit("implement"), { workflow: "ship" });
 
 			expect(setModel).toHaveBeenLastCalledWith({ provider: "openai", id: "o3-pro" });
 			expect(setThinkingLevel).toHaveBeenLastCalledWith("high");
@@ -354,7 +358,7 @@ describe("model-override", () => {
 			await registerModelOverrideLifecycle(fake.pi);
 			const lc = lastListener();
 
-			await lc.onUnitStart?.({ name: "breakdown" }, { skill: "grade-breakdown" }, { workflow: "polish" });
+			await lc.onUnitStart?.(skillStage("breakdown", "breakdown"), unit("grade-breakdown"), { workflow: "polish" });
 
 			expect(fake.setModel).not.toHaveBeenCalled();
 			expect(fake.setThinkingLevel).not.toHaveBeenCalled();
@@ -391,7 +395,7 @@ describe("model-override", () => {
 			});
 			await lc.onWorkflowStart?.({});
 
-			await expect(lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" })).resolves.toBeUndefined();
+			await expect(lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" })).resolves.toBeUndefined();
 		});
 
 		it("onStageStart propagates a non-stale error", async () => {
@@ -403,7 +407,7 @@ describe("model-override", () => {
 			});
 			await lc.onWorkflowStart?.({});
 
-			await expect(lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" })).rejects.toThrow("boom");
+			await expect(lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" })).rejects.toThrow("boom");
 		});
 
 		it("onWorkflowEnd swallows a stale-ctx error AND still resets state", async () => {
@@ -439,7 +443,7 @@ describe("model-override", () => {
 			const lc = lastListener();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			// Genuine error propagates (surfaced to the user)...
 			await expect(lc.onWorkflowEnd?.({}, {})).rejects.toThrow("boom");
@@ -463,7 +467,7 @@ describe("model-override", () => {
 
 			// baselineCaptured never flipped → onStageStart early-returns.
 			writeModels({ stages: { plan: { model: "openai:o3-pro" } } });
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 			expect(setModel).not.toHaveBeenCalled();
 		});
 	});
@@ -480,7 +484,7 @@ describe("model-override", () => {
 			const lc = lastListener();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 			await lc.onWorkflowEnd?.({}, {});
 
 			expect(setModel).toHaveBeenLastCalledWith(BASELINE_MODEL);
@@ -504,7 +508,7 @@ describe("model-override", () => {
 			const lc = lastListener();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 			await lc.onWorkflowEnd?.({}, {});
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed to restore baseline model"));
@@ -530,7 +534,7 @@ describe("model-override", () => {
 			const { setModel, setThinkingLevel, lc } = await setupOpt();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			setModel.mockClear();
 			setThinkingLevel.mockClear();
@@ -550,8 +554,8 @@ describe("model-override", () => {
 			const { setModel, lc } = await setupOpt();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
-			await lc.onStageStart?.({ name: "review" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("review"), { workflow: "test-wf" });
 
 			setModel.mockClear();
 			await lc.onWorkflowEnd?.({}, {});
@@ -569,8 +573,8 @@ describe("model-override", () => {
 			const { setModel, lc } = await setupOpt();
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
-			await lc.onStageStart?.({ name: "implement" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("implement"), { workflow: "test-wf" });
 
 			setModel.mockClear();
 			await lc.onWorkflowEnd?.({}, {});
@@ -584,7 +588,7 @@ describe("model-override", () => {
 			const { setModel, setThinkingLevel, lc } = await setupOpt({ setModelResult: false });
 
 			await lc.onWorkflowStart?.({});
-			await lc.onStageStart?.({ name: "plan" }, { workflow: "test-wf" });
+			await lc.onStageStart?.(scriptStage("plan"), { workflow: "test-wf" });
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining("setModel failed"));
 			expect(setThinkingLevel).toHaveBeenLastCalledWith("high");

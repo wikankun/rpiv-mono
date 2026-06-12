@@ -21,6 +21,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { parseModelKey } from "@juicesharp/rpiv-config";
+// Type-only — erased at runtime, so safe when the rpiv-workflow sibling is
+// absent (the value import of registerLifecycle stays dynamic + guarded).
+import type { LifecycleContext, StageRef, UnitEvent } from "@juicesharp/rpiv-workflow/registration";
 import { loadModelsConfig, type ModelThinkingLevelValue, resolveStageModel } from "./models-config.js";
 import { isModuleNotFound, isStaleCtxError } from "./utils.js";
 
@@ -284,23 +287,22 @@ export async function registerModelOverrideLifecycle(pi: ExtensionAPI): Promise<
 				});
 			},
 
-			onStageStart: async (stage: { name: string; skill?: string }, ctx: { workflow: string }) => {
-				// Parameter shape mirrors rpiv-workflow's lifecycle:
-				//   - StageRef ("skill"|"script" arm) carries `name` (workflow graph key)
-				//     and (on the "skill" arm) `skill` (post-alias target, see
-				//     `load/alias.ts:44-46`).
-				//   - LifecycleContext carries `workflow` (the active workflow's name,
-				//     fed in by `defineWorkflow({ name })` or built-in registration).
-				// `stage.skill` is `undefined` for script stages — `resolveStageModel`
-				// handles that by skipping the skills cascade rung.
+			onStageStart: async (stage: StageRef, ctx: LifecycleContext) => {
+				// StageRef is discriminated on `kind` — only the "skill" arm carries
+				// `skill` (the post-alias dispatch target). Script stages pass
+				// `undefined`, and `resolveStageModel` skips the skills cascade rung.
 				await applyCascade(
 					pi,
-					{ workflow: ctx.workflow, stage: stage.name, skill: stage.skill },
+					{
+						workflow: ctx.workflow,
+						stage: stage.name,
+						skill: stage.kind === "skill" ? stage.skill : undefined,
+					},
 					`stage "${stage.name}"`,
 				);
 			},
 
-			onUnitStart: async (stage: { name: string }, unit: { skill: string }, ctx: { workflow: string }) => {
+			onUnitStart: async (stage: StageRef, unit: UnitEvent, ctx: LifecycleContext) => {
 				// Per-unit model resolution through the SAME cascade onStageStart uses,
 				// with the unit's dispatched skill: produce units re-resolve the stage's
 				// own override (idempotent re-apply); JUDGE units resolve
