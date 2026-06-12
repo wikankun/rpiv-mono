@@ -19,7 +19,7 @@ Skill-based development workflow for [Pi Agent](https://github.com/badlogic/pi-m
 ## What you get
 
 - **A pipeline of chained AI skills** - discover → research → design → plan → implement → validate, each producing a reviewable artifact under `.rpiv/artifacts/`.
-- **Named subagents for parallel analysis** - `codebase-analyzer`, `codebase-locator`, `codebase-pattern-finder`, `claim-verifier`, and 8 more, dispatched automatically by skills.
+- **Named subagents for parallel analysis** - `codebase-analyzer`, `codebase-locator`, `codebase-pattern-finder`, `claim-verifier`, and 11 more, dispatched automatically by skills.
 - **Session lifecycle hooks** - agent profiles and guidance files install themselves on first launch.
 
 ## Prerequisites
@@ -84,7 +84,7 @@ pi install npm:@juicesharp/rpiv-pi
 4. *(Optional)* Configure web search:
 
 ```
-/web-search-config
+/web-tools
 ```
 
 ### First Session
@@ -162,7 +162,11 @@ Invoke via `/skill:<name>` from inside a Pi Agent session.
 | Skill | Description |
 |---|---|
 | `code-review` | Comprehensive code reviews using specialist row-only agents (`diff-auditor`, `peer-comparator`, `claim-verifier`) at narrativisation-prone dispatch sites |
+| `architecture-review` | Top-down, layer-by-layer architecture review with a uniform 10-dimension checklist per layer; emits a phased polish plan under `.rpiv/artifacts/architecture-reviews/` |
+| `pr-triage` | Read-only triage of a GitHub PR: disposition (Review / Request changes / Hold / Decline) plus a security tier (0 SAFE / 1 REVIEW / 2 BLOCK); never mutates the working tree |
 | `commit` | Structured git commits grouped by logical change |
+| `changelog` | Regenerate `[Unreleased]` CHANGELOG.md sections from Conventional-Commit history - Keep-a-Changelog style, monorepo-aware, idempotent |
+| `frontend-design` | Inject tailored visual design guidance for web-frontend work; auto-adapts from a 2-question micro-interview to scan-only injection based on the project's style system |
 | `create-handoff` | Context-preserving handoff documents for session transitions |
 | `resume-handoff` | Resume work from a handoff document |
 
@@ -176,7 +180,9 @@ Invoke via `/skill:<name>` from inside a Pi Agent session.
 | `/btw` | Ask a side question without polluting the main conversation _(requires `@juicesharp/rpiv-btw`, opt-in)_ |
 | `/languages` | Pick the UI language for rpiv-* TUI strings (Deutsch / English / Español / Français / Português / Português (Brasil) / Русский / Українська) |
 | `/todos` | Show current todo list |
-| `/web-search-config` | Pick the active search provider and set its API key |
+| `/web-tools` | Pick the active search provider and set its API key |
+| `/wf` | Run a workflow: `/wf` previews every flow, `/wf <name>` shows one's graph, `/wf <name> "task"` runs it, `/wf @<run-id>` resumes _(ships with `@juicesharp/rpiv-workflow`, installed by `/rpiv-setup`)_ |
+| `/rpiv-models` | Pick model + reasoning-effort overrides per default, agent, skill, workflow stage, or preset stage (see **Model configuration** below) |
 
 ### Agents
 
@@ -192,6 +198,10 @@ Agents are dispatched automatically by skills via the `Agent` tool - you don't i
 | `integration-scanner` | Maps inbound references, outbound dependencies, config registrations, and event subscriptions for a component |
 | `peer-comparator` | Compares a new file against a peer sibling and tags each invariant Mirrored / Missing / Diverged / Intentionally-absent |
 | `precedent-locator` | Finds similar past changes in git history - commits, blast radius, and follow-up fixes |
+| `scope-tracer` | Sweeps anchor terms and reads key files to bound a research investigation - returns a Discovery Summary plus dense numbered questions |
+| `slice-verifier` | Adversarially audits each freshly-generated slice of a phased plan or design before it is locked - catches forward-references, cross-slice symbol mismatches, and decision drift |
+| `artifact-code-reviewer` | Reviews each slice code fence in a finalized artifact for code quality, codebase fit, and actionability - one severity-tagged row per finding |
+| `artifact-coverage-reviewer` | Verifies every Verification Note and Precedent entry in a finalized artifact lands somewhere actionable - success criterion or emitted code |
 | `artifacts-analyzer` | Performs deep-dive analysis on a research topic in `.rpiv/artifacts/` |
 | `artifacts-locator` | Discovers relevant documents in the `.rpiv/artifacts/` directory |
 | `web-search-researcher` | Researches modern web-only information via deep search and fetch |
@@ -210,7 +220,7 @@ Pi Agent discovers extensions via `"extensions": ["./extensions"]` and skills vi
 
 ## Configuration
 
-- **Web search** - run `/web-search-config` to pick a provider (Brave, Tavily, Serper, Exa, Jina, or Firecrawl) and set its API key; the per-provider env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) also works and takes precedence
+- **Web search** - run `/web-tools` to pick a provider (Brave, Tavily, Serper, Exa, You.com, Jina, Firecrawl, Perplexity, SearXNG, or Ollama) and set its API key; the per-provider env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) also works and takes precedence
 - **Advisor** - run `/advisor` to select a reviewer model and reasoning effort
 - **Models & reasoning effort** - run `/rpiv-models` to pick a model and reasoning level for the global default, a specific bundled agent, a workflow stage, a skill, or a per-preset stage; the picker writes `~/.config/rpiv-pi/models.json`. See **Model configuration** below for the cascade ladder and worked examples.
 - **Side questions** _(opt-in: `pi install npm:@juicesharp/rpiv-btw`)_ - type `/btw <question>` anytime (even mid-stream) to ask the primary model a one-off question; answer appears in a borderless bottom overlay and never enters the main conversation
@@ -287,7 +297,7 @@ With this file, `/wf ship plan` and `/wf ship design` use GPT-5.5; `/wf polish p
 | Warning about missing siblings on session start | Sibling plugins not installed | Run `/rpiv-setup` |
 | `/rpiv-setup` fails on a package | Network or registry issue | Check connection, retry with `pi install npm:<pkg>`, re-run `/rpiv-setup` |
 | `/rpiv-setup` says "requires interactive mode" | Running in headless mode | Install manually: `pi install npm:<pkg>` for each sibling |
-| `web_search` or `web_fetch` errors | Active provider's API key not configured | Run `/web-search-config` or set the matching env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) |
+| `web_search` or `web_fetch` errors | Active provider's API key not configured | Run `/web-tools` or set the matching env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) |
 | `advisor` tool not available after upgrade | Advisor model selection lost | Run `/advisor` to re-select a model |
 | Skills hang or serialize agent calls | Agent concurrency too low | Open `/agents`, raise `Settings → Max concurrency` |
 
