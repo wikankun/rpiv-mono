@@ -17,6 +17,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Per-unit model resolution for loop stages via the new `onUnitStart` lifecycle hook — a judge or per-phase unit's dispatched skill now resolves its model through the existing `models.json` `skills.<name>` cascade with no new configuration axes.
 
+### Changed
+- Action-required session banners share one boxed renderer (`renderBanner` in `banner.ts`). The agent-drift notice now uses the same rounded-box style as the missing-siblings banner, listing each drift category as a bullet with the `/rpiv-update-agents` call to action; passive status lines (copied/synced) stay single-line.
+
 ### Removed
 - **Agent-manifest v1 migration + `.rpiv-managed.v2` sentinel.** The v1 (string-array) manifest format never reached production, so the one-shot "package wins" migration window and its sentinel marker are gone. `syncBundledAgents` now applies the smart gate uniformly: a file with no recorded hash, or whose content differs from it, is gated as `pendingUpdate`/`pendingRemove` and `/rpiv-update-agents` force-resolves. A leftover `.rpiv-managed.v2` file from earlier builds is inert.
 
