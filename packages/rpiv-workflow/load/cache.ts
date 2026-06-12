@@ -1,8 +1,10 @@
 /**
- * mtime-keyed jiti import cache. jiti's own caches are disabled so `/reload`
- * picks up edits without restart; this wrapper layers a stat-driven cache
- * on top so unchanged overlays don't re-evaluate top-level code on every
- * `/wf` invocation.
+ * mtime-keyed jiti import cache. jiti's MODULE cache is disabled so `/reload`
+ * picks up edits without restart; its fs TRANSFORM cache stays on (the
+ * default) — entries are content-hash validated, so an edited overlay can
+ * never be served stale, and fresh sessions skip the ~70ms/file Babel
+ * re-transform. This wrapper layers a stat-driven cache on top so unchanged
+ * overlays don't re-evaluate top-level code on every `/wf` invocation.
  *
  * The `jiti` instance lives here so the cache and the underlying importer
  * co-locate. Other loader modules import `cachedImport` — none touches
@@ -18,9 +20,10 @@ import { statSync } from "node:fs";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, {
-	// Bypass jiti's module cache so /reload picks up edits without restart.
+	// Module cache OFF so /reload picks up edits without restart. The fs
+	// transform cache (default ON) is deliberately kept: it is content-hash
+	// validated (edit-safe) and saves ~70ms/file of Babel work per session.
 	moduleCache: false,
-	fsCache: false,
 });
 
 const overlayCache = new Map<string, { mtimeMs: number; parsed: unknown }>();
