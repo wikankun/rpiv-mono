@@ -88,9 +88,8 @@ export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): st
 	const heading = formatWorkflowHeading(name, layer, name === loaded.default);
 	const descriptionLine = workflow.description ? [workflow.description] : [];
 	// Flow facets (loop / verify / edge) come from `describeFlow` — the ONE
-	// introspector (M12: preview must never lag a new loop kind again, the
-	// 09032b1 retrofit lesson). Per-stage knobs (kind, policy, outcome,
-	// schemas) are plain field reads off the def.
+	// introspector, so preview never lags a new loop kind. Per-stage knobs
+	// (kind, policy, outcome, schemas) are plain field reads off the def.
 	const shapeByStage = new Map(describeFlow(workflow).map((shape) => [shape.stage, shape]));
 	const stageRows = Object.entries(workflow.stages).map(([stageName, stage], i) =>
 		formatStageRow(i + 1, stageName, stage, shapeByStage.get(stageName)!, stageName in workflow.edges),

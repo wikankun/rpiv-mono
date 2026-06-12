@@ -2279,9 +2279,8 @@ describe("runWorkflow", () => {
 
 			// 2 completed stages (a, b) + 1 status:"failed" row marking where the
 			// guard halted the chain. Each row carries its own stageNumber — no
-			// stageNumber is reused (precedent `3a8b07b`), no completed row is
-			// rewritten in place (precedent `1f87ad6`). Filter on `stageNumber`
-			// to skip routing-decision rows.
+			// stageNumber is reused, no completed row is rewritten in place.
+			// Filter on `stageNumber` to skip routing-decision rows.
 			const { stages } = readState(tmpDir);
 			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
 			expect(stageRows).toHaveLength(3);

@@ -82,7 +82,7 @@ describe("claimName", () => {
 	});
 
 	it("re-claims a name whose holder has no run file (stale entry from a failed releaseName rollback)", () => {
-		// The I6 stranded-entry state: claimName succeeded, writeHeader failed,
+		// The stranded-entry state: claimName succeeded, writeHeader failed,
 		// releaseName's rollback ALSO failed — the index points at a run that
 		// never existed. The name must not be blocked forever.
 		addNameToIndex(tmpDir, "auth", "ghost-run");

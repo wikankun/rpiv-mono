@@ -285,7 +285,7 @@ async function retryUntilValid(
 /**
  * Sent to the AGENT as a follow-up message when an output-schema validation
  * fails — instructs it to re-write the artifact at the same path with a
- * corrected frontmatter. Lives beside its only consumer (M8: this is
+ * corrected frontmatter. Lives beside its only consumer (this is
  * model-facing prompt text, not a UI constant). `errorLines` is a pre-joined
  * bullet list (one line per failure) so the factory stays single-arg-typed.
  */

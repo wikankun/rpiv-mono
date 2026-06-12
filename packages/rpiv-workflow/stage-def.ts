@@ -2,7 +2,7 @@
  * Stage vocabulary + factories — what a stage IS (`StageDef` and its three
  * dispatch arms), what a workflow is, and the blessed constructors
  * (`defineWorkflow`, `produces` / `acts` / `terminal` and their `.script` /
- * `.prompt` builders). Split out of api.ts (M9); the loop shapes live in
+ * `.prompt` builders). Split out of api.ts; the loop shapes live in
  * loop-def.ts, the routing DSL in routing-dsl.ts.
  *
  * Factories are pure passthroughs that apply sane defaults. Same idiom as

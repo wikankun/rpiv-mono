@@ -16,8 +16,7 @@ import type { WorkflowValidationIssue } from "../validate/issue.js";
  * Where a load issue originated: one of the config layers, or `"framework"`
  * — the loader's own machinery (skill-contract providers, outcome derivers,
  * collision tracking). The framework origin is honest attribution for
- * errors no config file caused; `"built-in"` used to be the dumping ground
- * (M11).
+ * errors no config file caused; `"built-in"` used to be the dumping ground.
  */
 export type LoadIssueOrigin = ConfigLayer | "framework";
 

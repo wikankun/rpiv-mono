@@ -6,8 +6,8 @@
  * on its `verify` field. Unlike the retired spec-attaching builders (which
  * ATTACHED a `.spec` to a bare function), the LoopDef IS data with
  * function-valued fields — the spec is the source of truth in the
- * constructor, so introspection can never lag a new loop kind again (the
- * `09032b1` retrofit lesson). `loopSpecOf` projects the pure-data facet.
+ * constructor, so introspection can never lag a new loop kind. `loopSpecOf`
+ * projects the pure-data facet.
  *
  * Constructors validate at construction (the `defineRoute` pattern): a bad
  * `max`, an invalid judge shape, or a non-function `done`/`feedForward`

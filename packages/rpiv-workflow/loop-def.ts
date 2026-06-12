@@ -2,7 +2,7 @@
  * Loop vocabulary — the data shapes behind `StageDef.loop` and
  * `StageDef.verify`, AS TYPES. Constructors live in loop-constructors.ts
  * (`fanout()` / `iterate()` / `assess()` / `verify()`); the per-kind runtime
- * strategy table lives in loop-kinds.ts. Split out of api.ts (M9) so the
+ * strategy table lives in loop-kinds.ts. Split out of api.ts so the
  * loop concept has one home instead of accreting into the stage module.
  *
  * Leaf-ish: imports only types from judge/output/handle.

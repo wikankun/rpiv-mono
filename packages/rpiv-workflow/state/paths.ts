@@ -51,8 +51,8 @@ export function stateFilePath(cwd: string, runId: string): string {
 
 /**
  * OPAQUE display path of a run's JSONL file — the only layout projection on
- * the public surface (M14: `runsDir`/`stateFilePath` invited external code
- * to parse and synthesize run paths, freezing the on-disk layout into the
+ * the public surface (`runsDir`/`stateFilePath` previously invited external
+ * code to parse and synthesize run paths, freezing the on-disk layout into the
  * public contract). Takes a `RunSummary`/`WorkflowHeader` (anything carrying
  * `runId`). Consumers show or open the returned path; they MUST NOT derive
  * sibling paths from it — the layout may change between versions.

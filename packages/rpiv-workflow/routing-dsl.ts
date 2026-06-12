@@ -1,7 +1,7 @@
 /**
  * The routing DSL — edge vocabulary (`EdgeFn` / `EdgeTarget` / `STOP`) and
  * the route builders (`defineRoute`, `gate`) with their structural markers
- * (`READS_DATA`, `ROUTE_NOTE`). Split out of api.ts (M9): how the graph
+ * (`READS_DATA`, `ROUTE_NOTE`). Split out of api.ts: how the graph
  * routes is one concept; what a stage is, is another. Runtime edge
  * EXECUTION lives in routing.ts — this module is authoring-surface only.
  */
@@ -50,7 +50,7 @@ export type EdgeTarget = string | typeof STOP | EdgeFn;
  * Marker attached to EdgeFns that read from `output.data`.
  * `validate-workflow.ts:checkPredicateSchemas` warns when a stage feeds a
  * marked route but has no `outputSchema` — routing on un-validated data
- * is the I6-class defect from the bcc34bc review.
+ * is a defect.
  *
  * Default is "marked": `defineRoute(targets, fn)` auto-marks. Opt out by
  * passing `{ readsData: false }` for the rare route that consults only
