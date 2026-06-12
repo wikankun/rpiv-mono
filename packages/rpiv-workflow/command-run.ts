@@ -4,6 +4,7 @@
  * `./command.ts`, so it evaluates lazily on first `/wf`, not at startup.
  */
 
+import { flushBuiltInProviders } from "./built-ins.js";
 import { parseArgs } from "./command.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
 import { formatError } from "./internal-utils.js";
@@ -22,7 +23,26 @@ import {
 } from "./messages.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
 import { resumeWorkflowByRunId, runWorkflow } from "./runner/index.js";
+import { flushSkillContractProviders } from "./skill-contracts/index.js";
 import { isValidName } from "./state/index.js";
+
+// ---------------------------------------------------------------------------
+// Pre-warm
+// ---------------------------------------------------------------------------
+
+/**
+ * Flush the lazy provider registries ahead of the first `/wf` — both are
+ * memoized one-shot latches, so `loadWorkflows` later awaits the same
+ * settled promises. Built-in providers carry the heaviest first-call work
+ * (the sibling's authoring-DSL graph builds here); measured ~550ms of the
+ * first `/wf`'s `loadWorkflows` is dominated by these flushes. Called by
+ * the post-registration pre-warm in `command.ts` right after the module
+ * graph import; never from the run path (loadWorkflows flushes on its own).
+ */
+export async function prewarmWorkflowRuntime(): Promise<void> {
+	await flushBuiltInProviders();
+	await flushSkillContractProviders();
+}
 
 // ---------------------------------------------------------------------------
 // Orchestrator
