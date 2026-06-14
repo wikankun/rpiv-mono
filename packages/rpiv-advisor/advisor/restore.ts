@@ -7,6 +7,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelKey, parseModelKey } from "@juicesharp/rpiv-config";
 import { loadAdvisorConfig, validateDisabledForModels } from "./config.js";
+import { reconcileAdvisorTool } from "./handlers.js";
 import { ADVISOR_TOOL_NAME, errModelUnavailable, msgAdvisorRestored, msgAdvisorRestoredInactive } from "./messages.js";
 import { isExecutorBlocked, setDisabledForModels } from "./policy.js";
 import { setAdvisorEffort, setAdvisorModel } from "./state.js";
@@ -32,10 +33,22 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	setDisabledForModels(validateDisabledForModels(config.disabledForModels));
 
-	if (!config.modelKey) return;
+	// No usable advisor model → strip the tool (and its prompt block) from the
+	// active set. The tool is registered active-by-default at load, so its
+	// promptSnippet/promptGuidelines otherwise linger in the base system prompt
+	// even though every advisor() call would fail with ERR_NO_MODEL. Gating it
+	// here — not just in the per-turn before_agent_start strip — keeps the base
+	// prompt clean from session start. See issue #72.
+	if (!config.modelKey) {
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
+		return;
+	}
 
 	const parsed = parseModelKey(config.modelKey);
-	if (!parsed) return;
+	if (!parsed) {
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
+		return;
+	}
 
 	const notifyOnce = (msg: string, level: "info" | "warning" | "error"): void => {
 		if (!ctx.hasUI || restoreAnnounced) return;
@@ -45,6 +58,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	const model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
 	if (!model) {
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
 		notifyOnce(errModelUnavailable(config.modelKey), "warning");
 		return;
 	}
@@ -55,6 +69,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 	}
 
 	if (isExecutorBlocked(ctx, pi.getThinkingLevel())) {
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
 		const advisorLabel = modelKey(model);
 		notifyOnce(msgAdvisorRestoredInactive(advisorLabel, config.effort), "info");
 		return;

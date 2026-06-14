@@ -64,6 +64,51 @@ describe("restoreAdvisorState", () => {
 		expect(captured.activeTools).not.toContain("advisor");
 	});
 
+	// Regression — issue #72: the advisor tool registers active-by-default, so
+	// when no usable model is configured restore MUST strip it; otherwise its
+	// promptSnippet/promptGuidelines linger in the base system prompt while every
+	// advisor() call would fail with ERR_NO_MODEL.
+	describe("strips advisor when no usable model is configured (issue #72)", () => {
+		it("strips advisor from active tools when modelKey is absent", () => {
+			writeConfig({ effort: "high" });
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["advisor", "other"]);
+			const ctx = createMockCtx();
+			restoreAdvisorState(ctx, pi);
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+
+		it("strips advisor when modelKey lacks ':' separator", () => {
+			writeConfig({ modelKey: "malformed" });
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["advisor", "other"]);
+			const ctx = createMockCtx();
+			restoreAdvisorState(ctx, pi);
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+
+		it("strips advisor when registry.find returns undefined", () => {
+			writeConfig({ modelKey: "unknown:model" });
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["advisor", "other"]);
+			const ctx = createMockCtx({ hasUI: true });
+			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => undefined) } as never;
+			restoreAdvisorState(ctx, pi);
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+
+		it("no-ops when advisor is already absent and no model is configured", () => {
+			writeConfig({ effort: "high" });
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["other"]);
+			vi.mocked(pi.setActiveTools).mockClear();
+			const ctx = createMockCtx();
+			restoreAdvisorState(ctx, pi);
+			expect(pi.setActiveTools).not.toHaveBeenCalled();
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+	});
+
 	describe("notify-once latch", () => {
 		// Pi fires `session_start` for every session including programmatic
 		// spawns (workflow stages, batch ops, etc.). State mutation must run
