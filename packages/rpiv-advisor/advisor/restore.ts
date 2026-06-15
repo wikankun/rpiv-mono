@@ -33,20 +33,30 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	setDisabledForModels(validateDisabledForModels(config.disabledForModels));
 
-	// No usable advisor model → strip the tool (and its prompt block) from the
-	// active set. The tool is registered active-by-default at load, so its
-	// promptSnippet/promptGuidelines otherwise linger in the base system prompt
-	// even though every advisor() call would fail with ERR_NO_MODEL. Gating it
-	// here — not just in the per-turn before_agent_start strip — keeps the base
-	// prompt clean from session start. See issue #72.
-	if (!config.modelKey) {
+	// No usable advisor model → clear in-memory selection, then strip the tool
+	// (and its prompt block) from the active set. Clearing state mirrors the
+	// /advisor disable path (command.ts applyDisable): `selectedAdvisor` is
+	// module-level and persists across session_start fires, so leaving it stale
+	// would let the per-turn before_agent_start strip read a truthy model and
+	// re-add the very tool we just stripped (e.g. a configured model removed
+	// from the registry mid-process). The tool is registered active-by-default
+	// at load, so its promptSnippet/promptGuidelines otherwise linger in the
+	// base system prompt even though every advisor() call would fail with
+	// ERR_NO_MODEL. See issue #72.
+	const deactivate = (): void => {
+		setAdvisorModel(undefined);
+		setAdvisorEffort(undefined);
 		reconcileAdvisorTool(pi, ctx, { blocked: true });
+	};
+
+	if (!config.modelKey) {
+		deactivate();
 		return;
 	}
 
 	const parsed = parseModelKey(config.modelKey);
 	if (!parsed) {
-		reconcileAdvisorTool(pi, ctx, { blocked: true });
+		deactivate();
 		return;
 	}
 
@@ -58,7 +68,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	const model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
 	if (!model) {
-		reconcileAdvisorTool(pi, ctx, { blocked: true });
+		deactivate();
 		notifyOnce(errModelUnavailable(config.modelKey), "warning");
 		return;
 	}

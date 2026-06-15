@@ -2,7 +2,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createMockCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
 import { describe, expect, it, vi } from "vitest";
-import { __resetAdvisorAnnounced, getAdvisorEffort, getAdvisorModel, restoreAdvisorState } from "./advisor/index.js";
+import {
+	__resetAdvisorAnnounced,
+	getAdvisorEffort,
+	getAdvisorModel,
+	restoreAdvisorState,
+	setAdvisorEffort,
+	setAdvisorModel,
+} from "./advisor/index.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
 
@@ -105,6 +112,39 @@ describe("restoreAdvisorState", () => {
 			const ctx = createMockCtx();
 			restoreAdvisorState(ctx, pi);
 			expect(pi.setActiveTools).not.toHaveBeenCalled();
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+
+		// I1: a no-model exit must also clear the module-level selection. Otherwise
+		// a model set by a prior session_start lingers, and the per-turn
+		// before_agent_start strip reads it as truthy and re-adds the tool.
+		it("clears a stale advisor selection when modelKey is later absent", () => {
+			setAdvisorModel({ provider: "a", id: "m" } as never);
+			setAdvisorEffort("high");
+			writeConfig({});
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["advisor", "other"]);
+			const ctx = createMockCtx();
+			restoreAdvisorState(ctx, pi);
+			expect(getAdvisorModel()).toBeUndefined();
+			expect(getAdvisorEffort()).toBeUndefined();
+			expect(captured.activeTools).toEqual(["other"]);
+		});
+
+		// Q2: the model-found-but-executor-blocked path strips too (model exists,
+		// so this branch's setup differs from the no-model paths above).
+		it("strips advisor when a valid model is configured but the executor is blocked", () => {
+			writeConfig({ modelKey: "anthropic:opus", disabledForModels: ["anthropic:sonnet"] });
+			const model = { provider: "anthropic", id: "opus", name: "Opus" } as never;
+			const { pi, captured } = createMockPi();
+			pi.setActiveTools(["advisor", "other"]);
+			const ctx = createMockCtx({
+				hasUI: true,
+				model: { provider: "anthropic", id: "sonnet", name: "Sonnet" } as never,
+			});
+			ctx.modelRegistry = { ...ctx.modelRegistry, find: vi.fn(() => model) } as never;
+			restoreAdvisorState(ctx, pi);
+			expect(getAdvisorModel()).toEqual(model);
 			expect(captured.activeTools).toEqual(["other"]);
 		});
 	});
