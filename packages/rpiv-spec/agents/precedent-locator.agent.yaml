@@ -1,0 +1,5 @@
+id: precedent-locator
+description: Finds similar past changes in git history - commits, blast radius, and follow-up fixes.
+tools: [read, grep, find, ls]
+model_tier: default
+prompt: ./precedent-locator.md

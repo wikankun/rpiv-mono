@@ -1,0 +1,4 @@
+id: changelog
+description: Regenerate the [Unreleased] section of every affected CHANGELOG.md in Keep a Changelog style. Reads commits since the last release tag plus any uncommitted or staged changes, classifies them by Conventional Commit prefix, and rewrites each [Unreleased] block. Works in single-package repos and monorepos (one CHANGELOG.md per package). Use when preparing a release or drafting changelog entries. Idempotent — safe to re-run as work lands.
+inputs: ["--since <ref>"]
+body: ./changelog.md

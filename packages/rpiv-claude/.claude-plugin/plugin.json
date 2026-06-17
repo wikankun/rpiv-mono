@@ -1,0 +1,90 @@
+{
+  "name": "rpiv",
+  "version": "1.19.1",
+  "description": "RPIV workflow for Claude Code",
+  "skills": [
+    {
+      "name": "annotate-guidance",
+      "path": "../skills/annotate-guidance/SKILL.md"
+    },
+    {
+      "name": "annotate-inline",
+      "path": "../skills/annotate-inline/SKILL.md"
+    },
+    {
+      "name": "architecture-review",
+      "path": "../skills/architecture-review/SKILL.md"
+    },
+    {
+      "name": "blueprint",
+      "path": "../skills/blueprint/SKILL.md"
+    },
+    {
+      "name": "changelog",
+      "path": "../skills/changelog/SKILL.md"
+    },
+    {
+      "name": "code-review",
+      "path": "../skills/code-review/SKILL.md"
+    },
+    {
+      "name": "commit",
+      "path": "../skills/commit/SKILL.md"
+    },
+    {
+      "name": "create-handoff",
+      "path": "../skills/create-handoff/SKILL.md"
+    },
+    {
+      "name": "design",
+      "path": "../skills/design/SKILL.md"
+    },
+    {
+      "name": "discover",
+      "path": "../skills/discover/SKILL.md"
+    },
+    {
+      "name": "explore",
+      "path": "../skills/explore/SKILL.md"
+    },
+    {
+      "name": "frontend-design",
+      "path": "../skills/frontend-design/SKILL.md"
+    },
+    {
+      "name": "implement",
+      "path": "../skills/implement/SKILL.md"
+    },
+    {
+      "name": "migrate-to-guidance",
+      "path": "../skills/migrate-to-guidance/SKILL.md"
+    },
+    {
+      "name": "plan",
+      "path": "../skills/plan/SKILL.md"
+    },
+    {
+      "name": "pr-triage",
+      "path": "../skills/pr-triage/SKILL.md"
+    },
+    {
+      "name": "research",
+      "path": "../skills/research/SKILL.md"
+    },
+    {
+      "name": "resume-handoff",
+      "path": "../skills/resume-handoff/SKILL.md"
+    },
+    {
+      "name": "revise",
+      "path": "../skills/revise/SKILL.md"
+    },
+    {
+      "name": "validate",
+      "path": "../skills/validate/SKILL.md"
+    }
+  ],
+  "hooks": {
+    "session_start": "../hooks/session-start.sh"
+  }
+}

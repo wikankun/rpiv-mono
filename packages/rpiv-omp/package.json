@@ -1,0 +1,25 @@
+{
+  "name": "@juicesharp/rpiv-omp",
+  "version": "1.19.1",
+  "description": "RPIV workflow for oh-my-pi (omp).",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juicesharp/rpiv-mono.git",
+    "directory": "packages/rpiv-omp"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "omp": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "files": [
+    "agents/",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ]
+}

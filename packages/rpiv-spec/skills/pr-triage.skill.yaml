@@ -1,0 +1,6 @@
+id: pr-triage
+description: "Triage a GitHub pull request before committing review effort — fetch the PR thread (description, review comments, linked issues, CI status), assess the diff against whatever architecture/standards the target repo actually carries, and emit a triage disposition (Review · Request changes · Hold · Decline) with security tier and convention drift. Use when the user wants a PR sized up, asks 'should I review/merge this PR', or wants a recommended next step on an incoming PR. Produces triage documents in .rpiv/artifacts/triage/. Read-only — never checks out or mutates the working tree. Stack-agnostic: works in any language or framework, with or without architecture docs."
+inputs: ["[PR number | PR URL | empty = current branch]"]
+outputs: [".rpiv/artifacts/triage/*.md"]
+dispatches: [diff-auditor, codebase-analyzer]
+body: ./pr-triage.md

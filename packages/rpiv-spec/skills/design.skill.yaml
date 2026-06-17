@@ -1,0 +1,6 @@
+id: design
+description: Synthesize a design artifact in .rpiv/artifacts/designs/ from research findings. Uses vertical-slice decomposition to break down complex changes into reviewable architectural units. The design artifact's code fences and success criteria are inherited by `plan` or `blueprint`. Use when research is complete and you need to specify the architectural approach and file-level implementation details before planning execution.
+inputs: [".rpiv/artifacts/research/*.md"]
+outputs: [".rpiv/artifacts/designs/*.md"]
+dispatches: [codebase-pattern-finder, codebase-analyzer, integration-scanner, precedent-locator, slice-verifier]
+body: ./design.md

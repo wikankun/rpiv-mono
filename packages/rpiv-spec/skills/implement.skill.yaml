@@ -1,0 +1,5 @@
+id: implement
+description: Execute an implementation plan by sequentially applying code changes to source files and running automated verification steps. Checkpoints with the user after every change. Use when an implementation plan is ready in .rpiv/artifacts/plans/ and you are ready to begin the work.
+inputs: [".rpiv/artifacts/plans/*.md [Phase N]"]
+dispatches: []
+body: ./implement.md

@@ -1,0 +1,6 @@
+id: validate
+description: Verify that an implementation plan was correctly executed by running each phase's success criteria against the working tree and producing a validation report. Use after the implement skill completes, when the user asks to "validate the plan", wants a post-implementation audit, or needs to confirm a feature is fully shipped per its plan.
+inputs: ["[plan-path]"]
+outputs: [".rpiv/artifacts/validation/*.md"]
+dispatches: [codebase-analyzer, codebase-pattern-finder]
+body: ./validate.md

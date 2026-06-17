@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "description": { "type": "string" },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "model_tier": {
+      "enum": ["default", "advisor"]
+    },
+    "prompt": { "type": "string" }
+  },
+  "required": ["id", "description", "prompt"]
+}

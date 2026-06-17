@@ -1,0 +1,5 @@
+id: annotate-inline
+description: Generate or update CLAUDE.md files inline within a project's source tree to document architecture and patterns for AI assistants. Use when the user wants to document architecture or asks to "annotate inline". Prefer this over annotate-guidance when the project uses inline CLAUDE.md files instead of the .rpiv/guidance/ shadow tree.
+inputs: ["target-directory"]
+dispatches: [codebase-locator, codebase-analyzer, codebase-pattern-finder]
+body: ./annotate-inline.md

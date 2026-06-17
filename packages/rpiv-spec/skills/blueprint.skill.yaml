@@ -1,0 +1,5 @@
+id: blueprint
+description: Answer structured research questions about a codebase, then synthesize a phased implementation plan. Combines research, design, and plan skills into one pass. Use for smaller tasks where separate research/design/plan phases are overkill, or when the user asks to "draft a plan for X" and you have enough context to start.
+inputs: ["free-text prompt"]
+dispatches: [scope-tracer, codebase-analyzer, codebase-pattern-finder, slice-verifier, artifact-code-reviewer, artifact-coverage-reviewer]
+body: ./blueprint.md

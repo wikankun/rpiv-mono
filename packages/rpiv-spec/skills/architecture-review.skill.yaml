@@ -1,0 +1,5 @@
+id: architecture-review
+description: Perform an architectural review of a proposed change or a set of files against the project's established patterns and guidelines. Use when the user wants to check if a change "fits" the architecture, asks for a "code review" with an architectural focus, or needs to vet a design before implementation.
+inputs: ["target-files", "patch-path"]
+dispatches: [codebase-analyzer, codebase-pattern-finder]
+body: ./architecture-review.md
