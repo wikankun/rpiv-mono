@@ -33,7 +33,8 @@
 		"agents/",
 		"scripts/",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"!**/*.test.ts"
 	],
 	"pi": {
 		"extensions": [

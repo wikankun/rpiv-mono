@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Packaging
+
+#### Fixed
+- **Test files are no longer published in the npm tarball.** The directory globs in `files` (`load/`, `runner/`, `outcomes/`, `validate/`, …) packed `**/*.test.ts`, which import the private, unpublished `@juicesharp/rpiv-test-utils` fixture package. Added a `!**/*.test.ts` exclusion to `files` (#80).
+
 ### Fanout-and-synthesize fan-in — `fanin()` read modifier
 
 #### Fixed

@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Test files are no longer published in the npm tarball. `files` packed `providers/**/*.test.ts`, which import the private, unpublished `@juicesharp/rpiv-test-utils` fixture package, so a standalone consumer running the bundled tests hit `ERR_MODULE_NOT_FOUND`. Added a `!**/*.test.ts` exclusion to `files` (#80).
+
 ## [1.20.0] - 2026-06-15
 
 ### Fixed

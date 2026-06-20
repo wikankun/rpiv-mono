@@ -80,7 +80,8 @@
 		"docs-protocol.ts",
 		"docs/",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"!**/*.test.ts"
 	],
 	"exports": {
 		".": "./index.ts",

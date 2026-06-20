@@ -51,7 +51,8 @@
 		"web-tools.ts",
 		"providers/",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"!**/*.test.ts"
 	],
 	"pi": {
 		"extensions": [
