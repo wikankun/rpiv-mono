@@ -1,0 +1,7 @@
+{
+  "name": "rpiv",
+  "version": "1.19.1",
+  "description": "RPIV workflow for Claude Code",
+  "publisher": "rpiv",
+  "entry": "plugin.json"
+}

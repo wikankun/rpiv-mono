@@ -79,7 +79,6 @@ export function build(target: string, outDir: string) {
 		const hookContent = `#!/bin/bash\nmkdir -p thoughts/shared/{questions,research,solutions,designs,plans}\n# rpivc sync-guidance --target . --guidance-file CLAUDE.md\n`;
 		fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
 
-		// 4. Create plugin.json
 		const pluginJsonPath = path.join(outDir, ".claude-plugin", "plugin.json");
 		fs.mkdirSync(path.dirname(pluginJsonPath), { recursive: true });
 		const pluginJson = {
@@ -92,6 +91,16 @@ export function build(target: string, outDir: string) {
 			},
 		};
 		fs.writeFileSync(pluginJsonPath, JSON.stringify(pluginJson, null, 2));
+
+		const marketplaceJsonPath = path.join(outDir, ".claude-plugin", "marketplace.json");
+		const marketplaceJson = {
+			name: "rpiv",
+			version: "1.19.1",
+			description: "RPIV workflow for Claude Code",
+			publisher: "rpiv",
+			entry: "plugin.json",
+		};
+		fs.writeFileSync(marketplaceJsonPath, JSON.stringify(marketplaceJson, null, 2));
 	} else if (target === "omp") {
 		// Create omp manifest in package.json (simulated)
 		console.log('ℹ️ OMP target: ensuring package.json uses "omp" key for compatibility.');
