@@ -1,7 +1,15 @@
 {
   "name": "rpiv",
-  "version": "1.19.1",
+  "owner": {
+    "name": "juicesharp"
+  },
   "description": "RPIV workflow for Claude Code",
-  "publisher": "rpiv",
-  "entry": "plugin.json"
+  "plugins": [
+    {
+      "name": "rpiv",
+      "source": "./",
+      "description": "RPIV workflow for Claude Code",
+      "version": "1.19.1"
+    }
+  ]
 }

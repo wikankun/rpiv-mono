@@ -52,6 +52,31 @@ describe("build", () => {
 		expect(createdFiles.some((f) => f.includes("plugin.json"))).toBe(true);
 		expect(createdFiles.some((f) => f.includes("SKILL.md"))).toBe(true);
 
+		// marketplace.json should declare the marketplace owner and a single rpiv
+		// plugin whose source is the marketplace root (skills auto-discover from skills/)
+		const marketplaceWrite = writeCalls.find((call) => call[0].toString().includes("marketplace.json"));
+		const marketplace = JSON.parse(marketplaceWrite![1].toString());
+		expect(marketplace.owner).toEqual({ name: "juicesharp" });
+		expect(marketplace.plugins).toEqual([
+			{
+				name: "rpiv",
+				source: "./",
+				description: "RPIV workflow for Claude Code",
+				version: "1.19.1",
+			},
+		]);
+		// source paths must not contain ".." (Claude Code rejects them)
+		for (const plugin of marketplace.plugins) {
+			expect(plugin.source).not.toContain("..");
+		}
+
+		// plugin.json must NOT enumerate skills (they auto-discover) and uses the
+		// correct SessionStart hook shape
+		const pluginWrite = writeCalls.find((call) => call[0].toString().endsWith("plugin.json"));
+		const plugin = JSON.parse(pluginWrite![1].toString());
+		expect(plugin.skills).toBeUndefined();
+		expect(plugin.hooks.SessionStart).toBeDefined();
+
 		// Check that macros were expanded
 		const skillWrite = writeCalls.find((call) => call[0].toString().includes("SKILL.md"));
 		expect(skillWrite![1].toString()).toContain("@sub");

@@ -67,25 +67,50 @@ export function build(target, outDir) {
         fs.mkdirSync(path.dirname(hookPath), { recursive: true });
         const hookContent = `#!/bin/bash\nmkdir -p thoughts/shared/{questions,research,solutions,designs,plans}\n# rpivc sync-guidance --target . --guidance-file CLAUDE.md\n`;
         fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
+        // Skills are auto-discovered from the skills/ directory via SKILL.md
+        // frontmatter, so they are intentionally NOT enumerated in plugin.json.
         const pluginJsonPath = path.join(outDir, ".claude-plugin", "plugin.json");
         fs.mkdirSync(path.dirname(pluginJsonPath), { recursive: true });
         const pluginJson = {
             name: "rpiv",
             version: "1.19.1",
             description: "RPIV workflow for Claude Code",
-            skills: skills.map((s) => ({ name: s.id, path: `../skills/${s.id}/SKILL.md` })),
+            author: {
+                name: "juicesharp",
+            },
             hooks: {
-                session_start: "../hooks/session-start.sh",
+                SessionStart: [
+                    {
+                        hooks: [
+                            {
+                                type: "command",
+                                // biome-ignore lint/suspicious/noTemplateCurlyInString: ${CLAUDE_PLUGIN_ROOT} is a Claude Code runtime placeholder, not a JS template
+                                command: '"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"',
+                            },
+                        ],
+                    },
+                ],
             },
         };
         fs.writeFileSync(pluginJsonPath, JSON.stringify(pluginJson, null, 2));
+        // marketplace.json lists plugins (directories), not skills. This plugin
+        // lives at the marketplace root, so its source is "./". Skills bundled in
+        // the plugin are discovered from skills/, not declared here.
         const marketplaceJsonPath = path.join(outDir, ".claude-plugin", "marketplace.json");
         const marketplaceJson = {
             name: "rpiv",
-            version: "1.19.1",
+            owner: {
+                name: "juicesharp",
+            },
             description: "RPIV workflow for Claude Code",
-            publisher: "rpiv",
-            entry: "plugin.json",
+            plugins: [
+                {
+                    name: "rpiv",
+                    source: "./",
+                    description: "RPIV workflow for Claude Code",
+                    version: "1.19.1",
+                },
+            ],
         };
         fs.writeFileSync(marketplaceJsonPath, JSON.stringify(marketplaceJson, null, 2));
     }
@@ -93,7 +118,7 @@ export function build(target, outDir) {
         // Create omp manifest in package.json (simulated)
         console.log('ℹ️ OMP target: ensuring package.json uses "omp" key for compatibility.');
     }
-    console.log(`✅ Build complete for ${target}.`);
+    console.log(`✅ Build complete for ${target}. (${skills.length} skills)`);
 }
 function expandMacros(content, mapping) {
     let result = content;
