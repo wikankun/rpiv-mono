@@ -21,7 +21,7 @@ import { registerRpivModelsCommand } from "./rpiv-models/index.js";
 import { registerSessionHooks } from "./session-hooks.js";
 import { registerSetupCommand } from "./setup-command.js";
 import { registerSkillBracket } from "./skill-bracket.js";
-import { registerSkillContractsSource } from "./skill-contracts-source.js";
+import { registerSkillContractsSource, registerUserSkillContractsSource } from "./skill-contracts-source.js";
 import { registerUpdateAgentsCommand } from "./update-agents-command.js";
 
 export default function (pi: ExtensionAPI) {
@@ -72,5 +72,6 @@ export default function (pi: ExtensionAPI) {
 		await registerModelOverrideLifecycle(pi).catch(logRegistrationFailure("model override lifecycle"));
 		await registerBuiltInWorkflows().catch(logRegistrationFailure("built-in workflows"));
 		await registerSkillContractsSource().catch(logRegistrationFailure("skill contracts source"));
+		await registerUserSkillContractsSource().catch(logRegistrationFailure("user skill contracts source"));
 	})();
 }

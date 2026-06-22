@@ -3,16 +3,27 @@
  * O(1) resolution. Lives in `<cwd>/.rpiv/workflows/runs/names.json`, alongside
  * the JSONL audit files.
  *
- * Internal module — not re-exported from registration.ts. The runner calls
- * `readNamesIndex` for collision pre-flight and `addNameToIndex` after
- * `writeHeader`. External consumers resolve names through `resolveRun`.
+ * Internal module — not re-exported from registration.ts. The runner reserves
+ * names through `claimName` (the single in-process door: validate →
+ * collision-check → persist) BEFORE `writeHeader`. External consumers resolve
+ * names through `resolveRun`.
+ *
+ * Durability: every write goes through `writeNamesIndex` — temp file +
+ * `renameSync`, so a crash mid-write can never tear the index. Concurrency:
+ * there is NO cross-process lock — two `/wf` processes claiming names
+ * simultaneously can race the read-modify-write (lost update / duplicate
+ * claim). Accepted for now: the index is recoverable via `rebuildIndex`, and
+ * a lock file is deferred (see the trigger-source concurrency note in
+ * triggers.ts).
  *
  * Fail-soft like every state-layer module: readers return `undefined` or empty
  * on failure; writers warn via `console.warn` with `[rpiv-workflow]` prefix.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { formatError } from "../internal-utils.js";
 import { namesFilePath, runsDir, stateFilePath } from "./paths.js";
+import { enumerateRunIds, readFirstJsonlLine } from "./raw.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,7 +68,7 @@ export function readNamesIndex(cwd: string): NamesIndex | undefined {
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
 		return parsed as NamesIndex;
 	} catch (e) {
-		console.warn(`[rpiv-workflow] names index: ${e instanceof Error ? e.message : String(e)}`);
+		console.warn(`[rpiv-workflow] names index: ${formatError(e)}`);
 		return undefined;
 	}
 }
@@ -67,37 +78,87 @@ export function readNamesIndex(cwd: string): NamesIndex | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Add a name → runId mapping to the index. Reads the current index, adds the
- * entry, and writes back. Creates the file if it doesn't exist. Returns `true`
- * on success, `false` on failure (warns to stderr).
- *
- * Does NOT check for collisions — callers handle that before calling.
+ * THE single write path for `names.json` — temp file + `renameSync` so a
+ * crash mid-write tears the temp file, never the index (rename is atomic on
+ * POSIX filesystems). Throws on failure; callers own the fail-soft warn.
  */
-export function addNameToIndex(cwd: string, name: string, runId: string): boolean {
+function writeNamesIndex(cwd: string, index: NamesIndex): void {
+	const dir = runsDir(cwd);
+	mkdirSync(dir, { recursive: true });
+	const target = namesFilePath(cwd);
+	const tmp = `${target}.${process.pid}.tmp`;
+	writeFileSync(tmp, `${JSON.stringify(index)}\n`, "utf-8");
+	renameSync(tmp, target);
+}
+
+/**
+ * Add a name → runId mapping to the index and write it back atomically.
+ * `current` is the index the caller already read (`claimName` reads it once
+ * for the collision check — no second read widening the race window);
+ * defaults to a fresh read for direct callers. Returns `true` on success,
+ * `false` on failure (warns to stderr).
+ *
+ * Does NOT check for collisions — `claimName` (the only production caller)
+ * handles that first. Deliberately NOT re-exported from the state barrels:
+ * writing the index without the claim protocol would bypass the collision
+ * guard. The module-level export exists for direct unit tests only.
+ */
+export function addNameToIndex(cwd: string, name: string, runId: string, current?: NamesIndex): boolean {
 	try {
-		const current = readNamesIndex(cwd) ?? {};
-		current[name] = runId;
-		const dir = runsDir(cwd);
-		mkdirSync(dir, { recursive: true });
-		writeFileSync(namesFilePath(cwd), `${JSON.stringify(current)}\n`, "utf-8");
+		const index = current ?? readNamesIndex(cwd) ?? {};
+		index[name] = runId;
+		writeNamesIndex(cwd, index);
 		return true;
 	} catch (e) {
-		console.warn(`[rpiv-workflow] names index: ${e instanceof Error ? e.message : String(e)}`);
+		console.warn(`[rpiv-workflow] names index: ${formatError(e)}`);
 		return false;
 	}
 }
 
 /**
- * Claim a name for a run: validate → collision-check → persist, in that order.
- * The single transactional door for reserving a name; callers must claim
- * BEFORE writing the JSONL header so the collision guard's truth-source (the
- * index) can never lag the header. On any non-`ok` result nothing is written.
+ * Roll back a claim made by `claimName` — for when the run start fails AFTER
+ * the claim (the JSONL header append failed), so the index never points at a
+ * run that doesn't exist on disk. Removes the entry only while it still maps
+ * to `runId` (never clobbers a re-claim by another run). Fail-soft: a failed
+ * rollback warns and leaves a stale entry, recoverable via `rebuildIndex`.
+ */
+export function releaseName(cwd: string, name: string, runId: string): void {
+	try {
+		const current = readNamesIndex(cwd);
+		if (!current || current[name] !== runId) return;
+		delete current[name];
+		writeNamesIndex(cwd, current);
+	} catch (e) {
+		console.warn(`[rpiv-workflow] names index: ${formatError(e)}`);
+	}
+}
+
+/**
+ * Claim a name for a run: validate → collision-check → persist, in that
+ * order, against ONE read of the index. The single in-process door for
+ * reserving a name; callers must claim BEFORE writing the JSONL header so the
+ * collision guard's truth-source (the index) can never lag the header. On any
+ * non-`ok` result nothing is written.
+ *
+ * Not transactional ACROSS processes — see the module header's concurrency
+ * note. Within one process the read→check→write sequence is atomic by
+ * single-threadedness, and the rename-based write can't tear the file.
  */
 export function claimName(cwd: string, name: string, runId: string): ClaimResult {
 	if (!isValidName(name)) return { ok: false, reason: "invalid" };
-	const existing = readNamesIndex(cwd)?.[name];
-	if (existing) return { ok: false, reason: "collision", runId: existing };
-	if (!addNameToIndex(cwd, name, runId)) return { ok: false, reason: "write-failed" };
+	const current = readNamesIndex(cwd) ?? {};
+	const existing = current[name];
+	// Collision only when the holder actually exists on disk: a mapping whose
+	// run file is gone is a stale entry (failed `releaseName` rollback,
+	// hand-deleted run), so the name is re-claimable — `addNameToIndex` simply
+	// overwrites it. A concurrent claimant inside its own claim→header window
+	// could be misread as stale, but that window is two consecutive
+	// synchronous calls and falls under the module header's accepted
+	// cross-process race.
+	if (existing && existsSync(stateFilePath(cwd, existing))) {
+		return { ok: false, reason: "collision", runId: existing };
+	}
+	if (!addNameToIndex(cwd, name, runId, current)) return { ok: false, reason: "write-failed" };
 	return { ok: true };
 }
 
@@ -112,22 +173,12 @@ export function claimName(cwd: string, name: string, runId: string): ClaimResult
  */
 export function rebuildIndex(cwd: string): NamesIndex | undefined {
 	try {
-		const dir = runsDir(cwd);
-		let entries: string[];
-		try {
-			entries = readdirSync(dir);
-		} catch {
-			return undefined;
-		}
-
 		const index: NamesIndex = {};
-		for (const fileName of entries) {
-			if (!fileName.endsWith(".jsonl")) continue;
-			const runId = fileName.slice(0, -".jsonl".length);
-			// Read only the name field from the JSONL header — avoids importing
-			// readHeader from reads.ts (which would create a circular dependency
-			// since reads.ts imports readNamesIndex from this module).
-			const name = readNameFromJsonlHeader(cwd, runId);
+		for (const runId of enumerateRunIds(cwd)) {
+			// Read only the name field off the raw first line (shared `raw.ts`
+			// leaf) — the full typed WorkflowHeader isn't needed here.
+			const header = readFirstJsonlLine(cwd, runId) as Record<string, unknown> | undefined;
+			const name = typeof header?.name === "string" ? header.name : undefined;
 			if (name) {
 				// readdirSync order is filesystem-dependent — surface duplicate
 				// claims instead of silently picking a winner.
@@ -140,35 +191,10 @@ export function rebuildIndex(cwd: string): NamesIndex | undefined {
 			}
 		}
 
-		mkdirSync(dir, { recursive: true });
-		writeFileSync(namesFilePath(cwd), `${JSON.stringify(index)}\n`, "utf-8");
+		writeNamesIndex(cwd, index);
 		return index;
 	} catch (e) {
-		console.warn(`[rpiv-workflow] names index rebuild: ${e instanceof Error ? e.message : String(e)}`);
-		return undefined;
-	}
-}
-
-/**
- * Read only the `name` field from a JSONL run file's header line. Returns
- * `undefined` when the file is missing, the first line isn't valid JSON, or
- * the header has no `name` field. Intentionally does not validate the full
- * header shape — rebuildIndex only needs the name, not the typed WorkflowHeader.
- *
- * Internal helper — not exported. Keeps names.ts acyclic with reads.ts.
- */
-function readNameFromJsonlHeader(cwd: string, runId: string): string | undefined {
-	try {
-		const filePath = stateFilePath(cwd, runId);
-		if (!existsSync(filePath)) return undefined;
-		const content = readFileSync(filePath, "utf-8");
-		const firstLine = content.split("\n", 1)[0] ?? "";
-		if (!firstLine) return undefined;
-		const parsed: unknown = JSON.parse(firstLine);
-		return typeof (parsed as Record<string, unknown>)?.name === "string"
-			? ((parsed as Record<string, unknown>).name as string)
-			: undefined;
-	} catch {
+		console.warn(`[rpiv-workflow] names index rebuild: ${formatError(e)}`);
 		return undefined;
 	}
 }

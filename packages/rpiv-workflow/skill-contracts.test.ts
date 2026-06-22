@@ -1,18 +1,21 @@
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { acts, defineWorkflow, produces as producesRaw, type StageDef } from "./api.js";
+import { acts, defineWorkflow, fanin, produces as producesRaw, type StageDef } from "./api.js";
 import { noopCollector } from "./outcomes/index.js";
-import type { CompositionComparator, SkillContract, SkillContractMap } from "./skill-contract.js";
+import type { CompositionComparator, ProducesSpec, SkillContract, SkillContractMap } from "./skill-contract.js";
 import {
 	__resetSkillContracts,
+	adjudicateChannel,
 	canCompose,
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
 	flushSkillContractProviders,
+	getBucketKindMappings,
 	getCompositionComparators,
 	getSkillContracts,
 	harvestStageContracts,
 	legalNextSkills,
+	registerBucketKindMapping,
 	registerCompositionComparator,
 	registerSkillContracts,
 	registerSkillContractsProvider,
@@ -170,7 +173,7 @@ describe("skill-contracts", () => {
 	describe("harvestStageContracts", () => {
 		const STUB_OUTCOME = { collector: noopCollector };
 		const produces = (overrides: Partial<StageDef> = {}): StageDef =>
-			producesRaw({ outcome: STUB_OUTCOME, ...overrides });
+			producesRaw({ outcome: STUB_OUTCOME, ...overrides } as Partial<StageDef>);
 
 		it("harvests produces.data and consumes.data from typeboxSchema stages", () => {
 			const w = defineWorkflow({
@@ -230,6 +233,21 @@ describe("skill-contracts", () => {
 			});
 			const harvested = harvestStageContracts([w]);
 			const contract = harvested.get("a");
+			expect(contract?.consumes?.reads).toEqual({ research: {} });
+		});
+
+		it("harvests a fanin() read keyed by the normalized channel name", () => {
+			const w = defineWorkflow({
+				name: "test",
+				start: "a",
+				stages: {
+					a: producesRaw({ outcome: STUB_OUTCOME, reads: [fanin("research")] }),
+				},
+				edges: { a: "stop" },
+			});
+			const harvested = harvestStageContracts([w]);
+			const contract = harvested.get("a");
+			// Keyed by "research", never "[object Object]".
 			expect(contract?.consumes?.reads).toEqual({ research: {} });
 		});
 
@@ -297,7 +315,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["design", stringConsumer],
 			]);
-			expect(canCompose("research", "design")).toEqual({ ok: true });
+			expect(canCompose("research", "design", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:false for incompatible schemas", () => {
@@ -305,7 +323,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["design", numberConsumer],
 			]);
-			const result = canCompose("research", "design");
+			const result = canCompose("research", "design", getSkillContracts());
 			expect(result.ok).toBe(false);
 			expect(result.reason).toContain("name");
 		});
@@ -315,7 +333,7 @@ describe("skill-contracts", () => {
 				["research", stringProducer],
 				["side-effect", noDataConsumer],
 			]);
-			expect(canCompose("research", "side-effect")).toEqual({ ok: true });
+			expect(canCompose("research", "side-effect", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:true when producer has no produces.data (degrade)", () => {
@@ -323,11 +341,11 @@ describe("skill-contracts", () => {
 				["research", { source: "declared", produces: { kind: "produces" } }],
 				["design", numberConsumer],
 			]);
-			expect(canCompose("research", "design")).toEqual({ ok: true });
+			expect(canCompose("research", "design", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("returns ok:true when neither skill is in the registry (unknown)", () => {
-			expect(canCompose("unknown-a", "unknown-b")).toEqual({ ok: true });
+			expect(canCompose("unknown-a", "unknown-b", getSkillContracts())).toEqual({ ok: true });
 		});
 
 		it("accepts an explicit contracts map", () => {
@@ -367,7 +385,7 @@ describe("skill-contracts", () => {
 				["design", stringConsumer],
 				["validate", numberConsumer],
 			]);
-			const next = legalNextSkills("research");
+			const next = legalNextSkills("research", getSkillContracts());
 			expect(next).toContain("design");
 			expect(next).not.toContain("validate");
 		});
@@ -378,7 +396,7 @@ describe("skill-contracts", () => {
 				["alpha", stringConsumer],
 				["zeta", stringConsumer],
 			]);
-			const next = legalNextSkills("research");
+			const next = legalNextSkills("research", getSkillContracts());
 			expect(next).toEqual(["alpha", "research", "zeta"]);
 		});
 
@@ -420,6 +438,62 @@ describe("skill-contracts", () => {
 		it("degrades (ok) when no comparator is registered", () => {
 			expect(canCompose("design", "implement", contracts).ok).toBe(true);
 		});
+		it("degrades (ok) when the comparator throws — the advisory query never propagates a defect (C14)", () => {
+			registerCompositionComparator("plans", () => {
+				throw new Error("comparator bug");
+			});
+			expect(() => canCompose("design", "implement", contracts)).not.toThrow();
+			expect(canCompose("design", "implement", contracts).ok).toBe(true);
+			// legalNextSkills no longer aborts wholesale on one throwing comparator.
+			expect(legalNextSkills("design", contracts)).toContain("implement");
+		});
+	});
+
+	describe("adjudicateChannel — THE shared channel rule (C14)", () => {
+		const planProduces: ProducesSpec = { kind: "produces", meta: { artifactKind: "plan" } };
+		const kindComparator: CompositionComparator = (produces, consumes, ch) => {
+			const want = (consumes.reads?.[ch]?.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			const got = (produces.meta as { artifactKind?: string } | undefined)?.artifactKind;
+			return !want || !got || want === got ? { ok: true } : { ok: false, reason: "artifactKind mismatch" };
+		};
+
+		it("skips when no comparator is registered for the channel", () => {
+			const verdict = adjudicateChannel(
+				planProduces,
+				{ reads: { plans: { meta: { artifactKind: "plan" } } } },
+				"plans",
+			);
+			expect(verdict).toEqual({ kind: "skipped" });
+		});
+
+		it("skips when the consumer declares no meta requirement (nothing to compare)", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(adjudicateChannel(planProduces, { reads: { plans: {} } }, "plans")).toEqual({ kind: "skipped" });
+			expect(adjudicateChannel(planProduces, { reads: {} }, "plans")).toEqual({ kind: "skipped" });
+		});
+
+		it("returns ok / mismatch (with reason) from the comparator", () => {
+			registerCompositionComparator("plans", kindComparator);
+			expect(
+				adjudicateChannel(planProduces, { reads: { plans: { meta: { artifactKind: "plan" } } } }, "plans"),
+			).toEqual({ kind: "ok" });
+			expect(
+				adjudicateChannel(planProduces, { reads: { plans: { meta: { artifactKind: "design" } } } }, "plans"),
+			).toEqual({ kind: "mismatch", reason: "artifactKind mismatch" });
+		});
+
+		it("captures a comparator throw instead of propagating it", () => {
+			registerCompositionComparator("plans", () => {
+				throw new Error("comparator bug");
+			});
+			const verdict = adjudicateChannel(
+				planProduces,
+				{ reads: { plans: { meta: { artifactKind: "plan" } } } },
+				"plans",
+			);
+			expect(verdict.kind).toBe("comparator-threw");
+			if (verdict.kind === "comparator-threw") expect(verdict.error).toContain("comparator bug");
+		});
 	});
 
 	describe("composition comparators", () => {
@@ -444,6 +518,26 @@ describe("skill-contracts", () => {
 			expect(getCompositionComparators().size).toBe(1);
 			__resetSkillContracts();
 			expect(getCompositionComparators().size).toBe(0);
+		});
+	});
+
+	describe("bucket-kind mappings", () => {
+		it("registers a mapping from artifactKind to bucket", () => {
+			registerBucketKindMapping("custom-artifact", "custom-bucket");
+			expect(getBucketKindMappings().get("custom-artifact")).toBe("custom-bucket");
+		});
+
+		it("is idempotent on artifactKind (re-register replaces)", () => {
+			registerBucketKindMapping("custom-artifact", "bucket-a");
+			registerBucketKindMapping("custom-artifact", "bucket-b");
+			expect(getBucketKindMappings().get("custom-artifact")).toBe("bucket-b");
+		});
+
+		it("__resetSkillContracts clears the bucket-kind mappings", () => {
+			registerBucketKindMapping("custom-artifact", "custom-bucket");
+			expect(getBucketKindMappings().size).toBe(1);
+			__resetSkillContracts();
+			expect(getBucketKindMappings().size).toBe(0);
 		});
 	});
 });

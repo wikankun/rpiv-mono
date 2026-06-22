@@ -1,7 +1,8 @@
 /**
  * Input-validation preflights for the runner's per-stage pipeline.
  *
- * Two validators run as `POST_PROMPT_CHECKS` in `stage-lifecycle.ts`:
+ * Two validators run after prompt prep in the single-stage pipeline
+ * (`runSingleStage`, run-stage.ts):
  *   - `ensureInputValid` — validates upstream output against the stage's
  *     declared `inputSchema`.
  *   - `ensureContractInputValid` — validates upstream output against the
@@ -15,20 +16,21 @@
  * halting only on timeouts.
  */
 
-import { SchemaTimeoutError, withTimeout } from "../internal-utils.js";
+import { formatError, withTimeout } from "../internal-utils.js";
 import { isJsonSchemaObject, jsonSchemaToStandard } from "../json-schema.js";
-import { ERR_INPUT_VALIDATION_FAILED, ERR_SCHEMA_TIMEOUT, MSG_INPUT_VALIDATION_FAILED } from "../messages.js";
+import { ERR_SCHEMA_TIMEOUT, FAIL_INPUT_VALIDATION } from "../messages.js";
 import type { RunContext } from "../types.js";
 import {
 	DEFAULT_VALIDATION_RETRY_TIMEOUT_MS,
 	describeFailure,
 	MAX_VALIDATION_RETRY_TIMEOUT_MS,
 	MIN_VALIDATION_RETRY_TIMEOUT_MS,
+	SchemaTimeoutError,
 	type ValidationResult,
 	validateOutputData,
 } from "../validate-output.js";
-import type { ResolvedStage } from "./stage-lifecycle.js";
-import { StagePreflightError } from "./stage-lifecycle.js";
+import { StagePreflightError } from "./errors.js";
+import type { ResolvedStage } from "./resolve-stage.js";
 
 // ---------------------------------------------------------------------------
 // Shared helper
@@ -75,26 +77,14 @@ async function validateOrThrow(
 		result = await withTimeout(Promise.resolve(validateOutputData(schema, data)), timeoutMs, timeoutError);
 	} catch (e) {
 		if (errorPolicy === "degrade-on-non-timeout" && !(e instanceof SchemaTimeoutError)) return;
-		const reason = e instanceof Error ? e.message : String(e);
-		throw new StagePreflightError(
-			"halt",
-			stage.skill,
-			MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-			ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, reason),
-			true,
-		);
+		const f = FAIL_INPUT_VALIDATION(stage.skill, prevSkill, formatError(e));
+		throw new StagePreflightError("halt", stage.skill, f.toast, f.error, true);
 	}
 
 	if (result.valid) return;
 
-	const failureSummary = result.failures.map(describeFailure).join("; ");
-	throw new StagePreflightError(
-		"halt",
-		stage.skill,
-		MSG_INPUT_VALIDATION_FAILED(stage.skill, prevSkill),
-		ERR_INPUT_VALIDATION_FAILED(stage.skill, prevSkill, failureSummary),
-		true,
-	);
+	const f = FAIL_INPUT_VALIDATION(stage.skill, prevSkill, result.failures.map(describeFailure).join("; "));
+	throw new StagePreflightError("halt", stage.skill, f.toast, f.error, true);
 }
 
 // ---------------------------------------------------------------------------

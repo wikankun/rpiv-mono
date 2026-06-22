@@ -8,26 +8,21 @@
  * eliminates the silent-drift risk of two parallel string-literal unions.
  */
 
-import { assertNever } from "./internal-utils.js";
-
 export type ConfigLayer = "built-in" | "user" | "project";
 
 /**
  * Single source for layer → display string. Wrap every interpolation site
  * (`${layer}` in template strings, banner builders, issue prefixes) in this
- * helper so adding a new `ConfigLayer` value surfaces as a compile error at
- * every consumer, not just at the loader's switch. The current display
- * form is the layer name verbatim — keep that invariant if you change it.
+ * helper; the `satisfies Record<ConfigLayer, string>` makes adding a new
+ * `ConfigLayer` value a compile error here. The current display form is the
+ * layer name verbatim — keep that invariant if you change it.
  */
+const CONFIG_LAYER_LABELS = {
+	"built-in": "built-in",
+	user: "user",
+	project: "project",
+} satisfies Record<ConfigLayer, string>;
+
 export function renderConfigLayer(layer: ConfigLayer): string {
-	switch (layer) {
-		case "built-in":
-			return "built-in";
-		case "user":
-			return "user";
-		case "project":
-			return "project";
-		default:
-			return assertNever(layer);
-	}
+	return CONFIG_LAYER_LABELS[layer];
 }

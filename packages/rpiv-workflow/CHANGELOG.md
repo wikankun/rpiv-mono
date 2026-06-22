@@ -2,6 +2,103 @@
 
 ## [Unreleased]
 
+### Packaging
+
+#### Fixed
+- **`typebox` moved from `peerDependencies` to `dependencies`** (`^1.1.24`, matching the Pi host's range) so the DSL's schema imports resolve under installers that don't materialise peer deps. Fixes `ERR_MODULE_NOT_FOUND: typebox` on standalone consumer installs (#79).
+- **Test files are no longer published in the npm tarball.** The directory globs in `files` (`load/`, `runner/`, `outcomes/`, `validate/`, …) packed `**/*.test.ts`, which import the private, unpublished `@juicesharp/rpiv-test-utils` fixture package. Added a `!**/*.test.ts` exclusion to `files` (#80).
+
+### Fanout-and-synthesize fan-in — `fanin()` read modifier
+
+#### Fixed
+- **A synthesize stage reading a fanout's channel now sees every unit, not just the last.** `stageEntryArgs` resolved a `reads:` name to `state.named[name].at(-1)` — the LAST accumulated `Output` — so the fan-in half of fanout-and-synthesize silently dropped N−1 of N units. Latest-wins remains the default for a bare-string read; opt into all-entries with `fanin()`.
+
+#### Added
+- **`fanin(name)` read modifier.** A `reads:` entry wrapped in `fanin("channel")` flag-repeats across EVERY accumulated entry of the channel (× each entry's artifacts) — the canonical consumer side of `fanout()`. The `reads:` element type widens to `string | { name; all? }`; bare strings keep latest-wins. Exported from `registration` alongside the `StageRead` type. `readName`/`readsAll` normalize the union for all `reads:` consumers.
+- **`reads-latest-from-fanout` validation warning.** A bare-string read of a channel filled by a (`produces`-kind) `fanout` nudges the author toward `fanin()`. Warns only — latest-only is legal; `fanin()` reads are already opted in and never flagged.
+- **`⇉ <names>` fan-in marker in `/wf` preview** on stages with `fanin()` reads, mirroring the `panel(N, fold)` fan-in surfacing. `describeFlow` gains a `reads` facet (normalized `{ name, all }` per read) backing it.
+
+## [1.20.0] - 2026-06-15
+
+### Consumer extension points — bucket-kind mappings + provider refresh
+
+#### Added
+- **`registerBucketKindMapping(artifactKind, bucket)` / `getBucketKindMappings()`** — a `Symbol.for`-anchored registry letting consumers extend the `artifactKind → bucket` ontology used by outcome derivation (user-installed skills with novel artifact kinds). Idempotent on kind (re-register replaces); cleared by `__resetSkillContracts`. Exported from `registration`, `startup`, and the internal test surface.
+
+#### Changed
+- **`OutcomeDeriverFn` takes a 4th parameter.** The loader now passes the registered bucket-kind mappings (`bucketKindMappings: ReadonlyMap<string, string>`) into every deriver call, so derivers are pure functions of their arguments instead of reading the registry through a side channel.
+- **Lazy provider registries re-flush post-flush registrations.** `lazyProviderRegistry.flush()` (built-in workflows + skill contracts) is no longer a one-shot process latch: each provider still runs at most once, but providers registered after a flush run on the next one, chained in order. A provider throw (no-`onError` variant) rejects only that flush — the chain recovers, so later registrations still run. `/reload` re-registration now actually refreshes registries — a skill installed mid-session gets its contract on the next `/wf` load, and the owner-scoped prune-on-reload semantics of `registerSkillContracts` can fire.
+
+### Session-backed stage rows + fine-grained resume (issue #70)
+
+#### Added
+- **Session provenance on every stage row.** `WorkflowStage` gains a REQUIRED `session: SessionRef | null` — the Pi session that backed the activation (`{ id, file?, branchOffset? }`, captured via the new `readSessionRef`), or `null` as an explicit "no session involved" (script stages, preflight halts, seam aborts, drift failures, pre-open cancellations). The `SessionRef` type is exported from the public barrel.
+- **Promotion on resume.** `/wf @id` over a failed/aborted session-backed stage now adopts the interrupted session's branch (`switchSession`) and runs the existing collector → parser → contract pipeline over it — if the artifact already landed, the stage completes WITHOUT re-running and the chain advances. Closes issue #70 with zero user input.
+- **Reattach on promotion miss.** If the adopted branch carries no artifact, the stage continues inside its original session from the leaf (full prior context) via a nudge prompt (`REATTACH_PROMPT`), then the standard post-session pipeline. A second failure writes a session-backed failure row, so the run stays resumable.
+- **Graceful fallback ladder.** Every precondition miss (sessionless row, host without `switchSession`, session file gone/different machine) notifies (`MSG_RESUME_SESSION_FALLBACK`) and degrades to today's cold re-run. `sessions/locate.ts` resolves id → file with a three-rung fallback (exact hint → `*_<id>.jsonl` filename search → bounded header scan).
+- **Port widenings (type-only; Pi already satisfies them):** `WorkflowHostContext.sessionManager` picks up `getSessionId`/`getSessionFile`; optional `switchSession` added beside `newSession`. Tripwire extended.
+
+#### Changed
+- **BREAKING (dev-local only — v1 never shipped):** the resume reader refuses stage rows missing the `session` key (`malformed-row`). Pre-feature dev-local run files can't be resumed; wipe `.rpiv/workflows/runs/` to clear. Display readers stay lenient and render old rows unchanged.
+
+### Post-review hardening (remediation review I6/Q1)
+
+#### Fixed
+- **Stale `names.json` entries self-heal.** A failed `releaseName` rollback (the header write failed AND the rollback write failed) left `names.json` pointing at a run that never existed — blocking the name forever (`claimName` reported a collision against a nonexistent run) and evading the index-rebuild recovery, which is gated on the name being *absent* from the index. Now `resolveRun` treats an index hit whose header is unreadable as positive evidence of staleness (rebuilds + retries once, pruning the dead entry as a side effect), and `claimName` only reports a collision when the holding run's file actually exists on disk.
+- **Corrupted loop cursors fail with stage attribution.** The assess strategy's `cursor.lastProduce!` / `lp.artifact!` dereferences are now guarded: a cursor state the state machine forbids throws a stage-attributed `StagePreflightError` (new `MSG_LOOP_CURSOR_CORRUPT`) instead of a bare `TypeError`. Defensive only — `advanceCursor` makes these states unreachable and the resume fold's shape guards refuse corrupted trails before they reach the driver.
+
+### Phase 5 — naming + documentation alignment
+
+#### Changed
+- **BREAKING — `ContractSource` is now `"declared" | "harvested"`.** The `"inferred"` member was produced by nothing and silently dropped by the contracts banner; it's removed rather than left as a trap. Externally supplied contracts (`registerSkillContracts` / a provider) carry source `"declared"` — JSDoc now uses one term ("registered") for the act of supplying them.
+- Internal module renames (no import-path impact — deep imports are unsupported): `runner/stage-lifecycle.ts` → `runner/run-stage.ts`, `lifecycle.ts` → `events.ts`, `control-flow.ts` → `loop-constructors.ts`, `skill-contracts/registries.ts` → `skill-contracts/extension-points.ts` (reset fns → `__resetContractRegistry` / `__resetExtensionPoints`, both private to `__resetSkillContracts`).
+- README gains a **Glossary** pinning one name per concept (workflow / stage / kind-vs-factory / run / chain / output / outcome / verdict / contract); the `untilDone` documentation alias for `assess` is dropped. `index.ts`'s drift-prone symbol catalog is replaced by an audience map — `registration.ts` is the single public-surface enumeration.
+
+### Phase 2 — public-surface decisions (pre-release freeze)
+
+#### Added
+- **JSONL schema version.** New run headers carry `v` (`STATE_SCHEMA_VERSION`, currently 1). `reconstructState` refuses to resume a run written under any other version (`reason: "version-mismatch"`) instead of silently mis-replaying it; an absent `v` is treated as version 1, so files written by earlier builds keep resuming. The trail is documented as resume's system of record, not a debug artifact.
+- **`RunTermination`** — run termination is now a discriminated union (`running | completed | failed | aborted | cancelled`, with `error` on the failure arms) written through one `terminate()` mutator. `RunWorkflowResult` gains a `termination` field carrying it (absent only for pre-flight rejections, same rule as `runId`); the `success`/`error` fields remain as projections. User cancellation is now first-class (`status: "cancelled"`) instead of being smuggled through the error string.
+- **`RunView`** — the deep-readonly view of a run's data channels (`originalInput`, `output`, `named`) that every user-facing context (`EdgeContext`, `ScriptContext`, `FanoutContext`, `IterateContext`, `FeedForwardContext`, `JudgeContext`, `SnapshotCtx`/`CollectCtx`/`ParseCtx`, `LifecycleContext`) now exposes as `state`.
+- **`gate` fallback audit note.** When no branch matches, the routing-audit row records a `note` ("no branch matched value X — fell back to ..."), via the new `RoutingDecision.note` field. No-match fallback is now a visible event.
+- **`runFileFor(cwd, run)`** — opaque display path of a run's JSONL file; the one layout projection on the public surface.
+- **`Verdict`** type alias (`= Output`) — names a judge's graded envelope; **`JudgedRepetition`** — the shared base vocabulary behind `AssessLoop` and `VerifySpec`; judge dispatch-arm types **`SkillJudge`** / **`PromptJudge`** / **`NamedOutcome`** / **`JudgePromptFn`**; **`STATE_SCHEMA_VERSION`**.
+
+#### Changed
+- **BREAKING — `gate(field, branches, otherwise)`.** The no-match fallback is now an explicit third argument instead of the last *declared* branch key (routing correctness no longer depends on object-literal property order). Integer-like branch keys (`"2"`) are rejected at construction — JS reorders them ahead of declaration order. `otherwise` is included in the route's `.targets`.
+- **BREAKING — user contexts expose `RunView`, and `RunState` is runner-private.** `Readonly<RunState>` was shallow (an edge fn could legally mutate `state.named` and corrupt an audited run) and leaked runner bookkeeping (`telemetry`, `lastAllocatedStageNumber`, `primaryArtifact`, `termination`). Code reading those fields from a context must switch to the supported channels (`output`, `named`, the result envelope). `RunState` is no longer exported from the package barrels (test fixtures: `@juicesharp/rpiv-workflow/internal`).
+- **BREAKING — `canCompose` / `legalNextSkills` require the `contracts` map.** The zero-arg default consulted the global registry, which silently excludes harvested contracts — the convenient call was the wrong one. Pass `loaded.skillContracts` (effective view) or `getSkillContracts()` (declared/injected slice) explicitly.
+- **BREAKING — `runsDir` / `stateFilePath` removed from the public surface.** The on-disk layout is private; use `runFileFor` for display, or the JSONL read API (`listRuns`, `readHeader`, `readAllStages`, `listArtifacts`) for content. Test fixtures that write synthetic run files import the helpers from `@juicesharp/rpiv-workflow/internal`.
+- **BREAKING — `Judge` is a discriminated union** (`SkillJudge | PromptJudge`): skill XOR prompt and the named verdict outcome (`outcome.name` required) are now enforced by the type system on typed call sites, not just at runtime. `judgeShapeIssues` / `verifyShapeIssues` now take `unknown` (they exist for untyped jiti-loaded literals).
+- **BREAKING — `VerifySpec` field names unified with `AssessLoop`** via the shared `JudgedRepetition` base: `pass` → `done`, `maxAttempts` → `max`. `StageShape.verify` reports `max` accordingly.
+- **Renamed: `OutputSpec` → `Outcome`** (matches the `StageDef.outcome` field, the `outcomes/` directory, and the `*Outcome` instances). **Renamed: `Predicate` → `NumericPredicate`** (the bare name collided with route predicates). Both old names ship as deprecated aliases for one release.
+- `output-spec.ts` is the single canonical home of the producer-side authoring surface (`Outcome`, `ArtifactCollector`, `ArtifactParser`, `CollectCtx`/`CollectResult`, `ParseCtx`/`ParseResult`, `SnapshotCtx`); `output.ts` keeps only the envelope (`Output`, `OutputMeta`, kind aliases, `Verdict`, `RunView`). Package-root imports are unaffected.
+- **`workspaceDiffCollector`: a mid-stage git break is now fatal.** When `git status` worked at snapshot time and fails after the stage, the collector returns `fatal` with the cause instead of `ok []` — "git broke" is no longer conflated with "no changes". A snapshot that found no working git still degrades to `ok []` (the stage legitimately ran outside a repo). The collector-wide "nothing found" convention is documented on `CollectResult`; `gitCommitOutcome`'s always-one-sentinel-artifact shape is the documented exception.
+- **Typing model documented (decision).** Inter-stage typing is runtime-contract-based; the `StageDef<TIn, TOut>` generics are local inference helpers that erase at the `Workflow.stages` boundary and must not be relied on for cross-stage safety. A typed builder API is a roadmap item, not part of this release.
+
+### Added
+- `Judge` is now a first-class type with a valid-by-construction `judge({ skill | prompt, outcome })` factory. A judge names a dispatchable grading session — `skill` (`/skill:<skill> <producerHandle>`, producer artifact auto-injected) XOR `prompt` (raw text) — whose verdict is validated by `outcome` and published to its own dedicated `state.named` channel. The collector must materialize ≥1 artifact (zero is a fatal halt). `judgeShapeIssues` is the single shape-rule source shared by the factory and load-time validation.
+- Structured unit-row JSONL fields (`parent` / `role` / `unitId` / `unitIndex`) on every loop-unit row, plus a `{type:"loop-cap"}` telemetry row (`appendLoopCap` / `readLoopCaps`) written when an `onCap: "advance"` soft-stop trips. Readers shape-filter on `stageNumber`, so the new rows are skipped by existing stage/telemetry readers.
+- Unit-generic lifecycle hooks `onLoopStart` / `onUnitStart` / `onUnitEnd` / `onLoopCap` (payloads `LoopStartInfo` / `UnitEvent` / `LoopCapInfo`). `onUnitStart` fires uniformly for produce AND judge units — the race-free seam (units run strictly sequentially) a model-override listener flips the model on, resolving per-unit models through the existing `models.json` `skills.<name>` cascade.
+- **`verify` — per-stage post-condition judge.** A `produces` stage can declare `verify: verify({ judge, done, feedForward?, max? })`: after each attempt, the judge session grades the attempt's artifact and `done(verdict)` gates advancement — fail retries with `feedForward` feedback up to `max` attempts (default 1 = gate-only), then halts with "verification failed" (a pass on the final attempt is a normal completion). Implemented as a desugar into the unified loop driver (`onCap: "halt"`, `result: "last"`), so verify inherits the pair-restore, per-attempt snapshot, and crash-resume machinery (pending verify re-runs; recovered verdicts recompute `pass`; predicate drift refuses). New exports: `verify()`, `verifyShapeIssues`, `judgeSpecOf`, `type VerifySpec`, `type JudgeSpec`. Attempts/verdicts land as unit rows (`role: "produce"` / `role: "verify"`, labels `a{n}·attempt` / `a{n}·verify`); the verdict publishes to its own `state.named[judge.outcome.name]` channel for declarative fallback routing; preview decorates `verify(skill:<name>)` / `verify(prompt)`; `StageShape` gains a `verify` projection.
+
+### Changed
+- **BREAKING** — the three organically-grown loop primitives are replaced by ONE `loop:` field on `StageDef`, authored via the `fanout()` / `iterate()` / `assess()` constructors. The old `fanout:` / `iterate:` / `assess:` `StageDef` fields and the `fanoutOver(spec)` / `iterateOver(spec)` wrappers are **removed**. Every unit now runs the identical stage-session path with a structured unit identity; one declared `result` projection (`"entry"` / `"last"`) replaces three implicit state semantics; one async resume fold with a full-row drift guard replaces three folds + three re-entry modules. `loopSpecOf(stage.loop)` is the single introspection channel; `describeFlow` reports `control.mode: "single" | "fanout" | "iterate" | "assess"` from the `loop` field. Constructors validate at construction (`max` must be an integer ≥ 1; assess defaults `max` to 8, `onCap` to `"advance"`); the same rules are re-checked at load for hand-rolled literals.
+- **BREAKING** — the `onFanoutStart` / `onFanoutUnitStart` / `onFanoutUnitEnd` lifecycle hooks are removed; observe loops via `onLoopStart` / `onUnitStart` / `onUnitEnd` / `onLoopCap`. TS consumers of the removed hooks get compile errors (intended).
+- One resume contract for all loop kinds: a unit source must be deterministic w.r.t. the fold-replayed run state + this generation's accumulated outputs. The resume fold re-checks every folded unit and refuses (terminal failure) rather than re-run a different unit than the run recorded.
+- Preflight checks now run uniformly for every loop kind before unit 1: `ensureNamedReads` + `ensureSkillRegistered` for all loops, plus `ensureUpstreamArtifact` and the judge-skill registry check for assess. A fanout/iterate stage with a missing named read or an unregistered skill now halts at preflight where it previously attempted execution (behavior tightening).
+- `UnitRole` gains `"verify"` and `LoopStartInfo.kind` gains `"verify"` (additive union extensions; verified stages follow loop semantics — `onLoopStart` reports `kind: "verify"`, units fire `onUnitStart`/`onUnitEnd`, no `onStageEnd`).
+- `assess` no longer rejects `reads:` (the v1 restriction is lifted) — round-0 producer args are now derived by a single authority (`stageEntryArgs`) and frozen by the resume fold at loop-generation open, so labelled-flag projections survive resume for every assess-kind loop.
+- Load validation now recognizes judge verdict channels (from `loop` and `verify`) as published names — `reads:` of a verdict channel no longer false-errors, and a signed judge skill's contract joins the named-channel compat adjudication.
+- **`prompt` dispatch now composes with `assess` loops and `verify`** (the v1 exclusion is lifted for the assess-kind producer; the loop driver's producer arm gains the skill-XOR-prompt polymorphism its judge arm already had). Round/attempt 0 sends the stage's resolved `prompt` raw (re-resolved on resume — a `PromptFn` on a loop stage joins the loop determinism contract); retry rounds send `feedForward(...)`'s output as the COMPLETE message (no `/skill:` prefix). `fanout`/`iterate` × `prompt` stays excluded (principled: units own their prompts), with a clearer per-kind error. `produces.prompt({...})` accepts `loop` (narrowed to `AssessLoop`) and `verify`; the shared `resolveStagePrompt` resolver moves to internal-utils (consumed by both the single-shot path and the driver), and the `stageEntryArgs` authority returns `""` for prompt stages so a prompt verify stage with no upstream primary resumes attempt 0 without a false missing-artifact refusal.
+
+### Fixed
+- A user function throwing during loop resume (the `hasPendingUnit` probe or the driver's pull — iterate `next`, assess `done`/`feedForward`, dynamic judge prompts) now records a parent-attributed terminal failure row and returns the normal result envelope, instead of escaping `resumeWorkflow` as an unhandled rejection that skipped `onWorkflowEnd`. The route-onward resume entry (completed trailer) gets the same guard for throwing route predicates.
+- A downstream stage reading an assess judge's verdict channel (`reads: ["<verdict>"]`) falsely errored at load ("no produces stage publishes it") even though the runtime preflight passed.
+
+### Removed
+- No migration for in-flight runs. Runs recorded before this version carry decorated `stage` keys with no `parent` field on their unit rows, so `reconstructState` refuses to resume them with the existing `stage-gone` message. There is no on-disk migration for pre-redesign runs; from this release the trail is a versioned contract (see the schema-version entry below).
+
 ## [1.19.1] - 2026-06-10
 
 ## [1.19.0] - 2026-06-09

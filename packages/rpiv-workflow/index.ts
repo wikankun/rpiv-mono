@@ -10,87 +10,31 @@
  * like `@juicesharp/rpiv-pi` opt in by calling `registerBuiltIns(...)`
  * from their own extension entry.
  *
- * ─── Public surface, grouped by audience ────────────────────────────────
+ * ─── Audience map ────────────────────────────────────────────────────────
  *
- *   1. Authoring DSL — `./api.js`, `./predicates.js`, `./typebox-adapter.js`
- *      What a `workflows.config.ts` author imports to declare a workflow:
- *      `defineWorkflow`, `produces`, `acts`, `terminal`, `defineRoute`, `gate`,
- *      `STOP` (terminal-edge sentinel; `"stop"` literal also valid),
- *      `Workflow`, `StageDef`, `EdgeFn`, `EdgeTarget`, `EdgeContext`,
- *      `StageSchema`, `StageKind`, `SessionPolicy`, `OutputSpec`,
- *      `READS_DATA`, the runtime-mirror `*_VALUES` arrays, the
- *      `gt`/`gte`/`lt`/`lte`/`eq` predicate helpers, and `typeboxSchema`
- *      (the TypeBox adapter).
+ * `registration.ts` is the SINGLE enumeration of the runner-free public
+ * surface — this header only routes you to the right module. (A previous
+ * symbol-by-symbol catalog here drifted from reality twice; it is gone on
+ * purpose.)
  *
- *   2. Runner (programmatic embedders) — `./runner/index.js`, `./host.js`
- *      Drive a workflow from outside `/wf`: `runWorkflow` (+ the by-name
- *      sugar `runWorkflowByName`) and `resumeWorkflow` (+ the by-run-id
- *      sugar `resumeWorkflowByRunId`), with `RunWorkflowOptions`,
- *      `RunWorkflowByNameOptions`, `ResumeWorkflowOptions`,
- *      `ResumeWorkflowByRunIdOptions`, and the shared `RunWorkflowResult`.
- *      Every options bag accepts an optional `signal: AbortSignal` for
- *      between-stage cooperative cancellation. Embedders type their host
- *      handles against `WorkflowHost` / `WorkflowHostContext` (the host
- *      ports) — Pi's `ExtensionAPI` / `ExtensionCommandContext` /
- *      `ReplacedSessionContext` structurally satisfy them, so the
- *      values pass through without casting.
- *
- *   3. Loader (programmatic embedders) — `./load/index.js`
- *      Materialise the merged workflow registry: `loadWorkflows`,
- *      `LoadedWorkflows`, `Issue`, `LoadIssue`, `ConfigLayer`,
- *      `OverlayPaths`, `projectOverlayPaths`, `userOverlayPaths`,
- *      `aliasSkills`. Siblings can apply the same remap to a built-in
- *      workflow before handing it to `runWorkflow`.
- *
- *   4. Built-in registry (sibling packages) — `./built-ins.js`
- *      Contribute workflows to the lowest config layer:
- *      `registerBuiltIns`. (`getBuiltIns` is test-only and lives on
- *      `@juicesharp/rpiv-workflow/internal`.)
- *
- *   5. Output envelope + bundled outcomes — `./output.js`,
- *      `./outcomes/index.js`, `./handle.js`
- *      Inter-stage data channel (`Output<K, D>`, `OutputMeta`,
- *      `Artifact`, `ArtifactHandle` + constructors `fs`/`url`/
- *      `opaque`/`inline`/`handleToString`) + bundled outcomes
- *      (`sideEffectOutcome`, `gitCommitOutcome`, `GitCommitData`,
- *      `gitHeadSnapshot`, `GitHeadSnapshot`) + the bundled
- *      collector/parser catalog wireable into any custom `OutputSpec`:
- *        - collectors: `transcriptPathCollector` (regex over assistant
- *          text), `toolCallCollector` (universal tool_use observer),
- *          `workspaceDiffCollector` (git status diff pre/post),
- *          `gitCommitCollector` (commit detection), the wrappers
- *          `directoryPathCollector` / `urlCollector`, plus composition
- *          `unionCollectors` and the empty-list primitive `noopCollector`.
- *        - parsers: `jsonBodyParser` (parses primary fs body),
- *          `gitCommitParser`.
- *      The `.rpiv/artifacts/<bucket>/<file>.md` outcome + the
- *      markdown-frontmatter parser live in `@juicesharp/rpiv-pi`
- *      (`rpivArtifactMdOutcome` / `frontmatterParser`) — those are
- *      rpiv conventions, not framework defaults.
- *
- *   6. Custom-outcome authoring surface — `./output.js`
- *      `OutputSpec<Snapshot, Kind, Data>` (collector + optional parser),
- *      `ArtifactCollector`, `ArtifactParser`, `CollectCtx`,
- *      `CollectResult`, `ParseCtx`, `ParseResult`, `SnapshotCtx`,
- *      `SnapshotFn`. Sugar: `defineCollector` / `defineParser`.
- *
- *   7. Validation surfaces — `./validate-workflow.js`,
- *      `./validate-output.js`
- *      `validateWorkflow`, `WorkflowValidationIssue`,
- *      `validateOutputData`, `SchemaValidationFailure`.
- *
- *   8. Persistence (low-level — JSONL inspect) — `./state/index.js`
- *      Read past runs at `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`:
- *      `listRuns`, `readHeader`, `resolveRun` (run-id → header; today an
- *      alias of `readHeader`), `readLastStage`, `listArtifacts`,
- *      `stateFilePath`, `runsDir`, `RunSummary`,
- *      `WorkflowHeader`, `WorkflowStage`. `recordStage` lives on
- *      `@juicesharp/rpiv-workflow/internal` (test-only — rpiv-pi's
- *      `[I3]` regression test pokes it directly; runner owns row
- *      writes, embedders never need it).
- *
- *   9. Runtime types — `./types.js`
- *      `RunState`.
+ *   - Authoring a workflow (config/pack files) → `./api.js` (DSL barrel:
+ *     `defineWorkflow` + the stage/loop/routing factories),
+ *     `./predicates.js`, `./typebox-adapter.js`.
+ *   - Driving runs programmatically → `./runner/index.js` (`runWorkflow`,
+ *     `resumeWorkflow` + by-name/by-run-id sugar); host ports in `./host.js`.
+ *   - Loading the merged registry → `./load/index.js` (`loadWorkflows`).
+ *   - Contributing built-in workflows (sibling packages) → `./built-ins.js`
+ *     (`registerBuiltIns`).
+ *   - Output envelope + bundled collectors/parsers → `./output.js`,
+ *     `./outcomes/index.js`, `./handle.js`; custom-outcome authoring →
+ *     `./output-spec.js` (`Outcome`, `defineCollector` / `defineParser`).
+ *   - Validation → `./validate-workflow.js`, `./validate-output.js`.
+ *   - Observing runs → `./events.js` (`registerLifecycle`, per-call
+ *     `RunWorkflowOptions.lifecycle`).
+ *   - Inspecting past runs (JSONL) → `./state/index.js` (`listRuns`,
+ *     `readHeader`, `runFileFor`, …). Row WRITES are runner-owned;
+ *     `recordStage` lives on `@juicesharp/rpiv-workflow/internal`
+ *     (test-only).
  *
  * Per-module deep imports (`from "@juicesharp/rpiv-workflow/api.js"`)
  * are NOT supported across the package boundary.

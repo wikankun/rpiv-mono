@@ -1,48 +1,77 @@
 /**
- * Audit / bookkeeping — JSONL writes, status-line clears, notify, and
- * `state.termination.error` for terminal outcomes. Shared by runner.ts + sessions.ts;
- * neither imports back. Depends only on state + messages.
+ * Terminal-outcome orchestration — the impure half of the audit layer.
+ * Turns a halt reason into the full bundle a terminal outcome owes the
+ * user and the system: the JSONL failure row (via `audit-rows.ts`), the
+ * status-line clear, the notify toast, the `terminate()` state write, and
+ * the `onStageError` lifecycle fire.
+ *
+ * Depends on audit-rows + state + messages + events + handle. Shared by
+ * the runner + sessions; neither imports back. Pure row persistence (the
+ * allocator, `recordStage`, success persistence) lives in `audit-rows.ts`.
  */
 
+import { recordStage, unitRowFields } from "./audit-rows.js";
+import { lifecycleCtxFromSession, scriptStageRef, skillStageRef } from "./events.js";
 import { handleToString } from "./handle.js";
-import { assertNever } from "./internal-utils.js";
-import { buildLifecycleContext, scriptStageRef, skillStageRef } from "./lifecycle.js";
+import { assertNever, nowIso } from "./internal-utils.js";
 import {
-	ERR_STAGE_ABORTED,
-	ERR_STAGE_NO_RESPONSE,
-	ERR_STAGE_TOOL_STALLED,
-	ERR_STAGE_TRUNCATED,
+	FAIL_STAGE_ABORTED,
+	FAIL_STAGE_NO_RESPONSE,
+	FAIL_STAGE_TOOL_STALLED,
+	FAIL_STAGE_TRUNCATED,
+	type FailureText,
+	MSG_FAILURE_ROW_DROPPED,
 	MSG_PARTIAL_ARTIFACTS,
-	MSG_STAGE_ABORTED,
 	MSG_STAGE_FAILED,
-	MSG_STAGE_NO_RESPONSE,
-	MSG_STAGE_TOOL_STALLED,
-	MSG_STAGE_TRUNCATED,
 	MSG_WORKFLOW_CANCELLED,
 	STATUS_KEY,
 } from "./messages.js";
-import { appendStage, listArtifacts, type WorkflowStage } from "./state/index.js";
+import { listArtifacts, type SessionRef } from "./state/index.js";
 import type { StopSignal } from "./transcript.js";
-import type { FanoutSession, RunContext, RunState, SessionContext, WorkflowHostContext } from "./types.js";
+import type { RunContext, RunState, RunTermination, SessionContext, UnitRef, WorkflowHostContext } from "./types.js";
 
-/** Single source of ISO-8601 timestamps for audit rows + output meta. */
-export const nowIso = (): string => new Date().toISOString();
+// Re-export the persistence half so existing audit-layer consumers keep one
+// import site; new code may import audit-rows.js directly.
+export { allocateStageNumber, decorateStage, recordStage, unitRowFields } from "./audit-rows.js";
+
+/**
+ * THE one `state.termination` mutator. Every terminal path — completion
+ * (`finalizeWorkflow`), failure/abort (`recordTerminalFailure`), cancellation
+ * (`recordCancellation`), audit-write halts — lands its outcome through here,
+ * so the union can never be half-set and a new outcome variant has one
+ * write-site to thread through. Last write wins (a failure recorded after an
+ * earlier failure on the same unwind keeps today's semantics).
+ */
+export function terminate(state: RunState, outcome: Exclude<RunTermination, { status: "running" }>): void {
+	state.termination = outcome;
+}
 
 /**
  * Minimal bookkeeping ctx. Structurally derived from `SessionContext` so any
  * future field added to the base lands here too — no duplicate
- * maintenance. Both `StageSession` and `FanoutSession` collapse to this.
+ * maintenance. Every `StageSession` (single stage or loop unit) collapses to this.
  *
  * `isScript` toggles the `onStageError` ref construction in
  * `recordTerminalFailure` from `skillStageRef` to `scriptStageRef` (the
  * script branch carries no `skill` field). Defaulting to `undefined`
  * preserves the skill-path behaviour for every existing caller.
+ *
+ * `unit` is present iff the failure/cancellation belongs to a loop unit — its
+ * identity is spread into the JSONL row so failed trailers carry the
+ * structured fields the resume guard consumes.
+ *
+ * `session` is REQUIRED (`null` = explicitly sessionless) — the compiler
+ * forces every audit-row writer to make the provenance decision; the value
+ * lands verbatim on the JSONL row (`WorkflowStage.session`), which is what
+ * session-backed resume dispatches on.
  */
 export type AuditCtx = Pick<
 	SessionContext,
-	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity"
+	"cwd" | "runId" | "state" | "stageName" | "skill" | "lifecycle" | "runIdentity" | "allocatedStageNumber"
 > & {
+	session: SessionRef | null;
 	isScript?: boolean;
+	unit?: UnitRef;
 };
 
 /**
@@ -61,12 +90,18 @@ export function runIdentityOf(run: RunContext): SessionContext["runIdentity"] {
  * resume-time refusals). One source for the shape so every halt path records
  * a uniform row. `isScript: true` drops the `skill` field from the JSONL row
  * and switches `onStageError` to `scriptStageRef`.
+ *
+ * `session` is pinned to `null` here BY CONSTRUCTION: every caller of this
+ * builder records a failure that escaped (or never reached) a session —
+ * preflight halts, seam aborts, entry throws, routing errors, resume drift,
+ * script halts. In-session writers build their `AuditCtx` via `auditFor`
+ * (sessions/sessions.ts), which threads the captured `SessionRef`.
  */
 export function auditCtxFor(
 	run: RunContext,
 	stageName: string,
 	skill: string,
-	opts?: { isScript?: boolean },
+	opts?: { isScript?: boolean; unit?: UnitRef; allocatedStageNumber?: number },
 ): AuditCtx {
 	return {
 		cwd: run.cwd,
@@ -74,54 +109,27 @@ export function auditCtxFor(
 		state: run.state,
 		stageName,
 		skill,
+		session: null,
 		lifecycle: run.lifecycle,
 		runIdentity: runIdentityOf(run),
 		...(opts?.isScript ? { isScript: true } : {}),
+		...(opts?.unit ? { unit: opts.unit } : {}),
+		...(opts?.allocatedStageNumber !== undefined ? { allocatedStageNumber: opts.allocatedStageNumber } : {}),
 	};
 }
 
 /**
- * JSONL `WorkflowStage.stage` value for fanout-unit rows — built from
- * the parent stage's record key (`stageName`) suffixed with the
- * user-supplied `id` when present, falling back to `label`
- * (e.g. `"implement (phase-2)"` or `"implement (phase 2/4)"`) so
- * post-hoc readers can distinguish loop iterations. Owned by the audit
- * layer because the JSONL row shape is its concern; the runner stays
- * neutral about the wording.
+ * Lifecycle ref for the CURRENT activation — ONE numbering base (the
+ * allocator value) for every event of one execution, so a listener can
+ * correlate a retry ref with the end/error ref it belongs to. Valid once the
+ * activation allocated its number (`allocatedStageNumber`); falls back to the
+ * last allocated number for record-time allocators (failure paths that never
+ * reached output production).
  */
-export const fanoutRowStage = (s: FanoutSession): string => `${s.stageName} (${s.id ?? s.label})`;
-
-/**
- * JSONL `WorkflowStage.stage` value for iterate-unit rows. Same projection as
- * `fanoutRowStage` — the parent stage's record key suffixed with the unit's
- * `id ?? label` (e.g. `"blueprint (phase-2)"`) so post-hoc readers can tell
- * the accumulated units apart. Takes the decorated parts directly (rather than
- * a session) because the iterate executor synthesizes the `StageSession` after
- * building this label. Decoration is SAFE for named keying: iterate mandates
- * `outcome.name`, so `resolvePublishName` ignores the decorated `stageName`
- * and every unit publishes to the same `state.named` slot.
- */
-export const iterateRowStage = (stageName: string, tag: string): string => `${stageName} (${tag})`;
-
-/**
- * Allocates the next `stageNumber`, attempts the append, and returns the
- * assigned number on success (or undefined on I/O failure). `lastAllocatedStageNumber`
- * advances monotonically — once per call — so a transient failure doesn't
- * cause the next stage to reuse the lost row's number. Higher-level counters
- * (e.g. `stagesCompleted`) gate on the returned value being defined.
- *
- * `wrapOutput`'s `state.lastAllocatedStageNumber + 1` peek aligns with this allocation
- * because the output is built BEFORE recordStage is called.
- */
-export function recordStage(
-	cwd: string,
-	runId: string,
-	stage: Omit<WorkflowStage, "stageNumber">,
-	state: RunState,
-): number | undefined {
-	state.lastAllocatedStageNumber += 1;
-	const stageNumber = state.lastAllocatedStageNumber;
-	return appendStage(cwd, runId, { stageNumber, ...stage }) ? stageNumber : undefined;
+export function currentStageRef(
+	s: Pick<SessionContext, "stageName" | "skill" | "state" | "allocatedStageNumber">,
+): ReturnType<typeof skillStageRef> {
+	return skillStageRef(s.stageName, s.allocatedStageNumber ?? s.state.lastAllocatedStageNumber, s.skill);
 }
 
 /** Surface every artifact recorded so far — recap on stage failure. */
@@ -132,18 +140,46 @@ export function notifyPartialArtifacts(ctx: WorkflowHostContext, cwd: string, ru
 	ctx.ui.notify(MSG_PARTIAL_ARTIFACTS(artifactList), "info");
 }
 
+/**
+ * The toast + JSONL halves of a terminal failure, paired by construction.
+ * Build via `failedArgs` / `abortedArgs` (or `stopFailureArgs`' switch) so a
+ * halt site can't mismatch status and notify level.
+ */
+export interface TerminalFailureArgs {
+	status: "failed" | "aborted";
+	notifyMsg: string;
+	notifyLevel: "warning" | "error";
+	errMsg: string;
+}
+
+/**
+ * Argument constructors for `recordTerminalFailure` — the
+ * `{status, notifyMsg, notifyLevel, errMsg}` quadruple every halt site used
+ * to spell by hand. One per terminal status: failures notify at `"error"`,
+ * aborts at `"warning"` (cooperative cancellation is expected, not
+ * exceptional).
+ */
+export function failedArgs(failure: FailureText): TerminalFailureArgs;
+export function failedArgs(notifyMsg: string, errMsg: string): TerminalFailureArgs;
+export function failedArgs(a: FailureText | string, b?: string): TerminalFailureArgs {
+	const f = typeof a === "string" ? { toast: a, error: b as string } : a;
+	return { status: "failed", notifyMsg: f.toast, notifyLevel: "error", errMsg: f.error };
+}
+
+export function abortedArgs(failure: FailureText): TerminalFailureArgs;
+export function abortedArgs(notifyMsg: string, errMsg: string): TerminalFailureArgs;
+export function abortedArgs(a: FailureText | string, b?: string): TerminalFailureArgs {
+	const f = typeof a === "string" ? { toast: a, error: b as string } : a;
+	return { status: "aborted", notifyMsg: f.toast, notifyLevel: "warning", errMsg: f.error };
+}
+
 export async function recordTerminalFailure(
 	ctx: WorkflowHostContext,
 	audit: AuditCtx,
-	args: {
-		status: "failed" | "aborted";
-		notifyMsg: string;
-		notifyLevel: "warning" | "error";
-		errMsg: string;
-	},
+	args: TerminalFailureArgs,
 	onFailure?: (ctx: WorkflowHostContext) => void,
 ): Promise<void> {
-	recordStage(
+	const written = recordStage(
 		audit.cwd,
 		audit.runId,
 		// Script-stage failure rows omit `skill` (the row split landed in A.0);
@@ -156,30 +192,31 @@ export async function recordTerminalFailure(
 			status: args.status,
 			ts: nowIso(),
 			errMsg: args.errMsg,
+			session: audit.session,
+			...unitRowFields(audit.unit),
 		},
 		audit.state,
+		// Reuse the activation's pre-allocated number when output production
+		// already burned one — the failure row carries the SAME stage number
+		// the activation's output/lifecycle refs used (no gap, no skew).
+		audit.allocatedStageNumber,
 	);
+	if (written === undefined) {
+		// A dropped FAILURE row corrupts resume: the trail's last row reads
+		// "completed" and a resume would route onward past this stage. The run
+		// is already halting — surface loudly + flag the envelope so callers
+		// know the trail is unsafe to resume from.
+		ctx.ui.notify(MSG_FAILURE_ROW_DROPPED(audit.stageName), "warning");
+		audit.state.telemetry.droppedFailureRows.push(audit.stageName);
+	}
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(args.notifyMsg, args.notifyLevel);
 	onFailure?.(ctx);
-	audit.state.termination.error = args.errMsg;
+	terminate(audit.state, { status: args.status, error: args.errMsg });
 	const ref = audit.isScript
 		? scriptStageRef(audit.stageName, audit.state.lastAllocatedStageNumber)
 		: skillStageRef(audit.stageName, audit.state.lastAllocatedStageNumber, audit.skill);
-	await audit.lifecycle.fire(
-		ctx,
-		"onStageError",
-		ref,
-		args.errMsg,
-		buildLifecycleContext({
-			cwd: audit.cwd,
-			runId: audit.runId,
-			workflow: audit.runIdentity.workflow,
-			totalStages: audit.runIdentity.totalStages,
-			trigger: audit.runIdentity.trigger,
-			state: audit.state,
-		}),
-	);
+	await audit.lifecycle.fire(ctx, "onStageError", ref, args.errMsg, lifecycleCtxFromSession(audit));
 }
 
 /**
@@ -198,67 +235,43 @@ export async function recordStopFailure(
 	await recordTerminalFailure(ctx, audit, stopFailureArgs(audit.skill, stop, errorMessage), onFailure);
 }
 
-function stopFailureArgs(
-	skill: string,
-	stop: Exclude<StopSignal, "stop">,
-	errorMessage: string,
-): {
-	status: "failed" | "aborted";
-	notifyMsg: string;
-	notifyLevel: "warning" | "error";
-	errMsg: string;
-} {
+function stopFailureArgs(skill: string, stop: Exclude<StopSignal, "stop">, errorMessage: string): TerminalFailureArgs {
 	switch (stop) {
 		case "aborted":
-			return {
-				status: "aborted",
-				notifyMsg: MSG_STAGE_ABORTED(skill),
-				notifyLevel: "warning",
-				errMsg: ERR_STAGE_ABORTED(skill),
-			};
+			return abortedArgs(FAIL_STAGE_ABORTED(skill));
 		case "length":
-			return {
-				status: "failed",
-				notifyMsg: MSG_STAGE_TRUNCATED(skill),
-				notifyLevel: "error",
-				errMsg: ERR_STAGE_TRUNCATED(skill),
-			};
+			return failedArgs(FAIL_STAGE_TRUNCATED(skill));
 		case "toolUse":
-			return {
-				status: "failed",
-				notifyMsg: MSG_STAGE_TOOL_STALLED(skill),
-				notifyLevel: "error",
-				errMsg: ERR_STAGE_TOOL_STALLED(skill),
-			};
+			return failedArgs(FAIL_STAGE_TOOL_STALLED(skill));
 		case "noResponse":
-			return {
-				status: "failed",
-				notifyMsg: MSG_STAGE_NO_RESPONSE(skill),
-				notifyLevel: "error",
-				errMsg: ERR_STAGE_NO_RESPONSE(skill),
-			};
+			return failedArgs(FAIL_STAGE_NO_RESPONSE(skill));
 		case "error":
-			return {
-				status: "failed",
-				notifyMsg: MSG_STAGE_FAILED(skill),
-				notifyLevel: "error",
-				errMsg: errorMessage,
-			};
+			return failedArgs(MSG_STAGE_FAILED(skill), errorMessage);
 		default:
 			return assertNever(stop);
 	}
 }
 
 export function recordCancellation(ctx: WorkflowHostContext, audit: AuditCtx): void {
+	// Cancellation is a first-class termination outcome (`status: "cancelled"`);
+	// `errMsg` is mirrored into the JSONL row so post-mortems work from the
+	// trail alone (same posture as `recordTerminalFailure`).
+	const errMsg = `${audit.skill} cancelled by user`;
 	recordStage(
 		audit.cwd,
 		audit.runId,
-		{ stage: audit.stageName, skill: audit.skill, status: "skipped", ts: nowIso() },
+		{
+			stage: audit.stageName,
+			skill: audit.skill,
+			status: "skipped",
+			ts: nowIso(),
+			errMsg,
+			session: audit.session,
+			...unitRowFields(audit.unit),
+		},
 		audit.state,
 	);
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	ctx.ui.notify(MSG_WORKFLOW_CANCELLED, "info");
-	// `success: false` alone can't distinguish "cancelled" from "never started";
-	// the error string is the signal.
-	audit.state.termination.error = `${audit.skill} cancelled by user`;
+	terminate(audit.state, { status: "cancelled", error: errMsg });
 }

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { StageDef, Workflow } from "./api.js";
 import { aliasSkills, applySkillAliases } from "./load/alias.js";
 import type { LayerOutcome, LoadAccumulator } from "./load/merge.js";
+import { fanout, iterate } from "./loop-constructors.js";
 
 // Minimal stage builders — `aliasSkills` only reads `run`, `prompt`, `skill`.
 const skillStage = (skill?: string): StageDef => ({
@@ -19,8 +20,12 @@ const skillStage = (skill?: string): StageDef => ({
 });
 const runStage = (): StageDef => ({ kind: "side-effect", sessionPolicy: "fresh", run: (async () => {}) as never });
 const promptStage = (): StageDef => ({ kind: "side-effect", sessionPolicy: "fresh", prompt: "do the thing" });
-const fanoutStage = (): StageDef => ({ kind: "produces", sessionPolicy: "fresh", fanout: (() => []) as never });
-const iterateStage = (): StageDef => ({ kind: "produces", sessionPolicy: "fresh", iterate: (() => null) as never });
+const fanoutStage = (): StageDef => ({ kind: "produces", sessionPolicy: "fresh", loop: fanout({ units: () => [] }) });
+const iterateStage = (): StageDef => ({
+	kind: "produces",
+	sessionPolicy: "fresh",
+	loop: iterate({ next: () => null }),
+});
 
 const wf = (stages: Record<string, StageDef>): Workflow => ({
 	name: "w",

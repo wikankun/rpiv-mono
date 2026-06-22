@@ -4,13 +4,16 @@
  * `./command.ts`, so it evaluates lazily on first `/wf`, not at startup.
  */
 
+import { flushBuiltInProviders } from "./built-ins.js";
 import { parseArgs } from "./command.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
+import { formatError } from "./internal-utils.js";
 import { renderConfigLayer } from "./layers.js";
 import { findWorkflow, type Issue, loadWorkflows } from "./load/index.js";
 import {
 	MSG_INTERACTIVE_ONLY,
 	MSG_LOAD_ABORTED,
+	MSG_NAME_FLAG_MID_INPUT,
 	MSG_NAME_IGNORED_ON_RESUME,
 	MSG_NAME_INVALID,
 	MSG_NO_WORKFLOWS_REGISTERED,
@@ -20,7 +23,26 @@ import {
 } from "./messages.js";
 import { formatWorkflowDetails, formatWorkflowList } from "./preview.js";
 import { resumeWorkflowByRunId, runWorkflow } from "./runner/index.js";
+import { flushSkillContractProviders } from "./skill-contracts/index.js";
 import { isValidName } from "./state/index.js";
+
+// ---------------------------------------------------------------------------
+// Pre-warm
+// ---------------------------------------------------------------------------
+
+/**
+ * Flush the lazy provider registries ahead of the first `/wf` — both are
+ * memoized one-shot latches, so `loadWorkflows` later awaits the same
+ * settled promises. Built-in providers carry the heaviest first-call work
+ * (the sibling's authoring-DSL graph builds here); measured ~550ms of the
+ * first `/wf`'s `loadWorkflows` is dominated by these flushes. Called by
+ * the post-registration pre-warm in `command.ts` right after the module
+ * graph import; never from the run path (loadWorkflows flushes on its own).
+ */
+export async function prewarmWorkflowRuntime(): Promise<void> {
+	await flushBuiltInProviders();
+	await flushSkillContractProviders();
+}
 
 // ---------------------------------------------------------------------------
 // Orchestrator
@@ -37,6 +59,10 @@ export async function handleWorkflowCommand(host: WorkflowHost, args: string, ct
 
 	const workflowNames = new Set(loaded.workflows.map((w) => w.name));
 	const parsed = parseArgs(args, { workflowNames, default: loaded.default });
+
+	if (parsed.nameFlagIgnored) {
+		ctx.ui.notify(MSG_NAME_FLAG_MID_INPUT, "warning");
+	}
 
 	if (parsed.kind === "resume") {
 		if (parsed.droppedName !== undefined) {
@@ -101,8 +127,7 @@ export async function handleWorkflowCommand(host: WorkflowHost, args: string, ct
 			ctx.ui.notify(result.error, "error");
 		}
 	} catch (e) {
-		const reason = e instanceof Error ? e.message : String(e);
-		ctx.ui.notify(MSG_WORKFLOW_THREW(reason), "error");
+		ctx.ui.notify(MSG_WORKFLOW_THREW(formatError(e)), "error");
 	}
 }
 
@@ -126,7 +151,7 @@ async function handleResume(host: WorkflowHost, ctx: WorkflowHostContext, ref: s
 			ctx.ui.notify(result.error, "error");
 		}
 	} catch (e) {
-		ctx.ui.notify(MSG_WORKFLOW_THREW(e instanceof Error ? e.message : String(e)), "error");
+		ctx.ui.notify(MSG_WORKFLOW_THREW(formatError(e)), "error");
 	}
 }
 
@@ -144,6 +169,9 @@ function surfaceIssues(ctx: WorkflowHostContext, issues: readonly Issue[]): void
 
 function formatIssue(issue: Issue): string {
 	if (issue.kind === "load") {
+		// "framework" = the loader's own machinery (providers, derivers) — no
+		// config file caused it, so no "config" suffix.
+		if (issue.layer === "framework") return `[framework] ${issue.message}`;
 		const where = issue.path ? ` (${issue.path})` : "";
 		return `[${renderConfigLayer(issue.layer)} config${where}] ${issue.message}`;
 	}

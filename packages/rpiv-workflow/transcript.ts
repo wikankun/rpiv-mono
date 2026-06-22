@@ -12,6 +12,8 @@
  * "find the last regex match in assistant text" helper they reuse.
  */
 
+import type { SessionRef } from "./state/index.js";
+
 /** Mirror of pi-ai's StopReason union — values pi attaches to AssistantMessage. */
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
@@ -67,6 +69,28 @@ export type BranchEntry = {
  */
 export function readBranch(ctx: { sessionManager: { getBranch(): unknown } }): BranchEntry[] {
 	return ctx.sessionManager.getBranch() as unknown as BranchEntry[];
+}
+
+/**
+ * Capture the active Pi session's identity as the `SessionRef` value object
+ * stage rows store (`WorkflowStage.session`). Lives here, next to
+ * `readBranch` — the module that owns narrow structural host reads.
+ *
+ * `branchOffset` is the policy-derived offset the activation ran under
+ * (continue-policy stages); omitted/undefined for fresh sessions so the key
+ * is dropped from the serialized row. `file` is likewise dropped for
+ * non-persisting sessions (`getSessionFile()` returns `undefined`).
+ */
+export function readSessionRef(
+	ctx: { sessionManager: { getSessionId(): string; getSessionFile(): string | undefined } },
+	branchOffset?: number,
+): SessionRef {
+	const file = ctx.sessionManager.getSessionFile();
+	return {
+		id: ctx.sessionManager.getSessionId(),
+		...(file !== undefined ? { file } : {}),
+		...(branchOffset !== undefined ? { branchOffset } : {}),
+	};
 }
 
 export function hasAssistantMessage(branch: BranchEntry[], offsetStart?: number): boolean {

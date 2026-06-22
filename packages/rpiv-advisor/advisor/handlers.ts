@@ -39,15 +39,11 @@ export function reconcileAdvisorTool(
 
 export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
-		const advisor = getAdvisorModel();
-		if (!advisor) {
-			const active = pi.getActiveTools();
-			if (active.includes(ADVISOR_TOOL_NAME)) {
-				pi.setActiveTools(active.filter((n) => n !== ADVISOR_TOOL_NAME));
-			}
-			return;
-		}
-		reconcileAdvisorTool(pi, ctx, { blocked: isExecutorBlocked(ctx, pi.getThinkingLevel()) });
+		// No model → blocked (strip); model present → defer to the executor
+		// blocklist. Routes through the reconcile hub so all strip/add logic
+		// lives in one place rather than re-inlining the filter here.
+		const blocked = !getAdvisorModel() || isExecutorBlocked(ctx, pi.getThinkingLevel());
+		reconcileAdvisorTool(pi, ctx, { blocked });
 	});
 }
 

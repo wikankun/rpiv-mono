@@ -15,10 +15,13 @@ import {
 	defineWorkflow,
 	type EdgeFn,
 	gate,
-	type OutputSpec,
+	marksReadsData,
+	type Outcome,
 	type ProducesScriptFn,
 	produces,
 	type ScriptContext,
+	type StageDef,
+	takeRouteNote,
 	terminal,
 	type Workflow,
 } from "./api.js";
@@ -106,8 +109,8 @@ describe("acts", () => {
 		expect(n.skill).toBeUndefined();
 	});
 
-	it("attaches an OutputSpec when supplied (commit-style stages)", () => {
-		const outcome: OutputSpec = {
+	it("attaches an Outcome when supplied (commit-style stages)", () => {
+		const outcome: Outcome = {
 			collector: {
 				snapshot: () => "pre-state",
 				collect: () => ({ kind: "ok", artifacts: [] }),
@@ -166,10 +169,10 @@ describe("produces.script", () => {
 			sessionPolicy: "fresh",
 		});
 		expect(n.run).toBe(noopProducesScript);
-		// No skill / outcome / fanout on script stages.
+		// No skill / outcome / loop on script stages.
 		expect(n.skill).toBeUndefined();
 		expect(n.outcome).toBeUndefined();
-		expect(n.fanout).toBeUndefined();
+		expect(n.loop).toBeUndefined();
 	});
 
 	it("threads validation knobs through to the StageDef", () => {
@@ -202,7 +205,7 @@ describe("acts.script", () => {
 		expect(n.run).toBe(noopActsScript);
 		expect(n.skill).toBeUndefined();
 		expect(n.outcome).toBeUndefined();
-		expect(n.fanout).toBeUndefined();
+		expect(n.loop).toBeUndefined();
 	});
 
 	it("preserves inputSchema + inheritsArtifacts overrides", () => {
@@ -237,7 +240,7 @@ describe("terminal.script", () => {
 // ---------------------------------------------------------------------------
 
 describe("gate", () => {
-	const pick: EdgeFn = gate("severeIssueCount", { revise: gt(0), commit: eq(0) });
+	const pick: EdgeFn = gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit");
 
 	const ctxWithCount = (n: number) =>
 		({
@@ -295,7 +298,47 @@ describe("gate", () => {
 	});
 
 	it("throws when branches is an empty object", () => {
-		expect(() => gate("count", {})).toThrow(/at least one possible return value/);
+		expect(() => gate("count", {}, "x")).toThrow(/at least one possible return value/);
+	});
+
+	it("throws when `otherwise` is missing or empty — the fallback must be deliberate (C12)", () => {
+		// Hand-rolled literals (jiti configs) bypass TS, so the runtime guard matters.
+		expect(() => (gate as unknown as (f: string, b: object) => unknown)("count", { a: gt(0) })).toThrow(
+			/explicit `otherwise`/,
+		);
+		expect(() => gate("count", { a: gt(0) }, "")).toThrow(/explicit `otherwise`/);
+	});
+
+	it("throws on integer-like branch keys — JS reorders them ahead of declaration order (C12)", () => {
+		expect(() => gate("count", { "2": eq(2), other: gt(0) }, "other")).toThrow(/integer-like/);
+	});
+
+	it("includes `otherwise` in .targets when it is not also a branch (C12)", () => {
+		const fn = gate("count", { high: gt(10) }, "low");
+		expect(fn.targets).toEqual(["high", "low"]);
+	});
+
+	it("records a fallback note readable via takeRouteNote — and only on no-match (C12)", () => {
+		const fn = gate("count", { high: gt(10) }, "low");
+		const ctx = (n: unknown) =>
+			({
+				output: {
+					kind: "x",
+					artifacts: [],
+					data: { count: n },
+					meta: { stage: "s", stageNumber: 1, ts: "", runId: "" },
+				},
+				state: {} as never,
+			}) as const;
+
+		// Matched branch: no note.
+		expect(fn(ctx(11))).toBe("high");
+		expect(takeRouteNote(fn)).toBeUndefined();
+
+		// No match: fallback + note; takeRouteNote clears it.
+		expect(fn(ctx(3))).toBe("low");
+		expect(takeRouteNote(fn)).toMatch(/no branch matched value 3.*"low"/);
+		expect(takeRouteNote(fn)).toBeUndefined();
 	});
 });
 
@@ -332,6 +375,24 @@ describe("defineRoute", () => {
 		const fn = defineRoute(["a", "b"], () => "a", { readsData: false });
 		expect(fn.targets).toEqual(["a", "b"]);
 	});
+
+	it("never mutates the caller's function — reusing one predicate keeps each route's targets (C8)", () => {
+		const predicate = () => "x";
+		const first = defineRoute(["x", "y"], predicate);
+		const second = defineRoute(["x"], predicate);
+		// Pre-fix the second call overwrote the first's targets (same object).
+		expect(first.targets).toEqual(["x", "y"]);
+		expect(second.targets).toEqual(["x"]);
+		expect((predicate as { targets?: readonly string[] }).targets).toBeUndefined();
+	});
+
+	it("readsData: false does not inherit a marker a prior call attached (C8)", () => {
+		const predicate = () => "a";
+		const marked = defineRoute(["a"], predicate); // default readsData: true
+		const unmarked = defineRoute(["a"], predicate, { readsData: false });
+		expect(marksReadsData(marked)).toBe(true);
+		expect(marksReadsData(unmarked)).toBe(false);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -353,7 +414,7 @@ describe("composition smoke", () => {
 			},
 			edges: {
 				research: "code-review",
-				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+				"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				revise: "commit",
 				commit: "stop",
 			},
@@ -365,5 +426,38 @@ describe("composition smoke", () => {
 		expect(typeof w.edges["code-review"]).toBe("function");
 		expect(w.edges.research).toBe("code-review");
 		expect(w.edges.commit).toBe("stop");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// StageDef discriminated union (T1) — illegal dispatch combos unrepresentable
+// ---------------------------------------------------------------------------
+
+describe("StageDef union (T1)", () => {
+	const scriptBody: ActsScriptFn = () => {};
+
+	it("legal arms assign cleanly (skill / script / prompt)", () => {
+		const skillArm: StageDef = {
+			kind: "produces",
+			sessionPolicy: "fresh",
+			outcome: { collector: (() => null) as never },
+		};
+		const scriptArm: StageDef = { kind: "side-effect", sessionPolicy: "fresh", run: scriptBody };
+		const promptArm: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "say hi" };
+		expect([skillArm, scriptArm, promptArm].every((s) => s.kind.length > 0)).toBe(true);
+	});
+
+	it("type-level: mixed dispatches fail assignability (verified by tsc — the runtime values here are never used)", () => {
+		// @ts-expect-error script + skill — the run function IS the work
+		const a: StageDef = { kind: "produces", sessionPolicy: "fresh", run: scriptBody, skill: "x" };
+		// @ts-expect-error script + outcome — the run function IS the Outcome
+		const b: StageDef = { kind: "produces", sessionPolicy: "fresh", run: scriptBody, outcome: {} };
+		// @ts-expect-error script + prompt — one dispatch only
+		const c: StageDef = { kind: "side-effect", sessionPolicy: "fresh", run: scriptBody, prompt: "x" };
+		// @ts-expect-error prompt + skill — raw text, not /skill:<skill>
+		const d: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "x", skill: "implement" };
+		// @ts-expect-error prompt + reads — read state.named from the PromptFn instead
+		const e: StageDef = { kind: "side-effect", sessionPolicy: "fresh", prompt: "x", reads: ["plans"] };
+		expect([a, b, c, d, e].length).toBe(5);
 	});
 });

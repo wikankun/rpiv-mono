@@ -7,10 +7,13 @@
  * files whose status changed both count. Pure git — no transcript
  * scanning, no tool-use observation, no agent narration involved.
  *
- * Fail-soft: cwd is not a git repo OR git isn't on PATH → snapshot is
- * `undefined`, collector returns `ok` with an empty list (the runner's
- * completion-strategy check then decides whether that's a halt). Same
- * posture as `gitCommitCollector`.
+ * "Nothing found" posture (see `CollectResult`'s convention doc): a snapshot
+ * that found no working git (not a repo, git not on PATH) degrades — the
+ * collector returns `ok []` and the workflow keeps moving (same posture as
+ * `gitCommitCollector`'s `baselineMissing`). But when git WORKED at snapshot
+ * time and fails after the stage, that's an environment break mid-stage —
+ * the collector returns `fatal` with the cause instead of conflating it
+ * with "no changes."
  *
  * Optional `filter(path)` narrows the set — useful for "only `.ts`
  * files," "only files under `src/`," etc. Authors who want more
@@ -19,16 +22,10 @@
  * thin diff primitive.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { type Artifact, fs as fsHandle } from "../../handle.js";
-import type { ArtifactCollector, CollectCtx, SnapshotCtx } from "../../output-spec.js";
+import type { ArtifactCollector, CollectCtx, CollectResult, SnapshotCtx } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
-
-const execFileAsync = promisify(execFile);
-
-/** Same budget as gitCommitCollector — generous for local repos, short enough that a hung mount can't pin the stage. */
-const GIT_EXEC_TIMEOUT_MS = 5_000;
+import { execFileAsync, GIT_EXEC_TIMEOUT_MS } from "../exec.js";
 
 export interface WorkspaceDiffSnapshot {
 	/** Post-stage diff compares against this set of (path, statusCode) pairs captured pre-stage. */
@@ -65,12 +62,22 @@ async function capturePorcelainSnapshot(ctx: SnapshotCtx): Promise<WorkspaceDiff
 async function collectDiffArtifacts(
 	ctx: CollectCtx<WorkspaceDiffSnapshot | undefined>,
 	filter: ((path: string) => boolean) | undefined,
-): Promise<{ kind: "ok"; artifacts: readonly Artifact[] }> {
+): Promise<CollectResult> {
 	const snapshot = ctx.snapshot;
+	// No baseline = the stage ran outside a (working) git repo — documented
+	// degrade, not an error (see the module header).
 	if (!snapshot) return { kind: "ok", artifacts: [] };
 
 	const status = await runGitStatus(ctx.cwd);
-	if (status === undefined) return { kind: "ok", artifacts: [] };
+	if (status === undefined) {
+		// git worked at snapshot time and fails now — an environment break,
+		// not "no changes." `ok []` here would route downstream logic on
+		// fabricated nothing-happened data (T10).
+		return {
+			kind: "fatal",
+			message: `${ctx.skill}: git status worked at snapshot time but failed after the stage — cannot diff the workspace`,
+		};
+	}
 	const post = parsePorcelain(status);
 
 	const artifacts: Artifact[] = [];

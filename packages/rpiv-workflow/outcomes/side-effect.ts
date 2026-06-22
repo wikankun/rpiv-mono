@@ -3,7 +3,7 @@
  * "no artifacts produced" primitive.
  *
  * Collector always returns `{ kind: "ok", artifacts: [] }`. The chain
- * semantics (see `runner/stage-lifecycle.ts:inputForStage`) then
+ * semantics (see `runner/run-stage.ts:inputForStage`) then
  * inherit the upstream artifact list forward — an action skill
  * between two produces skills doesn't need its own collector.
  *
@@ -14,13 +14,13 @@
  * No snapshot — side-effect stages have no pre-stage state to capture.
  */
 
-import type { ArtifactCollector, OutputSpec } from "../output-spec.js";
+import type { ArtifactCollector, Outcome } from "../output-spec.js";
 
 /** Collector primitive: always returns zero artifacts, never fatal. */
 export const noopCollector: ArtifactCollector = {
 	collect: () => ({ kind: "ok", artifacts: [] }),
 };
 
-export const sideEffectOutcome: OutputSpec = {
+export const sideEffectOutcome: Outcome = {
 	collector: noopCollector,
 };

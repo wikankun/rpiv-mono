@@ -3,16 +3,26 @@
  * and the guarded sibling registration.
  */
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { harvestStageContracts } from "@juicesharp/rpiv-workflow/internal";
-import type { ConsumesSpec, ProducesSpec } from "@juicesharp/rpiv-workflow/registration";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
+import {
+	__resetSkillContracts,
+	buildEffectiveContracts,
+	drainSkillContractCollisions,
+	flushSkillContractProviders,
+	harvestStageContracts,
+} from "@juicesharp/rpiv-workflow/internal";
+import type { ConsumesSpec, ProducesSpec, SkillContract } from "@juicesharp/rpiv-workflow/registration";
+import { defineWorkflow, produces } from "@juicesharp/rpiv-workflow/registration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { builtInWorkflows } from "./built-in-workflows.js";
 import { BUNDLED_SKILLS_DIR } from "./paths.js";
 import {
 	artifactKindComparator,
 	buildSkillContractsFromFrontmatter,
+	buildUserSkillContracts,
+	isBundledSkillPath,
 	normalizeContract,
 	registerSkillContractsSource,
 } from "./skill-contracts-source.js";
@@ -465,5 +475,186 @@ describe("registerSkillContractsSource", () => {
 			const fresh = await import("./skill-contracts-source.js");
 			await expect(fresh.registerSkillContractsSource()).resolves.toBeUndefined();
 		});
+	});
+});
+
+describe("buildUserSkillContracts", () => {
+	const userSkillsDir = () => join(process.env.HOME!, ".pi", "agent", "skills");
+	let projectDir: string;
+
+	afterEach(() => {
+		rmSync(userSkillsDir(), { recursive: true, force: true });
+		if (projectDir) {
+			rmSync(projectDir, { recursive: true, force: true });
+			projectDir = "" as string;
+		}
+	});
+
+	const writeSkill = (baseDir: string, name: string, content: string) => {
+		const dir = join(baseDir, name);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "SKILL.md"), content);
+	};
+
+	const CONTRACT_SKILL = `---
+description: Custom review skill
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: review
+---
+Body here`;
+
+	it("returns contracts for skills in the global user skills dir (<agentDir>/skills)", () => {
+		writeSkill(userSkillsDir(), "my-custom-review", CONTRACT_SKILL);
+		const result = buildUserSkillContracts();
+		expect(result).toHaveLength(1);
+		expect(result[0]![0]).toBe("my-custom-review");
+		expect(result[0]![1]).toEqual({
+			source: "declared",
+			produces: { kind: "produces", meta: { artifactKind: "review" } },
+		});
+	});
+
+	it("returns contracts for project-local skills (<cwd>/.pi/skills)", () => {
+		projectDir = mkdtempSync(join(tmpdir(), "rpiv-user-skill-proj-"));
+		writeSkill(join(projectDir, ".pi", "skills"), "proj-review", CONTRACT_SKILL);
+		const result = buildUserSkillContracts(projectDir);
+		expect(result.map(([name]) => name)).toContain("proj-review");
+	});
+
+	it("skips skills without contract: frontmatter", () => {
+		writeSkill(
+			userSkillsDir(),
+			"plain-skill",
+			`---
+description: Plain skill
+---
+Body here`,
+		);
+		expect(buildUserSkillContracts()).toEqual([]);
+	});
+
+	it("returns [] when no user skill dirs exist", () => {
+		projectDir = mkdtempSync(join(tmpdir(), "rpiv-user-skill-empty-"));
+		expect(buildUserSkillContracts(projectDir)).toEqual([]);
+	});
+});
+
+describe("isBundledSkillPath", () => {
+	it("a path inside the bundled skills dir is bundled; a sibling dir sharing the prefix is not", () => {
+		expect(isBundledSkillPath(join(BUNDLED_SKILLS_DIR, "research", "SKILL.md"))).toBe(true);
+		expect(isBundledSkillPath(`${BUNDLED_SKILLS_DIR}-extra${sep}research${sep}SKILL.md`)).toBe(false);
+		expect(isBundledSkillPath(join(tmpdir(), "elsewhere", "SKILL.md"))).toBe(false);
+	});
+
+	it.skipIf(process.platform === "win32")("resolves symlinks: a link into the bundled dir is bundled", () => {
+		const linkParent = mkdtempSync(join(tmpdir(), "rpiv-bundled-link-"));
+		try {
+			const link = join(linkParent, "skills-link");
+			symlinkSync(BUNDLED_SKILLS_DIR, link);
+			expect(isBundledSkillPath(link)).toBe(true);
+		} finally {
+			rmSync(linkParent, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("registerUserSkillContractsSource", () => {
+	describe("when the rpiv-workflow sibling is absent", () => {
+		afterEach(() => {
+			vi.doUnmock("@juicesharp/rpiv-workflow/startup");
+			vi.resetModules();
+		});
+
+		it("no-ops without throwing", async () => {
+			vi.resetModules();
+			vi.doMock("@juicesharp/rpiv-workflow/startup", () => {
+				throw Object.assign(new Error("Cannot find package '@juicesharp/rpiv-workflow'"), {
+					code: "ERR_MODULE_NOT_FOUND",
+				});
+			});
+			const fresh = await import("./skill-contracts-source.js");
+			await expect(fresh.registerUserSkillContractsSource()).resolves.toBeUndefined();
+		});
+	});
+});
+
+describe("end-to-end: user-skill contract \u2192 effective contract map", () => {
+	let tmpDir: string;
+
+	afterEach(() => {
+		if (tmpDir) {
+			rmSync(tmpDir, { recursive: true, force: true });
+			tmpDir = "" as string;
+		}
+		__resetSkillContracts();
+	});
+
+	it("a stage dispatching a user-installed skill gets its contract in the effective map", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "rpiv-e2e-user-skill-"));
+		// Project-local skill location — buildUserSkillContracts(tmpDir) reads <cwd>/.pi/skills.
+		const skillDir = join(tmpDir, ".pi", "skills", "my-custom-review");
+		mkdirSync(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---
+description: Custom review
+contract:
+  produces:
+    kind: produces
+    meta:
+      artifactKind: review
+---
+Body`,
+		);
+		// Simulate what the loader does: register the user-skill contract provider, then flush
+		const { registerSkillContractsProvider, registerSkillContracts } = await import(
+			"@juicesharp/rpiv-workflow/startup"
+		);
+		registerSkillContractsProvider(() => {
+			registerSkillContracts(buildUserSkillContracts(tmpDir), "user-skills");
+		});
+		await flushSkillContractProviders();
+
+		// A workflow stage dispatching the user skill (stage name = skill name)
+		const w = defineWorkflow({
+			name: "test-e2e",
+			start: "my-custom-review",
+			stages: {
+				"my-custom-review": produces(),
+			},
+			edges: { "my-custom-review": "stop" },
+		});
+
+		const contracts = buildEffectiveContracts([w]);
+
+		expect(contracts.get("my-custom-review")?.produces?.meta).toEqual({ artifactKind: "review" });
+	});
+});
+
+describe("owner collision: user-skills vs rpiv-pi", () => {
+	afterEach(() => {
+		__resetSkillContracts();
+	});
+
+	it("surfaces collision when user-skill contract diverges from bundled", async () => {
+		const { registerSkillContracts } = await import("@juicesharp/rpiv-workflow/startup");
+		const bundled: SkillContract = {
+			source: "declared",
+			produces: { kind: "produces", meta: { artifactKind: "review" } },
+		};
+		const user: SkillContract = {
+			source: "declared",
+			produces: { kind: "produces", meta: { artifactKind: "custom-review" } },
+		};
+		registerSkillContracts([["code-review", bundled]], "rpiv-pi");
+		registerSkillContracts([["code-review", user]], "user-skills");
+		const collisions = drainSkillContractCollisions();
+		expect(collisions).toHaveLength(1);
+		expect(collisions[0]).toContain("code-review");
+		expect(collisions[0]).toContain("user-skills");
+		expect(collisions[0]).toContain("rpiv-pi");
 	});
 });

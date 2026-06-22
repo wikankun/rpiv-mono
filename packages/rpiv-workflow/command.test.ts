@@ -1,6 +1,7 @@
 import { createMockCommandCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { acts, defineWorkflow, produces } from "./api.js";
+import { registerBuiltInsProvider } from "./built-ins.js";
 
 // Mock runner to avoid needing the full Pi session runtime. The resume path
 // delegates to resumeWorkflowByRunId (which owns resolve → load-gate → find →
@@ -54,7 +55,7 @@ vi.mock("./load/index.js", () => ({
 	),
 }));
 
-import { parseArgs, registerWorkflowCommand } from "./command.js";
+import { MSG_RUNTIME_LOADING, makeWfHandler, PREWARM_DELAY_MS, parseArgs, registerWorkflowCommand } from "./command.js";
 import { loadWorkflows } from "./load/index.js";
 import { resumeWorkflowByRunId, runWorkflow } from "./runner/index.js";
 
@@ -111,12 +112,25 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("extracts --name and strips it from the input", () => {
-		expect(parseArgs("mid --name auth-spike Add dark mode", built)).toEqual({
+	it("extracts a LEADING --name and strips it from the input", () => {
+		expect(parseArgs("--name auth-spike mid Add dark mode", built)).toEqual({
 			kind: "run",
 			workflow: "mid",
 			input: "Add dark mode",
 			name: "auth-spike",
+		});
+	});
+
+	it("leaves a MID-INPUT --name in the prompt text untouched and flags it (C11)", () => {
+		// `/wf mid fix the --name handling bug` — the flag tokens are the user's
+		// own prompt text; silently claiming "handling" as a run name would
+		// corrupt the input seed.
+		expect(parseArgs("mid fix the --name handling bug", built)).toEqual({
+			kind: "run",
+			workflow: "mid",
+			input: "fix the --name handling bug",
+			name: undefined,
+			nameFlagIgnored: true,
 		});
 	});
 
@@ -266,17 +280,27 @@ describe("/wf — --name flag", () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("wf")?.handler("mid --name 1bad go", ctx);
+		await captured.commands.get("wf")?.handler("mid go --name 1bad", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("invalid name"), "error");
 		expect(runWorkflow).not.toHaveBeenCalled();
 	});
 
-	it("threads a valid --name through to runWorkflow", async () => {
+	it("threads a valid trailing --name through to runWorkflow", async () => {
 		const { pi, captured } = createMockPi();
 		registerWorkflowCommand(pi);
 		const ctx = createMockCommandCtx({ hasUI: true });
-		await captured.commands.get("wf")?.handler("mid --name auth go", ctx);
+		await captured.commands.get("wf")?.handler("mid go --name auth", ctx);
 		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.name).toBe("auth");
+	});
+
+	it("warns on a mid-input --name and keeps it in the workflow input (C11)", async () => {
+		const { pi, captured } = createMockPi();
+		registerWorkflowCommand(pi);
+		const ctx = createMockCommandCtx({ hasUI: true });
+		await captured.commands.get("wf")?.handler("mid fix the --name handling bug", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("first or last token"), "warning");
+		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.name).toBeUndefined();
+		expect(vi.mocked(runWorkflow).mock.calls[0]?.[1]?.input).toBe("fix the --name handling bug");
 	});
 
 	it("surfaces a pre-flight collision rejection (success:false, no runId)", async () => {
@@ -304,6 +328,135 @@ describe("/wf — --name flag", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Runtime memoization — Pi's jiti loader runs with moduleCache:false, so an
+// unmemoized import() re-evaluates the whole command-run graph (~0.9s UI
+// freeze) on every /wf. The handler closure memoizes the import promise.
+// ---------------------------------------------------------------------------
+
+describe("/wf — command-run import memoization", () => {
+	it("runs the importer once across invocations", async () => {
+		const importer = vi.fn(() => import("./command-run.js"));
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi, importer);
+		await handler("mid first", createMockCommandCtx({ hasUI: true }));
+		await handler("mid second", createMockCommandCtx({ hasUI: true }));
+		expect(importer).toHaveBeenCalledTimes(1);
+		expect(runWorkflow).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows the cold-path loading toast on the first invocation only", async () => {
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi);
+		const cold = createMockCommandCtx({ hasUI: true });
+		await handler("mid go", cold);
+		expect(cold.ui.notify).toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+		const warm = createMockCommandCtx({ hasUI: true });
+		await handler("mid again", warm);
+		expect(warm.ui.notify).not.toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+	});
+
+	it("suppresses the loading toast when !hasUI", async () => {
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi);
+		const ctx = createMockCommandCtx({ hasUI: false });
+		await handler("mid go", ctx);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+	});
+
+	it("clears the memo on import rejection so the next /wf retries", async () => {
+		const importer = vi
+			.fn<() => Promise<typeof import("./command-run.js")>>()
+			.mockRejectedValueOnce(new Error("transient import failure"))
+			.mockImplementation(() => import("./command-run.js"));
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi, importer);
+		await expect(handler("mid go", createMockCommandCtx({ hasUI: true }))).rejects.toThrow(
+			"transient import failure",
+		);
+		await handler("mid go", createMockCommandCtx({ hasUI: true }));
+		expect(importer).toHaveBeenCalledTimes(2);
+		expect(runWorkflow).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Pre-warm — registerWorkflowCommand schedules the memoized import shortly
+// after registration so the first real /wf finds the graph ready. A failed
+// pre-warm clears the memo (degrades to the pre-warm-less behavior).
+// ---------------------------------------------------------------------------
+
+describe("/wf — pre-warm", () => {
+	it("prewarm() shares the memo: a later /wf shows no toast and reuses the import", async () => {
+		const importer = vi.fn(() => import("./command-run.js"));
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi, importer);
+		await handler.prewarm();
+		const ctx = createMockCommandCtx({ hasUI: true });
+		await handler("mid go", ctx);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+		expect(importer).toHaveBeenCalledTimes(1);
+		expect(runWorkflow).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows the toast when /wf arrives while the pre-warm is still in flight", async () => {
+		let release!: (mod: typeof import("./command-run.js")) => void;
+		const gate = new Promise<typeof import("./command-run.js")>((resolve) => {
+			release = resolve;
+		});
+		const importer = vi.fn(() => gate);
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi, importer);
+		const warming = handler.prewarm();
+		const ctx = createMockCommandCtx({ hasUI: true });
+		const invocation = handler("mid go", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+		release(await import("./command-run.js"));
+		await Promise.all([warming, invocation]);
+		expect(importer).toHaveBeenCalledTimes(1);
+		expect(runWorkflow).toHaveBeenCalledTimes(1);
+	});
+
+	it("a failed prewarm() clears the memo — the next /wf retries the import", async () => {
+		const importer = vi
+			.fn<() => Promise<typeof import("./command-run.js")>>()
+			.mockRejectedValueOnce(new Error("prewarm boom"))
+			.mockImplementation(() => import("./command-run.js"));
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi, importer);
+		await expect(handler.prewarm()).rejects.toThrow("prewarm boom");
+		const ctx = createMockCommandCtx({ hasUI: true });
+		await handler("mid go", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+		expect(importer).toHaveBeenCalledTimes(2);
+		expect(runWorkflow).toHaveBeenCalledTimes(1);
+	});
+
+	it("prewarm() flushes lazy built-in providers ahead of the first /wf", async () => {
+		const provider = vi.fn();
+		registerBuiltInsProvider(provider);
+		const { pi } = createMockPi();
+		const handler = makeWfHandler(pi);
+		await handler.prewarm();
+		expect(provider).toHaveBeenCalledTimes(1);
+	});
+
+	it("registerWorkflowCommand pre-warms after PREWARM_DELAY_MS — first /wf shows no toast", async () => {
+		vi.useFakeTimers();
+		try {
+			const { pi, captured } = createMockPi();
+			registerWorkflowCommand(pi);
+			await vi.advanceTimersByTimeAsync(PREWARM_DELAY_MS);
+			const ctx = createMockCommandCtx({ hasUI: true });
+			await captured.commands.get("wf")?.handler("mid go", ctx);
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(MSG_RUNTIME_LOADING, "info");
+			expect(runWorkflow).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Issue surfacing — load + validation errors
 // ---------------------------------------------------------------------------
 
@@ -320,6 +473,8 @@ describe("/wf — issue surfacing", () => {
 					workflow: "tiny",
 					stage: "research",
 					severity: "warning",
+					code: "stage-unreachable",
+					params: { start: "research" },
 					message: "orphan check",
 					layer: "built-in",
 				},

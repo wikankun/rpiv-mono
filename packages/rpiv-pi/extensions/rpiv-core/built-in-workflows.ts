@@ -21,17 +21,17 @@ import {
 	acts,
 	defineWorkflow,
 	eq,
-	type FanoutUnit,
-	fanoutOver,
+	fanout,
 	gate,
 	gitCommitOutcome,
 	gt,
 	handleToString,
-	iterateOver,
+	iterate,
 	type Output,
 	type PromptFn,
 	produces,
-	type RunState,
+	type RunView,
+	type Unit,
 	type Workflow,
 } from "@juicesharp/rpiv-workflow/registration";
 import { StagePreflightError } from "@juicesharp/rpiv-workflow/runner";
@@ -41,7 +41,7 @@ import { StagePreflightError } from "@juicesharp/rpiv-workflow/runner";
 // (`blockers_count` required), validated by the runtime output loop via
 // `effectiveOutputSchema`. One source of truth, in the skill, not copy-pasted
 // per workflow. Every workflow — build/arch/polish AND vet — routes on the
-// same numeric gate: `gate("blockers_count", { <fix>: gt(0), commit: eq(0) })`.
+// same numeric gate: `gate("blockers_count", { <fix>: gt(0), commit: eq(0) }, "commit")`.
 
 /**
  * A plan's structured `phases:` frontmatter array — the machine-readable phase
@@ -133,7 +133,7 @@ const planPhaseRecords = (content: string, who: string, path: string): readonly 
 };
 
 /** Latest `fs`-handle artifact most recently published under `name` (undefined if none). */
-const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | undefined =>
+const latestFsArtifact = (state: RunView, name: string): Artifact | undefined =>
 	state.named[name]?.at(-1)?.artifacts.find((a) => a.handle.kind === "fs");
 
 /**
@@ -144,11 +144,11 @@ const latestFsArtifact = (state: Readonly<RunState>, name: string): Artifact | u
  * inherits one plan (ship/build/arch/vet); polish's accumulating multi-plan
  * variant is `PLANS_PHASE_FANOUT`.
  */
-const FRONTMATTER_PHASE_FANOUT = fanoutOver({
+const FRONTMATTER_PHASE_FANOUT = fanout({
 	source: "plans",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ state, cwd }) => {
+	units: ({ state, cwd }) => {
 		const plan = latestFsArtifact(state, "plans");
 		if (plan?.handle.kind !== "fs") return [];
 		const path = plan.handle.path;
@@ -189,7 +189,7 @@ const shipWorkflow = defineWorkflow({
 	start: "blueprint",
 	stages: {
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -216,7 +216,7 @@ const buildWorkflow = defineWorkflow({
 	stages: {
 		research: produces(),
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		"code-review": produces(),
 		revise: produces({ reads: ["plans", "reviews"] }),
@@ -227,7 +227,7 @@ const buildWorkflow = defineWorkflow({
 		blueprint: "implement",
 		implement: "validate",
 		validate: "code-review",
-		"code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }, "commit"),
 		// Backward edge: revise → implement re-enters the implement/validate/
 		// code-review cycle. Bounded by the runner's default maxBackwardJumps
 		// (2), permitting at most 3 review iterations before the guard halts.
@@ -253,7 +253,7 @@ const archWorkflow = defineWorkflow({
 		research: produces(),
 		design: produces(),
 		plan: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
@@ -268,7 +268,7 @@ const archWorkflow = defineWorkflow({
 		// design/plan/implement/validate/review cycle. Bounded by the
 		// runner's default maxBackwardJumps (2), permitting at most 3
 		// review iterations before the guard halts.
-		"code-review": gate("blockers_count", { design: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { design: gt(0), commit: eq(0) }, "commit"),
 		commit: "stop",
 	},
 });
@@ -287,7 +287,7 @@ const vetWorkflow = defineWorkflow({
 	stages: {
 		"code-review": produces(),
 		blueprint: produces(),
-		implement: acts({ fanout: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
+		implement: acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
 	},
@@ -297,7 +297,7 @@ const vetWorkflow = defineWorkflow({
 		// `blockers_count` field is sourced + validated from the code-review
 		// contract (`produces.data`, required), so a missing field fails
 		// output validation rather than silently routing.
-		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }, "commit"),
 		blueprint: "implement",
 		implement: "validate",
 		// Backward edge: validate → code-review creates the review-fix loop.
@@ -324,7 +324,7 @@ const vetWorkflow = defineWorkflow({
 const REVIEW_PHASE_RE = /^### Phase (\d+) — (.+)$/gm;
 
 /** Number of structured `phases` in the latest architecture review's frontmatter (0 if none). */
-const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
+const reviewPhaseCount = (state: RunView, cwd: string): number => {
 	const review = latestFsArtifact(state, "architecture-reviews");
 	if (review?.handle.kind !== "fs") return 0;
 	const { frontmatter } = parseFrontmatter(readArtifactFile(review.handle.path, cwd));
@@ -339,7 +339,7 @@ const reviewPhaseCount = (state: Readonly<RunState>, cwd: string): number => {
  * (the review's phase count) and drop the stale generation. Shared by the
  * implement fanout and the validate prompt so both see the same plan set.
  */
-const latestPlans = (state: Readonly<RunState>, cwd: string): readonly Output[] => {
+const latestPlans = (state: RunView, cwd: string): readonly Output[] => {
 	const plans = state.named.plans ?? [];
 	const phaseCount = reviewPhaseCount(state, cwd);
 	return phaseCount > 0 && plans.length > phaseCount ? plans.slice(-phaseCount) : plans;
@@ -373,11 +373,11 @@ const phaseDeps = (entry: unknown): number[] => {
  * heading count (stale derive), and every `depends_on` must reference an earlier
  * phase (exists, no self/forward/cyclic edge against body order).
  */
-const REVIEW_PHASE_ITERATE = iterateOver({
+const REVIEW_PHASE_ITERATE = iterate({
 	source: "architecture-reviews",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ artifact, state, accumulated, cwd }) => {
+	next: ({ artifact, state, accumulated, cwd }) => {
 		// Source the review from the named registry — robust to corrective re-entry,
 		// where the rolling primary is the latest code-review doc, not the review.
 		const review = latestFsArtifact(state, "architecture-reviews") ?? artifact;
@@ -452,12 +452,12 @@ const REVIEW_PHASE_ITERATE = iterateOver({
  * `planPhaseRecords`. MAX_PHASES is enforced on the aggregate unit count, since
  * polish fans one implement pass over the whole plan set.
  */
-const PLANS_PHASE_FANOUT = fanoutOver({
+const PLANS_PHASE_FANOUT = fanout({
 	source: "plans",
 	unit: { by: "frontmatter-array", pattern: "phases" },
 	max: MAX_PHASES,
-	run: ({ state, cwd }) => {
-		const units: FanoutUnit[] = [];
+	units: ({ state, cwd }) => {
+		const units: Unit[] = [];
 		for (const out of latestPlans(state, cwd)) {
 			for (const a of out.artifacts) {
 				if (a.handle.kind !== "fs") continue;
@@ -505,8 +505,8 @@ const polishWorkflow = defineWorkflow({
 	start: "architecture-review",
 	stages: {
 		"architecture-review": produces(),
-		blueprint: produces({ iterate: REVIEW_PHASE_ITERATE }),
-		implement: acts({ fanout: PLANS_PHASE_FANOUT, reads: ["plans"] }),
+		blueprint: produces({ loop: REVIEW_PHASE_ITERATE }),
+		implement: acts({ loop: PLANS_PHASE_FANOUT, reads: ["plans"] }),
 		validate: produces({ prompt: VALIDATE_PLANS_PROMPT }),
 		"code-review": produces(),
 		commit: acts({ outcome: gitCommitOutcome }),
@@ -519,7 +519,7 @@ const polishWorkflow = defineWorkflow({
 		// Backward edge: code-review → blueprint re-plans (implement needs a plan).
 		// The iterate stage re-runs over every review phase; bounded by the
 		// runner's default maxBackwardJumps (2 → up to 3 review iterations).
-		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }),
+		"code-review": gate("blockers_count", { blueprint: gt(0), commit: eq(0) }, "commit"),
 		commit: "stop",
 	},
 });

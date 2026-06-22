@@ -1,8 +1,9 @@
 /**
  * Runtime shape guards + small formatting helpers used during default-export
  * normalisation. `isWorkflow` / `isEnvelope` narrow `unknown` default exports
- * to the structural shapes `normalizeDefaultExport` accepts; `describe` /
- * `formatError` synthesize human-readable strings for load-issue messages.
+ * to the structural shapes `normalizeDefaultExport` accepts; `describe`
+ * synthesizes human-readable strings for load-issue messages. (`formatError`
+ * lives in `../internal-utils.ts` — it's package-wide, not loader-specific.)
  */
 
 import type { Workflow } from "../api.js";
@@ -41,8 +42,4 @@ export function describe(v: unknown): string {
 	if (v === undefined) return "undefined";
 	if (Array.isArray(v)) return "an array";
 	return typeof v;
-}
-
-export function formatError(e: unknown): string {
-	return e instanceof Error ? e.message : String(e);
 }

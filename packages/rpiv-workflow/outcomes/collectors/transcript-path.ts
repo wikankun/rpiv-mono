@@ -22,6 +22,7 @@ import { fs } from "../../handle.js";
 import type { ArtifactCollector } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
 import { lastMatchInBranch } from "../../transcript.js";
+import { requireOpt } from "./require-opt.js";
 
 export interface TranscriptPathCollectorOpts {
 	/**
@@ -34,9 +35,7 @@ export interface TranscriptPathCollectorOpts {
 }
 
 export function transcriptPathCollector(opts: TranscriptPathCollectorOpts): ArtifactCollector {
-	if (!(opts.pattern instanceof RegExp)) {
-		throw new Error("transcriptPathCollector: `pattern` is required and must be a RegExp");
-	}
+	requireOpt("transcriptPathCollector", "pattern", "is required and must be a RegExp", opts.pattern instanceof RegExp);
 	const pattern = opts.pattern;
 	return defineCollector({
 		collect: (ctx) => {

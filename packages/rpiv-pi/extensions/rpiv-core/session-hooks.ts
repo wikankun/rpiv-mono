@@ -23,6 +23,7 @@ import {
 	summarizeCleanupSkips,
 	syncBundledAgents,
 } from "./agents.js";
+import { renderBanner } from "./banner.js";
 import { FLAG_DEBUG, MSG_TYPE_GIT_CONTEXT } from "./constants.js";
 import {
 	clearGitContextCache,
@@ -56,18 +57,19 @@ export function __resetSessionHooksAnnounced(): void {
 
 const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/agent/agents/`;
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
-const msgAgentsDrift = (parts: string[]) => `${parts.join(", ")} agent(s). Run /rpiv-update-agents to sync.`;
+const msgAgentsDrift = (parts: string[]) =>
+	renderBanner("rpiv-pi: bundled agents need attention", [
+		...parts.map((p) => `• ${p}`),
+		"",
+		"Run /rpiv-update-agents to sync.",
+	]);
 const msgAgentsErrors = (n: number) => `Agent sync reported ${n} error(s). Run /rpiv-update-agents for details.`;
-function msgMissingSiblings(pkgs: string[]): string {
-	const n = pkgs.length;
-	const title = `rpiv-pi: ${n} sibling extension${n === 1 ? "" : "s"} missing`;
-	const body = [...pkgs.map((p) => `• ${p}`), "", "Run /rpiv-setup to install them."];
-	const total = Math.max(title.length + 6, ...body.map((l) => l.length + 4));
-	const top = `╭─ ${title} ${"─".repeat(total - title.length - 5)}╮`;
-	const middle = body.map((l) => `│  ${l.padEnd(total - 4)}│`).join("\n");
-	const bottom = `╰${"─".repeat(total - 2)}╯`;
-	return `${top}\n${middle}\n${bottom}`;
-}
+const msgMissingSiblings = (pkgs: string[]) =>
+	renderBanner(`rpiv-pi: ${pkgs.length} sibling extension${pkgs.length === 1 ? "" : "s"} missing`, [
+		...pkgs.map((p) => `• ${p}`),
+		"",
+		"Run /rpiv-setup to install them.",
+	]);
 
 type UI = { notify: (msg: string, sev: "info" | "warning" | "error") => void };
 
@@ -248,8 +250,8 @@ function notifyAgentSyncDrift(ui: UI, result: SyncResult): void {
 	if (result.added.length > 0) {
 		ui.notify(msgAgentsAdded(result.added.length), "info");
 	}
-	// Self-healing events on session_start: legacy-migration overwrites + smart-gate
-	// auto-removes. Surface these explicitly so the user knows local files were touched.
+	// Self-healing events on session_start: smart-gate auto-updates and auto-removes.
+	// Surface these explicitly so the user knows local files were touched.
 	const healed: string[] = [];
 	if (result.updated.length > 0) healed.push(`${result.updated.length} updated`);
 	if (result.removed.length > 0) healed.push(`${result.removed.length} removed`);
@@ -260,7 +262,7 @@ function notifyAgentSyncDrift(ui: UI, result: SyncResult): void {
 	if (result.pendingUpdate.length > 0) drift.push(`${result.pendingUpdate.length} outdated`);
 	if (result.pendingRemove.length > 0) drift.push(`${result.pendingRemove.length} removed from bundle`);
 	if (drift.length > 0) {
-		ui.notify(msgAgentsDrift(drift), "info");
+		ui.notify(`\n${msgAgentsDrift(drift)}`, "info");
 	}
 	if (result.errors.length > 0) {
 		ui.notify(msgAgentsErrors(result.errors.length), "warning");

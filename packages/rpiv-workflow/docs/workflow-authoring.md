@@ -7,7 +7,9 @@ Complete reference for the `@juicesharp/rpiv-workflow` authoring DSL. A workflow
 - [defineWorkflow](#defineworkflow)
 - [Stage factories](#stage-factories)
   - [produces](#produces)
-  - [iterate (sequential accumulation)](#iterate-sequential-accumulation)
+  - [Loops (fanout / iterate / assess)](#loops-fanout--iterate--assess)
+  - [Per-stage verification (verify)](#per-stage-verification-verify)
+  - [Adversarial verification (panel)](#adversarial-verification-panel)
   - [acts](#acts)
   - [terminal](#terminal)
   - [Script stages](#script-stages)
@@ -15,6 +17,7 @@ Complete reference for the `@juicesharp/rpiv-workflow` authoring DSL. A workflow
 - [Edge targets](#edge-targets)
 - [Conditional routing](#conditional-routing)
   - [gate](#gate)
+  - [match](#match)
   - [defineRoute](#defineroute)
   - [Predicate helpers](#predicate-helpers)
 - [Outcomes](#outcomes)
@@ -65,16 +68,11 @@ produces({
   outputSchema: typeboxSchema(Type.Object({ blockers_count: Type.Integer() })),
 })
 
-// With fanout (one Pi session per unit, all units known up front)
+// With a loop (one Pi session per unit — see Loops below).
+// `fanout()` / `iterate()` / `assess()` all build a `loop:` value.
 produces({
-  outcome: myOutcome,
-  fanout: myFanoutFn,
-})
-
-// With iterate (sequential, accumulating — see below)
-produces({
-  outcome: myOutcome,  // outcome MUST carry a `name`
-  iterate: myIterateFn,
+  outcome: myOutcome,  // outcome MUST carry a `name` for a collecting loop
+  loop: fanout({ units: myUnitsFn }),
 })
 
 // With validation retry
@@ -98,63 +96,291 @@ produces({
 | `onInvalid` | `"retry"` | `"retry"` (re-invoke up to `maxRetries`) or `"halt"` (fail fast). |
 | `maxRetries` | — | Max retries on schema rejection. |
 | `validateTimeoutMs` | — | Timeout for async schemas. |
-| `fanout` | none | `FanoutFn` — decomposes work into N units, one Pi session per unit. All units computed up front. |
-| `iterate` | none | `IterateFn` — sequential, accumulating units pulled one at a time, each seeing prior units' outputs. Requires `outcome.name`. See [iterate](#iterate-sequential-accumulation). |
+| `loop` | none | `LoopDef` — opt-in unit loop authored via `fanout()` / `iterate()` / `assess()`. Expands the stage into one Pi session per unit through one driver. Mutually exclusive with `run`/`prompt` and `sessionPolicy: "continue"`. See [Loops](#loops-fanout--iterate--assess). |
 | `sessionPolicy` | `"fresh"` | `"fresh"` (new session) or `"continue"` (reuse prior session). |
 
-### iterate (sequential accumulation)
+### Loops (fanout / iterate / assess)
 
-`iterate` is a field on a `produces` stage — the **sequential, accumulating** dual of `fanout`. Where `fanout` computes every unit up front and runs them blind to one another, `iterate` pulls one unit at a time: the runner calls your `IterateFn` per unit, feeding it the validated outputs of every prior unit in the same stage. Return the next unit, or `null`/`undefined` to terminate.
+A **loop** expands one stage into one Pi session per unit, all running the identical stage path with a distinct unit identity. You don't set the loop kind directly — you author a `loop:` value with one of three constructors. Each validates at construction (invalid shapes throw before the workflow ever loads) and fills the kind-specific defaults:
 
-Each unit runs the stage's `outcome` collector exactly like a one-shot `produces` pass — it validates against `outputSchema`, appends its `Output` to `state.named[outcome.name]`, and rolls the primary artifact forward. So a downstream stage (or a downstream `fanout`) can read every accumulated output straight from `state`.
+| Constructor | Generation | Stage kind | Use when |
+|---|---|---|---|
+| `fanout({ units })` | **push** — all units computed up front, blind to one another | any (`acts` for side-effects, `produces` to collect) | independent units (e.g. `implement` one pass per plan phase) |
+| `iterate({ next })` | **pull** — one unit per call, fed the accumulated prefix | requires `produces` + named `outcome` | each unit must build on the last (e.g. `blueprint` per review phase) |
+| `assess({ judge, done, feedForward })` | **producer → judge rounds** until the model says done | requires `produces` + named `outcome` | refine a single artifact until a model-judge approves it |
+
+All three share the introspectable facet (`source`, `unit`) and the policy knobs (`max`, `onCap`, `result`) described under [the knobs](#the-loop-knobs) below.
+
+#### fanout (push — all units up front)
+
+`fanout()` computes the full unit list once, then runs each unit as its own session. On an **`acts`** stage the units are pure side-effects (one bare audit row each). On a **`produces`** stage each unit is *collecting* — it runs the full collect → validate → publish path and appends its `Output` to `state.named[outcome.name]`, so a collecting fanout **requires `outcome.name`**. An empty `units()` return falls through to the single-stage path (no loop).
 
 ```typescript
-import type { IterateFn } from "@juicesharp/rpiv-workflow";
+import { acts, fanout, type Unit } from "@juicesharp/rpiv-workflow";
 
-// One blueprint pass per review phase, each building on the plans already produced.
-const perPhase: IterateFn = ({ artifact, accumulated, index, cwd, state }) => {
-  if (artifact?.handle.kind !== "fs") return null;
-  const phases = readPhases(artifact.handle.path, cwd);
-  if (index >= phases.length) return null;            // terminator
-  const prior = accumulated.flatMap((o) => o.artifacts).map((a) => pathOf(a));
-  return {
-    prompt: `${artifact.handle.path} Phase ${phases[index].n}` +
-            (prior.length ? `\nPrior plans (build on them): ${prior.join(", ")}` : ""),
-    label: `phase ${index + 1}/${phases.length}`,
-    id: `phase-${phases[index].n}`,                   // stable audit key
-  };
-};
+// rpiv-pi's FRONTMATTER_PHASE_FANOUT — one implement session per plan phase.
+const FRONTMATTER_PHASE_FANOUT = fanout({
+  source: "plans",                                    // the named channel units split FROM
+  unit: { by: "frontmatter-array", pattern: "phases" }, // opaque introspection hint
+  max: MAX_PHASES,
+  units: ({ state, cwd }) => {
+    const plan = latestFsArtifact(state, "plans");
+    if (plan?.handle.kind !== "fs") return [];        // empty ⇒ single-stage fall-through
+    const promptPath = handleToString(plan.handle);
+    return planPhaseRecords(readArtifactFile(plan.handle.path, cwd)).map((r) => ({
+      prompt: `${promptPath} Phase ${r.n}: ${r.title}`.trimEnd(),
+      label: `phase ${r.index + 1}/${r.total}`,       // human display tag
+    }));
+  },
+});
 
-produces({ outcome: rpivBucketOutcome("plans"), iterate: perPhase })
+// acts stage + fanout loop — side-effect units (no per-unit collector)
+acts({ loop: FRONTMATTER_PHASE_FANOUT, reads: ["plans"] })
 ```
 
-**`IterateContext` (what each call receives):**
+A **`Unit`** is `{ prompt, label, id? }`: `prompt` is the body sent to the skill, `label` is the human display tag woven into the status line / per-unit toast / decorated audit row, and `id` is the stable audit identity (falls back to `label`). Set `id` when `label` may be reworded — the resume drift guard and post-hoc tooling join on `id ?? label`.
+
+**`FanoutContext` (what `units()` receives):** `{ cwd, artifact, state }` — `artifact` is the primary inherited from upstream (undefined when the loop stage is the entry point); `state` is the read-only `RunState`. A thrown error halts the stage attributed to it.
+
+#### iterate (pull — accumulating)
+
+`iterate()` pulls one unit at a time: the runner calls your `IterateFn` per unit, feeding it the validated `Output`s of every prior unit in this generation. Return the next unit, or `null`/`undefined` to terminate. Every unit runs the stage's `outcome` collector exactly like a one-shot `produces` pass — so it **requires `kind: "produces"` + an `outcome` with a `name`**, and a downstream stage can read every accumulated output straight from `state.named[outcome.name]`.
+
+```typescript
+import { iterate, produces } from "@juicesharp/rpiv-workflow";
+
+// rpiv-pi's REVIEW_PHASE_ITERATE — one blueprint pass per review phase,
+// each building on the plans the phases it depends on already produced.
+const REVIEW_PHASE_ITERATE = iterate({
+  source: "architecture-reviews",
+  unit: { by: "frontmatter-array", pattern: "phases" },
+  max: MAX_PHASES,
+  next: ({ artifact, state, accumulated, cwd }) => {
+    const review = latestFsArtifact(state, "architecture-reviews") ?? artifact;
+    if (review?.handle.kind !== "fs") return null;
+    const phases = readPhases(review.handle.path, cwd);
+    const i = accumulated.length;                     // 0-based cursor (== index)
+    if (i >= phases.length) return null;              // every phase planned ⇒ terminate
+    const prior = accumulated.flatMap((o) => o.artifacts).map((a) => handleToString(a.handle));
+    return {
+      prompt: `${handleToString(review.handle)} Implement Phase ${phases[i].n}: ${phases[i].title}` +
+              (prior.length ? `\nPrior phase plans (build on them): ${prior.join(", ")}` : ""),
+      label: `phase ${i + 1}/${phases.length}`,
+      id: `phase-${phases[i].n}`,                      // stable audit key
+    };
+  },
+});
+
+produces({ loop: REVIEW_PHASE_ITERATE })
+```
+
+**`IterateContext` (what each `next()` call receives):**
 
 | Field | Meaning |
 |-------|---------|
 | `cwd` | Run working directory. |
 | `artifact` | Stage-entry primary, **FROZEN** across every unit (does NOT roll to the prior unit's output). Undefined when iterate is the entry stage. On a corrective back-edge re-entry the rolling primary may be a downstream doc — source your true input from `state.named` in that case. |
 | `state` | Read-only `RunState`. `state.named[outcome.name]` is the global accumulation channel. |
-| `accumulated` | This stage's already-completed units' validated `Output`s, in order. The primary accumulation channel. |
+| `accumulated` | This generation's already-completed units' validated `Output`s, in order. |
 | `index` | 0-based index of the unit about to run (`== accumulated.length`). |
 
-**Invariants (enforced at load + preflight):**
+A first-call `null` is a zero-unit no-op: nothing published, primary unchanged, chain advances (with a warning).
 
-- Requires `kind: "produces"` and an `outcome` with a `name` (every unit publishes to the same named slot; the per-unit audit row is decorated, so a name is mandatory to keep the slot from splitting).
-- Mutually exclusive with `fanout` (push vs pull) and with `run` (script stages write their own loop).
-- Incompatible with `sessionPolicy: "continue"` (each unit needs an isolated session).
-- Generator `null` on the first call → zero-unit no-op: nothing published, primary unchanged, chain advances (with a warning).
-- A run-wide `maxIterations` cap (default 32, configurable via `RunWorkflowOptions.maxIterations`) backstops a generator that never returns `null` — the stage halts with a terminal failure.
+#### assess (producer → judge rounds, until done)
 
-**iterate vs fanout** — duals, not substitutes:
+`assess()` runs the stage as a **model-judged until-done loop**: each round runs a producer session (this stage's skill + outcome) then a judge session (`opts.judge`). A sync `done(verdict)` predicate decides termination; `feedForward` carries the just-judged round into the next producer prompt. The producer is a collecting unit every round, so assess also **requires `kind: "produces"` + an `outcome` with a `name`**. Unlike fanout/iterate, the cap **soft-stops by default** (`onCap: "advance"`).
 
-| | `fanout` | `iterate` |
+```typescript
+import { assess, judge, produces } from "@juicesharp/rpiv-workflow";
+
+const BREAKDOWN_ASSESS = assess({
+  judge: judge({ skill: "grade-breakdown", outcome: verdictOutcome }),
+  done: (v) => (v.data as { done?: boolean }).done === true,
+  feedForward: ({ output, verdict }) =>
+    `Revise ${handleToString(output.artifacts[0]!.handle)} per the grader's feedback: ` +
+    `${(verdict.data as { feedback?: string }).feedback ?? ""}`,
+  max: 5,                                             // round cap; defaults to 8 if omitted
+});
+
+produces({ loop: BREAKDOWN_ASSESS, outcome: rpivArtifactMdOutcome })
+```
+
+**`FeedForwardContext` (what `feedForward()` receives):** `{ cwd, output, verdict, round, state }` — `output` is the producer output just judged, `verdict` is the judge's validated `Output` (carrying its feedback), `round` is the 0-based round index just judged.
+
+##### judge() — the model-judge concept
+
+A `Judge` names a dispatchable grading session. Author it with `judge({ ... })`, which validates the shape at construction:
+
+- **Dispatch is `skill` XOR `prompt`** (exactly one): `skill` dispatches `/skill:<skill> <producerHandle>` with the latest producer artifact auto-injected as the input handle; `prompt` sends raw text (the author embeds the handle/output themselves). Setting both is ambiguous; setting neither has nothing to dispatch — both throw.
+- **`outcome` is required** — it validates the verdict and names its own dedicated `state.named` channel. That channel's `.name` MUST differ from the producer outcome's name (a workflow-level check, since it needs the producer's identity).
+- **≥1-artifact constraint**: the judge's collector MUST materialize at least one artifact (e.g. a JSON verdict file whose parser yields `{ done, feedback }`). A judge session that collects zero artifacts is a **fatal halt** — no retry, no soft-stop.
+- **Skill label for per-unit consumers**: a `skill` judge's units carry that skill name in `onUnitStart`/`onUnitEnd` and the JSONL rows; a `prompt` judge dispatches under the synthetic label **`<stageName>-judge`**. Per-unit listeners that key on the dispatched skill (e.g. rpiv-pi's `models.json` `skills.<name>` model-override rung) can target a prompt-judge by adding an entry under that synthetic name; with no entry, judge units run on the baseline model.
+
+Keeping the termination predicate OFF `Judge` is what makes it reusable: both `assess()` and the per-stage `verify` field add their own `done(verdict)` predicate over the same opaque verdict `Output` (they share the `JudgedRepetition` vocabulary — `done` + `max`); [`panel()`](#adversarial-verification-panel) composes N judges into one verdict the same `done` reads. A panel therefore slots into any of them with zero per-site code.
+
+#### The loop knobs
+
+Every constructor accepts the shared introspectable facet and policy knobs:
+
+| Knob | Default | Meaning |
 |---|---|---|
-| Generation | push (once, all units) | pull (per unit, sees prior) |
-| Stage kind | any (often `acts`) | requires `produces` + named `outcome` |
-| Collector per unit | no (bare audit row) | yes (full produces path) |
-| Count known up front | yes | no (generator-terminated) |
-| Use when | independent side-effect units (e.g. `implement` per plan phase) | each unit must build on the last (e.g. `blueprint` per review phase) |
+| `source` | none | The named channel the units are split FROM (a `consumes` hint for lints and agents — the `checkFanoutSource` lint warns if no `produces` stage publishes it). |
+| `unit` | none | `{ by, pattern? }` — how units are detected. Opaque convention; the framework never interprets it. |
+| `max` | none (assess: 8) | Cardinality ceiling. Must be an integer **≥ 1** (throws at construction). Always clamped by the run-wide `maxIterations` (default 32, via `RunWorkflowOptions.maxIterations`). |
+| `onCap` | fanout/iterate `"halt"` · assess `"advance"` | What happens at the effective cap (`min(max, run.maxIterations)`). `"halt"` — terminal failure (mirrors the backward-jump guard). `"advance"` — soft-stop: warn, land a `{type:"loop-cap"}` telemetry row, fire `onLoopCap`, keep the projected result, advance downstream. |
+| `result` | fanout `"entry"` · iterate/assess `"last"` | What the loop leaves in `{state.output, state.primaryArtifact}` (the pair is governed as one). `"entry"` restores the pair captured at loop entry (reproduces routing-sees-upstream); `"last"` uses the last completed produce unit's pair (zero produce units degrades to entry). |
+
+#### The resume contract (all loop kinds)
+
+A unit source must be **deterministic w.r.t. the fold-replayed `RunState` at the unit boundary plus this generation's accumulated outputs**. On resume, the fold re-calls your `units()` / `next()` at every folded boundary and compares each recomputed unit against what the run recorded. If they diverge — a non-deterministic generator recomputed a different unit — resume **refuses** with a terminal failure rather than re-run the wrong units. Set a stable `id` on each unit so the join survives a reworded `label`. The same contract covers the model-judged predicates: `assess`'s and `verify`'s `done` / `feedForward` are recomputed on resume (never persisted), so each must be deterministic w.r.t. the verdict `Output`. Runs recorded before this redesign carry no `parent` field on their unit rows and cannot be resumed (`stage-gone` refusal — no migration).
+
+#### Loop lifecycle hooks
+
+Loops are observed through unit-generic lifecycle hooks (register via `registerLifecycle`). `onStageStart` still fires exactly once per loop stage; the loop hooks add per-loop and per-unit granularity:
+
+| Hook | Payload | When |
+|---|---|---|
+| `onLoopStart(stage, info)` | `{ kind, units? }` — `units` only for fanout (push precomputes them) | after `onStageStart`, before unit 1's session |
+| `onUnitStart(stage, unit)` | `UnitEvent` `{ role, index, unitId?, label, skill }` | before each unit's session opens — fired for **produce AND judge** units; the seam a model-override listener flips the model on (units run strictly sequentially, so the flip is race-free) |
+| `onUnitEnd(stage, unit, output)` | `UnitEvent` + the unit's validated `Output` | after the unit's JSONL row lands (loop units never fire `onStageEnd`) |
+| `onLoopCap(stage, info)` | `LoopCapInfo` `{ kind, count, max, policy }` | after an `onCap: "advance"` trip (after the `{type:"loop-cap"}` row append attempt) |
+
+`UnitEvent.skill` is the unit's *dispatched* skill body — the parent stage's skill for produce units, the judge's own skill for judge units — so a model-override listener can resolve a per-unit model through the existing `models.json` cascade (`skills.<name>`) with no new configuration axes.
+
+### Per-stage verification (verify)
+
+**verify** attaches a post-condition judge to a `produces` stage: after each attempt completes (collected, validated, persisted), the judge session grades the attempt's primary artifact and `done(verdict)` gates advancement — true → the chain advances with the attempt's producer pair; false → a fresh retry attempt (prompt arg built by `feedForward`) up to `max` attempts (default 1 = gate-only), then the workflow halts with "verification failed". A pass on the final attempt is a normal completion. Requires `kind: "produces"` + an `outcome` with a `name`; composes with `reads` and with `prompt` dispatch (attempt 0 sends the stage's resolved `prompt` raw; retries send `feedForward`'s output raw — for prompt dispatch it is the complete retry message, not a skill arg); mutually exclusive with `loop`, `run`, and `sessionPolicy: "continue"`. `verify` shares the `JudgedRepetition` field vocabulary with `assess` — `done` (the pass predicate), `max` (the attempt budget), and `feedForward` — one set of names for both judged-repetition shapes.
+
+```ts
+import { judge, produces, verify } from "@juicesharp/rpiv-workflow";
+
+// Gate-only: one attempt; a failing verdict halts the workflow.
+const GATED = produces({
+  outcome: implOutcome, // publishes "impl"
+  verify: verify({
+    judge: judge({ skill: "review-gate", outcome: verdictOutcome }), // publishes "impl-verdict"
+    done: (v) => (v.data as { ok?: boolean }).ok === true,
+  }),
+});
+
+// Retry-with-feedback: up to 3 fresh attempts, each retried prompt carrying the verdict's feedback.
+const RETRIED = produces({
+  outcome: implOutcome,
+  reads: ["design", "plan"], // composes — attempt prompts use the labelled-flag projection
+  verify: verify({
+    judge: judge({ skill: "review-gate", outcome: verdictOutcome }),
+    done: (v) => (v.data as { ok?: boolean }).ok === true,
+    feedForward: ({ verdict }) => `address: ${(verdict.data as { feedback?: string }).feedback}`,
+    max: 3, // requires feedForward when > 1
+  }),
+});
+```
+
+**Two budgets, two cost scales:** `verify.max` is the FULL-attempt budget — each attempt is a fresh session running the whole produce→validate→persist cycle. `stage.maxRetries` stays the orthogonal in-session schema-fix budget and remains live inside every attempt.
+
+**Lifecycle (loop semantics):** a verified stage runs through the loop driver, so `onLoopStart` fires with `kind: "verify"`, each attempt/verdict fires `onUnitStart`/`onUnitEnd` (roles `"produce"`/`"verify"`), and the stage does NOT fire `onStageEnd` — observe units, not stage-end. A model-override listener resolves the judge's own skill through `onUnitStart`, exactly as for assess judges.
+
+**Fallback routing instead of halting:** the verdict publishes durably to `state.named[judge.outcome.name]`, so a route can read it — no built-in fail→route policy exists (or is needed):
+
+```ts
+edges: {
+  implement: defineRoute(
+    ["ship", "fallback"],
+    ({ state }) => ((state.named["impl-verdict"]?.at(-1)?.data as { ok?: boolean })?.ok ? "ship" : "fallback"),
+    { readsData: false },
+  ),
+}
+```
+
+**Resume:** crash after an attempt but before its verdict → resume re-runs just the verify; a recovered failing verdict re-computes `done` and continues the retry (or halts a gate-only verify); a recovered passing verdict fast-advances. `done` is recomputed, never persisted — it joins the loop determinism contract (deterministic w.r.t. the verdict `Output`).
+
+### Adversarial verification (panel)
+
+A single judge agreeing with itself is not a check — that is self-preference bias. **`panel()`** turns one judge into N independent skeptics and reduces their verdicts to one decision with a **fold**. It is a `Judge`-shaped *value*, not a new site: it slots into any slot a `judge` does — `assess({ judge })` or `verify({ judge })` — with **zero per-site code**, because every judge site dispatches through one expander (`panelMembers`) and reads the fold opaquely via its existing `done` predicate. A plain `judge` is simply a panel of one.
+
+```ts
+import { judge, majority, panel, produces, verify } from "@juicesharp/rpiv-workflow";
+import type { PanelVerdict } from "@juicesharp/rpiv-workflow";
+
+// Three independent skeptics — distinct lenses beat N copies (correctness, security, repro).
+const REVIEW_PANEL = panel({
+  members: [
+    judge({ skill: "review-correctness", outcome: { name: "v-correctness", collector } }),
+    judge({ skill: "review-security",    outcome: { name: "v-security",    collector } }),
+    judge({ skill: "review-repro",       outcome: { name: "v-repro",       collector } }),
+  ],
+  // The per-member `pred` interprets each member's OWN verdict schema.
+  fold: majority((v) => (v.data as { ok?: boolean }).ok === true),
+});
+
+// Slots into a verify site. The site's `done` reads the FOLDED canonical verdict.
+const VERIFIED = produces({
+  outcome: implOutcome,                               // publishes "impl"
+  verify: verify({
+    judge: REVIEW_PANEL,                              // fold publishes to "impl-panel"
+    done: (v) => (v.data as PanelVerdict).pass,       // the strict-majority result
+  }),
+});
+```
+
+**Two predicates, not one redundancy.** The per-member `pred` (passed to `majority`/`all`/`any`) interprets *one member's* own verdict; the site's `done` (`assess`'s and `verify`'s termination predicate) interprets *the fold*. Members never need a shared verdict schema — only the `pred` knows each member's shape.
+
+**`panel({ members, fold, outcome? })`:**
+
+- `members` — a **non-empty** array of single `judge(...)` values. Each carries its own `outcome` whose `name` must be **mutually distinct** and **distinct from the producer's** (a load-time check). Members do **not** nest — `panel` of `panel` is rejected at construction (§ "Explicitly not building").
+- `fold` — a function reducing the member verdicts to the panel's decision data. Either a **sugar** fold (`majority`/`all`/`any`, branded) or a **raw** `FoldFn`.
+- `outcome` — present **only** on the custom (raw-fold) path; it names + validates the fold's channel.
+
+#### Canonical ⊕ custom — a hard XOR
+
+The fold output is a validated, publishable `Output` so a downstream route can branch on it. Two disjoint ways to obtain the `(schema, channel, fold)` triple:
+
+| Path | `fold` | `outcome` | Schema / channel | Use |
+|---|---|---|---|---|
+| **Canonical** | sugar (`majority`/`all`/`any`) | **omitted** | built-in `PANEL_VERDICT`; channel `<stage>-panel` | zero-config disagreement routing |
+| **Custom** | raw `FoldFn` | **required** | author's schema + name | mean / weighted / synthesize |
+
+The XOR is enforced at construction (and re-checked at load for hand-rolled literals), so exactly one source names the verdict — never both, never neither:
+
+```
+sugar fold  +  outcome present  → construction error  (sugar ⊕ outcome)
+raw fold     +  outcome absent   → construction error  (raw ⊕ outcome)
+```
+
+#### The canonical verdict — `PANEL_VERDICT`
+
+Sugar folds emit this shape; disagreement is first-class because production routing keys on it:
+
+```ts
+PANEL_VERDICT = {
+  pass: boolean,                          // the fold's decision (per the sugar rule below)
+  votes: { pass: number, fail: number },  // the split
+  agreement: number,                      // |majority| / N — the disagreement signal
+  tie: boolean,                           // an even split
+}
+```
+
+| Sugar fold | `pass` is true when | Meaning |
+|---|---|---|
+| `majority(pred)` | strict majority of members pass `pred` | even split is a tie ⇒ fail (see `tie`/`agreement`) |
+| `all(pred)` | every member passes `pred` | unanimous — one fail vetoes |
+| `any(pred)` | at least one member passes `pred` | veto / rescue — one pass carries it |
+
+#### Where the fold publishes
+
+The fold publishes **decision data**, not a file artifact. It lands on its own named channel — `<stage>-panel` (canonical) or your `outcome.name` (custom) — with `artifacts: []`, so it never claims the rolling primary. Each member *also* publishes its own verdict to its own `outcome.name` channel, so the full per-member trail is preserved. A downstream stage that wants to **read survivors** reads the producer/member artifacts; a route that wants the **decision** reads the fold channel (see [`match`](#match)'s `from`).
+
+#### The four flows
+
+- **Generate-and-filter** — `fanout` to generate candidates → a stage whose `verify` judge is a `panel(...)` → `match` on the published verdict to keep survivors.
+- **Classify-and-route** — panel verdict → `match("decision", …)`.
+- **Escalate-on-disagreement** (highest value) — route on `tie`/`agreement` to a human/escalation stage; falls out for free once the channel + disagreement signal exist.
+- **Tournament** — unchanged; a future `iterate` over a bracket.
+
+#### Caveats & resume
+
+- **Sequential cost.** Pi is single-active-session, so members run one after another — a panel costs **N judge sessions per check**. Panels are slower, never incorrect. Parallelism is a roadmap item, not a property of the fold.
+- **Resume parity.** Each member is its own durable audit row (member-index-bearing tag); the **folded verdict is never persisted** — it is recomputed from the member rows and republished at the same transition on resume, byte-identical to live. The fold must therefore be deterministic w.r.t. the member verdicts (it joins the loop determinism contract). A crash mid-panel re-runs only the pending member, then recomputes the fold.
 
 ### acts
 
@@ -169,8 +395,8 @@ acts()
 // With a different skill name
 acts({ skill: "implement" })
 
-// With fanout
-acts({ fanout: phaseFanout })
+// With a loop (one side-effect session per unit — see Loops)
+acts({ loop: fanout({ units: phaseUnits }) })
 
 // With outcome (e.g., git commit detection)
 acts({ outcome: gitCommitOutcome })
@@ -252,7 +478,7 @@ const notifySlack = terminal.script({
 ```
 
 **Constraints on script stages:**
-- Cannot declare `skill`, `outcome`, `fanout`, `iterate`, or `sessionPolicy: "continue"` — load-time validation rejects the combination.
+- Cannot declare `skill`, `outcome`, `loop`, `prompt`, or `sessionPolicy: "continue"` — load-time validation rejects the combination. Script stages cannot loop — write a loop inside `run()` instead.
 - `produces.script` may declare `outputSchema`, `maxRetries`, `onInvalid`.
 - `acts.script` / `terminal.script` may declare `inputSchema`.
 
@@ -271,8 +497,8 @@ prefix, no implicit upstream-artifact arg appended. Use it for a focused,
 one-off instruction that doesn't warrant a whole skill.
 
 **Prefer the typed builders** `produces.prompt({ … })` / `acts.prompt({ … })`
-(mirroring `.script`). Their options structurally omit `skill`/`run`/`fanout`/
-`iterate`/`reads`, so an invalid combo fails to compile instead of only failing
+(mirroring `.script`). Their options structurally omit `skill`/`run`/`loop`/
+`reads`, so an invalid combo fails to compile instead of only failing
 load validation:
 
 ```typescript
@@ -310,9 +536,13 @@ stages: {
 ```
 
 **Constraints (load + preflight):**
-- Mutually exclusive with an explicit `skill`, with `run`, with `reads`, and —
-  in v1 — with `fanout`/`iterate`. (Read `state.named` from the `PromptFn` itself
-  instead of `reads`.)
+- Mutually exclusive with an explicit `skill`, with `run`, with `reads`, and
+  with `fanout`/`iterate` loops (units own their prompts — every unit's message
+  comes from `units()`/`next()`, so a stage-level `prompt` would have no role).
+  Read `state.named` from the `PromptFn` itself instead of `reads`.
+- Composes with `assess` loops and with `verify`: the stage's `prompt` is
+  round/attempt 0's message, and `feedForward` builds each retry's COMPLETE
+  message (sent raw — there is no skill to prefix an arg onto).
 - `produces` + `prompt` still requires an `outcome`. `side-effect` + `prompt` is
   a pure chat turn.
 - A prompt stage skips the skill-registry check (no skill to register) and the
@@ -347,6 +577,7 @@ A conditional edge is an **`EdgeFn`**: a `(ctx) => string` predicate carrying a 
 
 - **`defineRoute(targets, fn)`** — general. Arbitrary TS body, explicit `targets`. Use for strings, enums, multiple fields, ranges — anything.
 - **`gate(field, branches)`** — terse convenience for one **numeric** field with threshold predicates; derives `.targets` from the branch keys. Not more powerful than `defineRoute`, just shorter for the numeric case.
+- **`match(field, branches, opts?)`** — the string/boolean companion to `gate`: classify on a discrete (enum) field by strict `===`. Derives `.targets` from the branch keys; shorter than `defineRoute` for the enum case.
 
 ### gate (numeric field)
 
@@ -362,6 +593,33 @@ edges: {
   })
 }
 ```
+
+### match (enum field)
+
+`match(field, branches, opts?)` maps each target stage to the **discrete value** that routes to it. The field is compared by strict `===` in declaration order; first match wins. Where `gate` keys on a `Number(...)` threshold, `match` keys on a string/number/boolean equal — the enum classifier `gate` can't express.
+
+```typescript
+import { match } from "@juicesharp/rpiv-workflow";
+
+edges: {
+  triage: match("severity", { escalate: "p0", fix: "p1", backlog: "p2" }),
+}
+```
+
+**No-match is explicit, never silent.** With `opts.fallback` the unmatched value routes there; without one it terminates (`STOP`). Either way the no-match lands a routing-audit `note`.
+
+**Routing on a panel's verdict** — `opts.from` reads the field from a named channel's latest output (`state.named[from].at(-1).data[field]`) instead of the stage's projected `output.data`. This is how `match` branches on a [panel](#adversarial-verification-panel)'s published fold (the fold lands on a channel, never on the stage's projected output):
+
+```typescript
+// Escalate when the panel split, otherwise keep survivors.
+edges: {
+  review: match("tie", { escalate: true }, { fallback: "keep", from: "review-panel" }),
+}
+```
+
+A channel-sourced route validates the *channel's* data, not the source stage's output, so it does **not** mark the source stage `READS_DATA`.
+
+**Construction rules:** each enum value must map to exactly one stage (a duplicate value throws — ambiguous), and branch keys must not be integer-like (`"2"`) — JS hoists array-index keys ahead of declaration order, silently reordering priority. Built on `defineRoute`, so `.targets` (incl. the fallback) feeds the reachability BFS and `READS_DATA` auto-applies unless `from` sources a channel.
 
 ### defineRoute (strings, enums, multi-field)
 
@@ -539,8 +797,8 @@ When to add schemas:
 
 ### Session-policy decision rules
 
-- **Default to `"fresh"`.** It is compatible with `fanout`, script stages, and keeps context bounded.
-- **Use `"continue"` only when Q3 demands reasoning that isn't capturable on disk or via a transcript marker.** `"continue"` is incompatible with `fanout` and script stages — load-time validation rejects the combination.
+- **Default to `"fresh"`.** It is compatible with loops, script stages, and keeps context bounded.
+- **Use `"continue"` only when Q3 demands reasoning that isn't capturable on disk or via a transcript marker.** `"continue"` is incompatible with loops and script stages — a stage cannot combine a loop with `sessionPolicy: "continue"` (each unit requires an isolated session), and load-time validation rejects the combination.
 - Every `"continue"` stage grows context monotonically. Long chains of continued sessions become expensive and fragile.
 
 ### Authoring protocol
@@ -600,6 +858,38 @@ When `reads:` is set the runner replaces the default prompt with a labelled-flag
 
 Multi-artifact stages get flag repetition: an upstream with two `fs` artifacts expands to `--plans <a> --plans <b>` so skill arg-parsers collect repeated flags into arrays the same way `argparse`/`clap`/shell utilities do.
 
+### Fan-in: reading every entry (`fanin` — fanout-and-synthesize)
+
+A bare-string read resolves to the channel's **latest** entry (`array.at(-1)`). That is the wrong default for the fan-in half of *fanout-and-synthesize*: a `fanout` produces N per-unit `Output`s on one channel, and the synthesize stage's whole job is to **merge all N into one**. Latest-wins would hand it only the last unit.
+
+Wrap a name in `fanin(name)` to read **every accumulated entry** of the channel, in run order:
+
+```typescript
+import { acts, fanin, fanout, produces } from "@juicesharp/rpiv-workflow";
+
+// fan-out: one collecting unit per plan phase → each appends to state.named["drafts"]
+draft: produces({
+  outcome: draftOutcome,                  // outcome.name === "drafts"
+  loop: fanout({ source: "plans", unit: { by: "frontmatter-array", pattern: "phases" } }),
+}),
+
+// fan-in (the barrier): read ALL drafts, synthesize one result
+synthesize: produces({
+  outcome: summaryOutcome,
+  reads: [fanin("drafts")],               // every unit's artifacts, not just the last
+}),
+```
+
+The synthesize prompt flag-repeats across the whole channel (× each entry's artifacts):
+
+```
+/skill:synthesize --drafts <unit1> --drafts <unit2> --drafts <unit3> …
+```
+
+`fanin()` is the consumer-side mirror of `fanout()` — fan-out on the producer, fan-in on the consumer. It composes with non-fanout channels too (e.g. reading every `iterate` accumulation), and one `reads:` list may mix forms: `reads: [fanin("drafts"), "spec"]` reads all drafts but only the latest spec. The `reads:` element type is `string | { name; all? }`; `fanin(name)` builds `{ name, all: true }`.
+
+A lint backs the idiom: a **bare-string** read of a channel that a `fanout` fills emits the `reads-latest-from-fanout` warning ("wrap it in `fanin(...)`"). It only warns — latest-only is legal — and `fanin()` reads are already opted in, so they're never flagged. `/wf` preview marks a fan-in consumer with `⇉ <names>`, mirroring the `panel(N, fold)` fan-in surfacing.
+
 ### The named-publish registry — `state.named`
 
 Every `produces` stage APPENDS its full `Output` envelope onto `state.named[key]` after each successful run. The key is computed once at write time:
@@ -613,7 +903,7 @@ Two layers, no override knob:
 - **Outcome carries a name.** Multiple stages wiring the same outcome converge — both stages append onto the same slot, latest-wins on read. This is how a workflow expresses "two stages both produce the canonical plan" without restating the name on each stage.
 - **Outcome has no name.** Stages publish under their record key. Downstream `reads: ["blueprint", "code-review"]` references stage record keys directly.
 
-Slots are **arrays** — iteration history is preserved across backward-jump loops; the default read resolves to `array.at(-1)`. Side-effect stages don't write to the registry. The slot is never cleared by `terminal()` either: it's an additive channel orthogonal to the rolling primary.
+Slots are **arrays** — iteration history is preserved across backward-jump loops; the default read resolves to `array.at(-1)` (latest-wins), while a `fanin(name)` read consumes the whole slot (see [Fan-in](#fan-in-reading-every-entry-fanin--fanout-and-synthesize)). Side-effect stages don't write to the registry. The slot is never cleared by `terminal()` either: it's an additive channel orthogonal to the rolling primary.
 
 ### Validation + preflight
 
@@ -630,11 +920,11 @@ A fresh-session stage starts a clean Pi conversation. It only sees (1) the rolli
 
 | # | Mechanism | What downstream sees | Trade-off |
 |---|-----------|----------------------|-----------|
-| 1 | `sessionPolicy: "continue"` on the downstream stage | Full prior Pi conversation (messages + tool calls) | Incompatible with `fanout` and script stages. Context grows monotonically. |
+| 1 | `sessionPolicy: "continue"` on the downstream stage | Full prior Pi conversation (messages + tool calls) | Incompatible with loops and script stages. Context grows monotonically. |
 | 2 | `workspaceDiffCollector` outcome on the upstream stage | Every file the stage touched, as `fs` artifacts | Free when the work IS files on disk. Captures *what*, not *why*. |
 | 3 | `transcriptPathCollector` outcome on the upstream stage | The last regex-matched chunk of assistant text, written to disk | Captures narrative knowledge. Needs the skill to emit a recognizable marker. |
 | 4 | Custom collector / parser (+ optional `outputSchema`) | Author-defined typed shape | Most precise; most authoring effort. Enables gate routing. |
-| 5 | `reads:` on the downstream stage referencing named-publish slots | Latest `Output` per declared name, woven into a labelled-flag prompt | Reaches further back than the rolling primary; survives intermediate produces stages overwriting the chain. See [Multi-input stages](#multi-input-stages). |
+| 5 | `reads:` on the downstream stage referencing named-publish slots | Latest `Output` per declared name (or **all** entries via `fanin(name)`), woven into a labelled-flag prompt | Reaches further back than the rolling primary; survives intermediate produces stages overwriting the chain. `fanin()` is the fanout-and-synthesize barrier. See [Multi-input stages](#multi-input-stages). |
 
 **Picking between them — where does the knowledge live after the stage finishes?**
 
@@ -754,9 +1044,12 @@ Generated workflows must pass `validateWorkflow()` before writing. The validator
 - `produces` stages have an `outcome`
 - `gate` / data-reading `defineRoute` source stages have `outputSchema`
 - Every `reads:` name is published by some `produces` stage in the workflow (publish key = `outcome.name ?? stage.<record-key>`)
-- Fanout is incompatible with `sessionPolicy: "continue"`
-- Iterate requires `kind: "produces"` + an `outcome` with a `name`; it is mutually exclusive with `fanout` and `run`, and incompatible with `sessionPolicy: "continue"`
-- Prompt stages cannot also set `skill`, `run`, `reads`, `fanout`, or `iterate`; a `produces` prompt stage still needs an `outcome`; an empty prompt string is rejected
-- Script stages cannot declare `skill`, `outcome`, `fanout`, `iterate`, `prompt`, or `sessionPolicy: "continue"`
+- A stage **cannot combine a loop with sessionPolicy "continue"** — each unit requires an isolated session
+- **A collecting loop requires an `outcome` with a `name`** so units publish to a stable named slot (iterate and assess always; a `fanout` when its stage `kind` is `produces`)
+- `iterate` / `assess` require `kind: "produces"` — each unit runs an outcome collector
+- `loop.max` must be an integer `>= 1` (the run-wide `maxIterations` caps the upper bound)
+- a judge's `outcome.name` must differ from the producer's publish name (`assess` and `verify`); `assess` composes with `reads` (the v1 restriction is lifted — round-0 producer args are derived by one authority and frozen by the resume fold at loop-generation open)
+- **prompt and fanout/iterate loops are mutually exclusive** — units own their prompts (`assess` loops and `verify` compose with prompt dispatch); prompt stages also cannot set `skill`, `run`, or `reads`; a `produces` prompt stage still needs an `outcome`; an empty prompt string is rejected
+- **Script stages cannot loop — write a loop inside run() instead**; they also cannot declare `skill`, `outcome`, `prompt`, or `sessionPolicy: "continue"`
 
 > **Important:** The `/wf` command blocks execution on any `severity: "error"` issue. Always validate before writing.

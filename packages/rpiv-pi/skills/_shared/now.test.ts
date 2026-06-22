@@ -31,7 +31,7 @@ describe("now.mjs", () => {
 		// If this assertion ever flips, every Metadata block that combines
 		// now.mjs with a second helper via `echo` will have a blank line
 		// inserted between them — harmless — but the explicit no-`echo` peer
-		// (none currently exist after the I1 fix) would now parse cleanly.
+		// (none currently exist) would now parse cleanly.
 		// Keep this contract pinned so revise/SKILL.md's `echo` line is
 		// load-bearing as documented.
 		expect(out.endsWith("\n")).toBe(false);

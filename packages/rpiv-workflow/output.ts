@@ -6,12 +6,11 @@
  * Audience: predicate authors and downstream-stage authors reading
  * `output.artifacts` (the storage references) and `output.data`
  * (the typed channel a parser shaped). The producer-side surface
- * (`ArtifactCollector` / `ArtifactParser` / `OutputSpec`) lives in
+ * (`ArtifactCollector` / `ArtifactParser` / `Outcome`) lives in
  * `output-spec.ts`.
  */
 
 import type { Artifact } from "./handle.js";
-import type { GitCommitData } from "./outcomes/git-commit.js";
 
 // ---------------------------------------------------------------------------
 // Output envelope
@@ -49,32 +48,53 @@ export interface Output<K extends string = string, D = unknown> {
 // ---------------------------------------------------------------------------
 // Built-in output kind aliases
 //
-// Tagged-union narrowing convenience for consumers. Data shapes live
-// with their producing outcomes; `GitCommitData` is type-only imported
-// from `outcomes/git-commit.ts` (no runtime cycle).
+// Tagged-union narrowing convenience for consumers. Only the two
+// framework-native kinds live here; outcome-specific aliases live with
+// their producing outcome (`GitCommitOutput` → outcomes/git-commit.ts) so
+// the core envelope module never enumerates concrete plugins (G6).
 // ---------------------------------------------------------------------------
 
 export type ArtifactsOutput = Output<"artifacts", readonly Artifact[]>;
 export type SideEffectOutput = Output<"side-effect", Record<string, never>>;
-export type GitCommitOutput = Output<"git-commit", GitCommitData>;
+
+/**
+ * A judge's graded output — structurally just an `Output` (the verdict is a
+ * normal envelope published to the judge's named channel), named so judged
+ * signatures (`done(verdict)`, `FeedForwardContext.verdict`) can say what
+ * they mean.
+ */
+export type Verdict = Output;
 
 // ---------------------------------------------------------------------------
-// OutputSpec types — re-exported so consumers can `import { OutputSpec,
-// CollectCtx, ... } from "../output.js"` without rewriting every
-// site. Canonical definitions live in `output-spec.ts`.
+// RunView — the user-facing read surface over a live run
 // ---------------------------------------------------------------------------
 
-export type {
-	ArtifactCollector,
-	ArtifactParser,
-	CollectCtx,
-	CollectResult,
-	OutputSpec,
-	ParseCtx,
-	ParseResult,
-	SnapshotCtx,
-	SnapshotFn,
-} from "./output-spec.js";
+/**
+ * Deep-readonly view of a run's data channels — what user-authored functions
+ * (edge predicates, script stages, loop unit sources, judges, collectors)
+ * receive as `ctx.state`. The runner threads its live mutable `RunState`
+ * here (it satisfies this shape structurally); the narrowed type is what
+ * keeps a user fn from corrupting an audited run — `Readonly<RunState>` was
+ * shallow, so `ctx.state.named["plans"].push(...)` compiled.
+ *
+ * Deliberately omits runner bookkeeping (`stagesCompleted`,
+ * `lastAllocatedStageNumber`, `telemetry`, `termination`, the
+ * accessor-guarded `primaryArtifact`) — those are runtime internals, not
+ * authoring inputs. Adding a field later is non-breaking; removing one is
+ * not, hence the minimal start.
+ */
+export interface RunView {
+	/** The user's original `/wf` argument — frozen for the whole run. */
+	readonly originalInput: string;
+	/** The most recent completed stage's full `Output` envelope. */
+	readonly output: Output | undefined;
+	/**
+	 * Named publish registry — each `produces` success APPENDS its envelope
+	 * onto the slot named by `stage.outcome?.name ?? stage.<record-key>`.
+	 * Slots are histories; read the latest via `named[name]?.at(-1)`.
+	 */
+	readonly named: { readonly [name: string]: readonly Output[] };
+}
 
 // ---------------------------------------------------------------------------
 // Output construction

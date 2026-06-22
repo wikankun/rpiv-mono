@@ -16,12 +16,12 @@
  *     header-only or projection-only reads sized for inspect UIs.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { Artifact } from "../handle.js";
-import { readNamesIndex } from "./names.js";
-import { runsDir, stateFilePath } from "./paths.js";
-import type { RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from "./state.js";
+import { formatError } from "../internal-utils.js";
+import { stateFilePath } from "./paths.js";
+import { enumerateRunIds, readFirstJsonlLine } from "./raw.js";
+import type { LoopCapRow, RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
  * Reads every line, filters by shape (not position). Header has no
@@ -36,6 +36,15 @@ import type { RoutingDecision, RunSummary, WorkflowHeader, WorkflowStage } from 
  * skipped; readers see every well-formed row that landed on disk.
  */
 function readJsonlRows<T>(cwd: string, runId: string, match: (row: unknown) => row is T): T[] {
+	const rows: T[] = [];
+	for (const parsed of readParsedRows(cwd, runId)) {
+		if (match(parsed)) rows.push(parsed);
+	}
+	return rows;
+}
+
+/** Every well-formed JSON row, unfiltered — the shared base under `readJsonlRows` + the strict resume reader. */
+function readParsedRows(cwd: string, runId: string): unknown[] {
 	let lines: string[];
 	try {
 		const filePath = stateFilePath(cwd, runId);
@@ -44,33 +53,68 @@ function readJsonlRows<T>(cwd: string, runId: string, match: (row: unknown) => r
 		if (!content) return [];
 		lines = content.split("\n");
 	} catch (e) {
-		console.warn(`[rpiv-workflow] workflow state: ${e instanceof Error ? e.message : String(e)}`);
+		console.warn(`[rpiv-workflow] workflow state: ${formatError(e)}`);
 		return [];
 	}
 
-	const rows: T[] = [];
+	const rows: unknown[] = [];
 	for (const line of lines) {
-		let parsed: unknown;
 		try {
-			parsed = JSON.parse(line);
+			rows.push(JSON.parse(line));
 		} catch (e) {
-			console.warn(
-				`[rpiv-workflow] workflow state: skipping malformed JSONL row — ${e instanceof Error ? e.message : String(e)}`,
-			);
-			continue;
+			console.warn(`[rpiv-workflow] workflow state: skipping malformed JSONL row — ${formatError(e)}`);
 		}
-		if (match(parsed)) rows.push(parsed);
 	}
 	return rows;
 }
 
-const isWorkflowStage = (row: unknown): row is WorkflowStage =>
-	!!row &&
-	typeof (row as { stageNumber?: unknown }).stageNumber === "number" &&
-	typeof (row as { stage?: unknown }).stage === "string";
+const STAGE_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "skipped", "aborted"]);
+
+/**
+ * Stage-SHAPED: carries a numeric `stageNumber` (no other row kind does).
+ * Pre-filter for the strict resume reader — a stage-shaped row failing the
+ * deep `isWorkflowStage` guard is a MALFORMED stage row, not a foreign kind.
+ */
+const isStageShaped = (row: unknown): row is { stageNumber: number; stage?: unknown } =>
+	!!row && typeof (row as { stageNumber?: unknown }).stageNumber === "number";
+
+/**
+ * Deep guard for the fields downstream consumers actually depend on —
+ * not just "has a stageNumber": `status` must be a member of the enum
+ * (the resume fold branches on it), `output.artifacts` must be an array
+ * when `output` is present (`applyCompletedStage` indexes it), and a
+ * loop-unit row (`parent` set) must carry a numeric `unitIndex` (the
+ * resume drift guard compares it).
+ */
+const isWorkflowStage = (row: unknown): row is WorkflowStage => {
+	const r = row as Partial<WorkflowStage> | null;
+	if (!r || typeof r.stageNumber !== "number" || typeof r.stage !== "string") return false;
+	if (typeof r.status !== "string" || !STAGE_STATUSES.has(r.status)) return false;
+	if (r.output !== undefined && !Array.isArray((r.output as { artifacts?: unknown } | null)?.artifacts)) return false;
+	if (r.parent !== undefined && typeof r.unitIndex !== "number") return false;
+	return true;
+};
+
+/**
+ * Resume-only `session` guard: the key must be PRESENT and be either `null`
+ * (explicit "no session involved") or an object carrying `id: string`.
+ * Lives apart from `isWorkflowStage` so DISPLAY readers stay lenient —
+ * pre-feature rows (no `session` key) still render in lists/inspect UIs;
+ * only the resume fold refuses them (`malformed-row`; the dev remedy is
+ * wiping `.rpiv/workflows/runs/` — v1 never shipped).
+ */
+const hasValidSessionRef = (row: object): boolean => {
+	if (!("session" in row)) return false;
+	const s = (row as { session: unknown }).session;
+	if (s === null) return true;
+	return typeof s === "object" && typeof (s as { id?: unknown }).id === "string";
+};
 
 const isRoutingDecision = (row: unknown): row is RoutingDecision =>
 	!!row && (row as { type?: unknown }).type === "routing";
+
+/** Shape guard for loop-cap telemetry rows. */
+const isLoopCapRow = (r: unknown): r is LoopCapRow => (r as { type?: unknown } | undefined)?.type === "loop-cap";
 
 const isWorkflowHeader = (row: unknown): row is WorkflowHeader =>
 	!!row &&
@@ -92,8 +136,39 @@ export function readAllStages(cwd: string, runId: string): WorkflowStage[] {
 	return readJsonlRows(cwd, runId, isWorkflowStage);
 }
 
+/**
+ * Resume-grade reader: same projection as `readAllStages`, but a row that is
+ * stage-SHAPED while failing the deep stage guard REFUSES instead of being
+ * skipped. Display readers may shrug off a malformed row; the resume fold
+ * replays the trail as its system of record, and silently dropping a row
+ * would replay a hole ("this stage never ran") — e.g. route onward past a
+ * stage whose failure row lost its `status`.
+ */
+export function readAllStagesForResume(
+	cwd: string,
+	runId: string,
+): { ok: true; rows: WorkflowStage[] } | { ok: false; detail: string } {
+	const rows: WorkflowStage[] = [];
+	for (const parsed of readParsedRows(cwd, runId)) {
+		if (isWorkflowStage(parsed) && hasValidSessionRef(parsed)) {
+			rows.push(parsed);
+			continue;
+		}
+		if (isStageShaped(parsed)) {
+			const label = typeof parsed.stage === "string" ? ` ("${parsed.stage}")` : "";
+			return { ok: false, detail: `stage row ${parsed.stageNumber}${label} failed the shape guard` };
+		}
+	}
+	return { ok: true, rows };
+}
+
 export function readRoutingDecisions(cwd: string, runId: string): RoutingDecision[] {
 	return readJsonlRows(cwd, runId, isRoutingDecision);
+}
+
+/** All loop-cap telemetry rows for a run, in trail order. */
+export function readLoopCaps(cwd: string, runId: string): LoopCapRow[] {
+	return readJsonlRows(cwd, runId, isLoopCapRow);
 }
 
 /**
@@ -128,68 +203,21 @@ export function listArtifacts(
 // ---------------------------------------------------------------------------
 
 /**
- * Read only the first JSONL line and parse it as a `WorkflowHeader`. Used
- * by `listRuns` so enumerating N past runs reads N first-lines instead
- * of fully parsing every row in every file. Returns undefined when the
- * file is missing, empty, or the first line doesn't match the header
- * shape.
+ * Read only the first JSONL line (a BOUNDED prefix read via
+ * `readFirstJsonlLine` — the file's stage rows are never loaded) and parse
+ * it as a `WorkflowHeader`. Used by `listRuns` so enumerating N past runs
+ * costs N small reads. Returns undefined when the file is missing, empty,
+ * or the first line doesn't match the header shape.
  *
  * Fail-soft like every other reader — never throws.
  *
  * Takes a concrete `runId`. For a user-supplied reference that may later need
- * symbolic resolution (`@latest`, relative), call `resolveRun` instead.
+ * symbolic resolution (`@latest`, relative), call `resolveRun` (resolve.ts)
+ * instead.
  */
 export function readHeader(cwd: string, runId: string): WorkflowHeader | undefined {
-	try {
-		const filePath = stateFilePath(cwd, runId);
-		if (!existsSync(filePath)) return undefined;
-		const content = readFileSync(filePath, "utf-8");
-		const firstLine = content.split("\n", 1)[0] ?? "";
-		if (!firstLine) return undefined;
-		const parsed = JSON.parse(firstLine);
-		return isWorkflowHeader(parsed) ? parsed : undefined;
-	} catch {
-		// Malformed JSON or I/O error — caller treats as "header unreadable".
-		return undefined;
-	}
-}
-
-/**
- * Resolve a run *reference* to its header — the ref-resolution seam.
- *
- * Which to call: reach for `resolveRun` when the ref is **user-supplied** (the
- * `/wf @<ref>` token, a CLI arg); reach for `readHeader` when you already hold
- * a concrete `runId` (e.g. straight off `RunSummary.runId`). The split is
- * intent, not behaviour.
- *
- * Resolution order:
- *  1. Check the names index (`names.json`) for a name → runId mapping on the
- *     RAW ref. If found and the target JSONL exists, return its header.
- *  2. Fall back to runId lookup via `readHeader`, on the ref normalized to a
- *     slug — a trailing `.jsonl` is stripped and any directory prefix is
- *     dropped (`basename`). This lets `/wf @<path>` accept an editor's
- *     file-autosuggested path to the run's JSONL (`.../runs/<id>.jsonl`),
- *     a bare `<id>.jsonl`, or the plain `<id>` slug interchangeably.
- *
- * Name lookup stays on the raw ref: a run name is never a path, so a name like
- * `auth.jsonl` (were it ever claimed) must match verbatim, not as a slug.
- *
- * Fail-soft like every reader — returns undefined when the ref doesn't resolve.
- * A missing or corrupt `names.json` degrades gracefully: the index lookup
- * returns `undefined` and the literal fallback runs.
- */
-export function resolveRun(cwd: string, ref: string): WorkflowHeader | undefined {
-	// Try the names index first — O(1) lookup for human-readable aliases.
-	// Matched on the raw ref: a name is never a path/`.jsonl` file.
-	const index = readNamesIndex(cwd);
-	if (index?.[ref]) {
-		const resolved = readHeader(cwd, index[ref]!);
-		if (resolved) return resolved;
-	}
-	// Fall back to runId lookup, tolerating a pasted/autosuggested path:
-	// reduce to the bare slug (drop dir prefix + trailing `.jsonl`).
-	const slug = basename(ref).replace(/\.jsonl$/, "");
-	return readHeader(cwd, slug);
+	const parsed = readFirstJsonlLine(cwd, runId);
+	return parsed !== undefined && isWorkflowHeader(parsed) ? parsed : undefined;
 }
 
 /**
@@ -207,18 +235,8 @@ export function resolveRun(cwd: string, ref: string): WorkflowHeader | undefined
  * `runId` is monotonic for runs created on the same host).
  */
 export function listRuns(cwd: string): RunSummary[] {
-	const dir = runsDir(cwd);
-	let entries: string[];
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		// Directory doesn't exist (no runs yet) or unreadable — treat as empty.
-		return [];
-	}
 	const summaries: RunSummary[] = [];
-	for (const name of entries) {
-		if (!name.endsWith(".jsonl")) continue;
-		const runId = name.slice(0, -".jsonl".length);
+	for (const runId of enumerateRunIds(cwd)) {
 		const header = readHeader(cwd, runId);
 		if (header)
 			summaries.push({

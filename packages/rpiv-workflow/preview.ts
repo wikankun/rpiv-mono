@@ -5,11 +5,20 @@
  * string that `command.ts` hands straight to `ctx.ui.notify(..., "info")`.
  */
 
-import type { StageDef, Workflow } from "./api.js";
+import { STOP, type StageDef } from "./api.js";
 import { type ConfigLayer, renderConfigLayer } from "./layers.js";
 import type { LoadedWorkflows } from "./load/index.js";
-import { CMD_USAGE_LIST, CMD_USAGE_PREVIEW, CMD_USAGE_RUN } from "./messages.js";
+import { type AnyJudgeSpec, describeFlow, type StageShape } from "./loop-constructors.js";
 import type { SkillContractMap } from "./skill-contract.js";
+
+/** No-args listing footer — generic usage hint. */
+export const CMD_USAGE_LIST = "Usage: /wf [workflow] <description>";
+
+/** No-args listing footer — preview-mode hint paired with CMD_USAGE_LIST. */
+export const CMD_USAGE_PREVIEW = "/wf <workflow>             — preview stages";
+
+/** Per-workflow details footer — narrowed to the workflow the user previewed. */
+export const CMD_USAGE_RUN = (name: string) => `Usage: /wf ${name} <description>`;
 
 // ===========================================================================
 // Public formatters
@@ -78,8 +87,12 @@ export function formatWorkflowDetails(loaded: LoadedWorkflows, name: string): st
 	const layer = loaded.workflowSources.get(name) ?? "built-in";
 	const heading = formatWorkflowHeading(name, layer, name === loaded.default);
 	const descriptionLine = workflow.description ? [workflow.description] : [];
+	// Flow facets (loop / verify / edge) come from `describeFlow` — the ONE
+	// introspector, so preview never lags a new loop kind. Per-stage knobs
+	// (kind, policy, outcome, schemas) are plain field reads off the def.
+	const shapeByStage = new Map(describeFlow(workflow).map((shape) => [shape.stage, shape]));
 	const stageRows = Object.entries(workflow.stages).map(([stageName, stage], i) =>
-		formatStageRow(i + 1, stageName, stage, workflow),
+		formatStageRow(i + 1, stageName, stage, shapeByStage.get(stageName)!, stageName in workflow.edges),
 	);
 	const aliasBanner = formatAliasBanner(loaded.skillAliases);
 
@@ -106,20 +119,29 @@ function formatWorkflowHeading(name: string, layer: ConfigLayer, isDefault: bool
 }
 
 /** Numbered row showing the stage + its outgoing edge target(s). */
-function formatStageRow(idx: number, stageName: string, stage: StageDef, workflow: Workflow): string {
+function formatStageRow(
+	idx: number,
+	stageName: string,
+	stage: StageDef,
+	shape: StageShape,
+	edgeDeclared: boolean,
+): string {
 	const num = `${idx}.`.padEnd(3);
 	const decorations = [stage.kind.padEnd(13), stage.sessionPolicy, outcomeTag(stage)];
 	if (stage.inputSchema) decorations.push("in-schema");
 	if (stage.outputSchema) decorations.push("out-schema");
+	if (shape.control.mode !== "single") decorations.push(loopTag(shape.control));
+	if (shape.verify) decorations.push(verifyTag(shape.verify));
+	const fanin = faninTag(shape);
+	if (fanin) decorations.push(fanin);
 
-	const displayName = stage.skill && stage.skill !== stageName ? `${stageName} (skill: ${stage.skill})` : stageName;
-	const arrow = formatEdge(workflow, stageName);
+	const displayName = shape.skill && shape.skill !== stageName ? `${stageName} (skill: ${shape.skill})` : stageName;
+	const arrow = formatEdge(shape.edge, edgeDeclared);
 	const trailer = arrow ? `  → ${arrow}` : "";
 
 	return `  ${num} ${displayName.padEnd(36)} ${decorations.join(" · ")}${trailer}`;
 }
 
-/**
 /**
  * Single tag per stage encoding the outcome shape. Custom outcomes
  * report `custom` (+`snapshot` when the collector declares a snapshot
@@ -139,15 +161,66 @@ function outcomeTag(stage: StageDef): string {
 	return stage.kind === "produces" ? "???" : "side-effect";
 }
 
-/** Render the outgoing edge as a human-readable trailer (string or predicate target set). */
-function formatEdge(workflow: Workflow, from: string): string | undefined {
-	const target = workflow.edges[from];
-	if (target === undefined) return "(terminal — no edge declared)";
-	if (target === "stop") return "stop";
-	if (typeof target === "string") return target;
-	const targets = target.targets;
-	if (Array.isArray(targets) && targets.length > 0) return `predicate(${targets.join(" | ")})`;
-	return "predicate";
+/**
+ * Decoration for a loop stage. Assess keeps its exact pre-redesign strings
+ * (`assess(judge: skill:<name>)·max=N`, `assess(judge: prompt)·max=N` — the
+ * constructor always sets `max`, defaulting to 8). Fanout/iterate gain tags
+ * for the first time: `fanout·max=32`, `iterate·max=32`, or the bare kind
+ * when no cap is declared (the run-wide maxIterations still backstops).
+ */
+function loopTag(control: StageShape["control"]): string {
+	const spec = control.spec;
+	if (!spec) return control.mode;
+	if (spec.kind === "assess") {
+		const judge = spec.judge ? judgeSlotTag(spec.judge) : "prompt";
+		return `assess(judge: ${judge})·max=${spec.max}`;
+	}
+	return spec.max !== undefined ? `${spec.kind}·max=${spec.max}` : spec.kind;
+}
+
+/**
+ * Render a judge SLOT for a stage tag: `skill:<name>` / `prompt` for a single
+ * judge, or `panel(<N>, <fold>)` for an N-member panel (`fold` is the sugar
+ * name or `custom`) — the fan-in surfaces at a glance.
+ */
+function judgeSlotTag(spec: AnyJudgeSpec): string {
+	if ("panel" in spec) return `panel(${spec.panel.length}, ${spec.fold})`;
+	return spec.skill ? `skill:${spec.skill}` : "prompt";
+}
+
+/**
+ * Decoration for a stage that reads ALL accumulated entries of one or more
+ * channels via `fanin()` — the fanout-and-synthesize fan-in barrier: `⇉ <names>`.
+ * Mirrors the `panel(N, fold)` fan-in surfacing on judge slots — the merge point
+ * shows at a glance. Latest-wins (bare-string) reads are unmarked.
+ */
+function faninTag(shape: StageShape): string | undefined {
+	const allReads = shape.reads?.filter((r) => r.all).map((r) => r.name);
+	return allReads?.length ? `⇉ ${allReads.join(",")}` : undefined;
+}
+
+/**
+ * Decoration for a verify-bearing stage: `verify(skill:<name>)` /
+ * `verify(prompt)` / `verify(panel(N, fold))`, with the attempt budget appended
+ * when retrying (`·attempts=N`); a gate-only verify (the default, max 1) stays
+ * compact.
+ */
+function verifyTag(v: NonNullable<StageShape["verify"]>): string {
+	const attempts = v.max > 1 ? `·attempts=${v.max}` : "";
+	return `verify(${judgeSlotTag(v)})${attempts}`;
+}
+
+/**
+ * Render the outgoing edge as a human-readable trailer from the introspected
+ * `StageShape.edge`. `describeFlow` collapses "no edge declared" and an
+ * explicit `STOP` into one `terminal` mode; the declared-or-not distinction
+ * is a one-key lookup the caller supplies (it matters to authors — the
+ * validator warns on the undeclared form).
+ */
+function formatEdge(edge: StageShape["edge"], declared: boolean): string | undefined {
+	if (edge.mode === "terminal") return declared ? STOP : "(terminal — no edge declared)";
+	if (edge.mode === "linear") return edge.targets?.[0];
+	return edge.targets?.length ? `predicate(${edge.targets.join(" | ")})` : "predicate";
 }
 
 /** "Sources: built-in + user + project" — single-line layer banner. */
@@ -178,7 +251,7 @@ function formatContractsBanner(contracts: SkillContractMap): string | undefined 
 	let harvested = 0;
 	for (const c of contracts.values()) {
 		if (c.source === "declared") declared++;
-		else if (c.source === "harvested") harvested++;
+		else harvested++;
 	}
 	return `Skill contracts: ${declared} declared, ${harvested} harvested`;
 }

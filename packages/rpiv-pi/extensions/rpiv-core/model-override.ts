@@ -21,6 +21,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { parseModelKey } from "@juicesharp/rpiv-config";
+// Type-only — erased at runtime, so safe when the rpiv-workflow sibling is
+// absent (the value import of registerLifecycle stays dynamic + guarded).
+import type { LifecycleContext, StageRef, UnitEvent } from "@juicesharp/rpiv-workflow/registration";
 import { loadModelsConfig, type ModelThinkingLevelValue, resolveStageModel } from "./models-config.js";
 import { isModuleNotFound, isStaleCtxError } from "./utils.js";
 
@@ -228,6 +231,36 @@ export async function restoreBaseline(pi: ExtensionAPI, base: BaselineSnapshot):
 }
 
 /**
+ * The ONE override cascade — shared by onStageStart (per-stage) and
+ * onUnitStart (per-unit). Resolves through models.json with the dispatched
+ * skill, applies effective model + thinking, and records hasModelChange.
+ * setBaselineModel=true enforces the D7 no-bleedthrough invariant: an
+ * unconfigured stage/unit reverts to baseline, not the previous override.
+ */
+async function applyCascade(
+	pi: ExtensionAPI,
+	target: { workflow: string; stage: string; skill: string | undefined },
+	label: string,
+): Promise<void> {
+	if (!baselineCaptured || !baseline) return;
+
+	const config = loadModelsConfig();
+	const override = resolveStageModel(config, target);
+
+	await applyOrSkipIfStale(async () => {
+		const { hasModelChange } = await applyEffectiveModel(pi, {
+			overrideModel: override?.model,
+			baselineModel: baseline!.model,
+			overrideThinking: override?.thinking,
+			baselineThinking: baseline!.thinking,
+			label,
+			setBaselineModel: true,
+		});
+		baseline!.hasModelChange = hasModelChange;
+	});
+}
+
+/**
  * Register the stage model override lifecycle listener with rpiv-workflow.
  * Call from index.ts with pi — NOT from registerBuiltInWorkflows.
  */
@@ -254,38 +287,33 @@ export async function registerModelOverrideLifecycle(pi: ExtensionAPI): Promise<
 				});
 			},
 
-			onStageStart: async (stage: { name: string; skill?: string }, ctx: { workflow: string }) => {
-				// Parameter shape mirrors rpiv-workflow's lifecycle:
-				//   - StageRef ("skill"|"script" arm) carries `name` (workflow graph key)
-				//     and (on the "skill" arm) `skill` (post-alias target, see
-				//     `load/alias.ts:44-46`).
-				//   - LifecycleContext carries `workflow` (the active workflow's name,
-				//     fed in by `defineWorkflow({ name })` or built-in registration).
-				// `stage.skill` is `undefined` for script stages — `resolveStageModel`
-				// handles that by skipping the skills cascade rung.
-				if (!baselineCaptured || !baseline) return;
+			onStageStart: async (stage: StageRef, ctx: LifecycleContext) => {
+				// StageRef is discriminated on `kind` — only the "skill" arm carries
+				// `skill` (the post-alias dispatch target). Script stages pass
+				// `undefined`, and `resolveStageModel` skips the skills cascade rung.
+				await applyCascade(
+					pi,
+					{
+						workflow: ctx.workflow,
+						stage: stage.name,
+						skill: stage.kind === "skill" ? stage.skill : undefined,
+					},
+					`stage "${stage.name}"`,
+				);
+			},
 
-				const config = loadModelsConfig();
-				const override = resolveStageModel(config, {
-					workflow: ctx.workflow,
-					stage: stage.name,
-					skill: stage.skill,
-				});
-
-				// Apply effective model + thinking via the shared helper.
-				// setBaselineModel=true enforces the D7 no-bleedthrough invariant:
-				// unconfigured stages revert to baseline, not the previous stage's override.
-				await applyOrSkipIfStale(async () => {
-					const { hasModelChange } = await applyEffectiveModel(pi, {
-						overrideModel: override?.model,
-						baselineModel: baseline!.model,
-						overrideThinking: override?.thinking,
-						baselineThinking: baseline!.thinking,
-						label: `stage "${stage.name}"`,
-						setBaselineModel: true,
-					});
-					baseline!.hasModelChange = hasModelChange;
-				});
+			onUnitStart: async (stage: StageRef, unit: UnitEvent, ctx: LifecycleContext) => {
+				// Per-unit model resolution through the SAME cascade onStageStart uses,
+				// with the unit's dispatched skill: produce units re-resolve the stage's
+				// own override (idempotent re-apply); JUDGE units resolve
+				// `skills.<judge.skill>` — judges get their own model for the first time.
+				// Units run strictly sequentially, so the global setModel flip is
+				// race-free.
+				await applyCascade(
+					pi,
+					{ workflow: ctx.workflow, stage: stage.name, skill: unit.skill },
+					`unit "${stage.name} (${unit.skill})"`,
+				);
 			},
 
 			onWorkflowEnd: async () => {

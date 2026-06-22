@@ -3,10 +3,11 @@
  * on the success path, when git isn't on PATH, and when the working
  * tree isn't a git repo.
  *
- * The outcome is fail-soft by contract: every git error path collapses
- * to a `noOp: true` payload so the workflow keeps moving. These tests
- * pin that contract — a regression that converts a failure into a throw
- * would surface here as an unhandled rejection.
+ * Failure posture (C10): no-baseline (not a git repo at snapshot time) and
+ * HEAD-unchanged degrade to an honest `noOp: true` payload; git WORKING at
+ * snapshot time but FAILING after the stage is `fatal` — fabricating noOp
+ * there would let `gate` route on invented data. The parser is pure: it
+ * never shells git and goes fatal on a foreign `meta` shape.
  */
 
 import { execSync } from "node:child_process";
@@ -14,7 +15,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CollectCtx, ParseCtx, SnapshotCtx } from "../output.js";
+import type { CollectCtx, ParseCtx, SnapshotCtx } from "../output-spec.js";
 import {
 	type GitHeadSnapshot,
 	gitCommitCollector,
@@ -43,22 +44,7 @@ const snapshotCtx = (cwd: string): SnapshotCtx => ({
 	cwd,
 	runId: "test-run",
 	stageIndex: 0,
-	state: {
-		originalInput: "",
-		primaryArtifact: undefined,
-		output: undefined,
-		named: {},
-		stagesCompleted: 0,
-		lastAllocatedStageNumber: 0,
-		telemetry: {
-			backwardJumps: 0,
-			droppedRoutingRows: [],
-		},
-		termination: {
-			success: false,
-			error: undefined,
-		},
-	},
+	state: { originalInput: "", output: undefined, named: {} },
 });
 
 const collectCtx = (cwd: string, snapshot: GitHeadSnapshot | undefined): CollectCtx<GitHeadSnapshot | undefined> => ({
@@ -159,16 +145,18 @@ describe.runIf(hasGit)("gitCommitOutcome end-to-end", () => {
 		expect(result.payload.data.noOp).toBe(true);
 	});
 
-	it("emits noOp payload when cwd is not a git repo (collectCommitData returns null)", async () => {
-		// Synthesize a snapshot with a fake baseline; collect runs in a non-repo cwd.
+	it("goes FATAL when git worked at snapshot time but fails after the stage (C10)", async () => {
+		// Synthesize a snapshot with a fake baseline; collect runs in a non-repo
+		// cwd — the environment broke mid-stage. Pre-fix this fabricated a
+		// noOp payload and `gate` routed on invented data.
 		const result = await runOutcome(tmpDir, { baselineSha: "deadbeef" });
-		expect(result.kind).toBe("ok");
-		if (result.kind !== "ok") return;
-		expect(result.payload.data.noOp).toBe(true);
+		expect(result.kind).toBe("fatal");
+		if (result.kind !== "fatal") return;
+		expect(result.message).toContain("git rev-parse HEAD failed after the stage");
 	});
 });
 
-describe("gitCommitCollector always emits one artifact (the commit handle)", () => {
+describe.runIf(hasGit)("gitCommitCollector emits one meta-complete artifact on non-fatal paths", () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
@@ -179,16 +167,74 @@ describe("gitCommitCollector always emits one artifact (the commit handle)", () 
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("emits role:'commit' opaque handle with the post-stage SHA (or empty when unavailable)", async () => {
-		const collected = await gitCommitCollector.collect(collectCtx(tmpDir, { baselineSha: "abc" }));
+	it("emits role:'commit' opaque handle whose meta carries the COMPLETE fact (parser stays pure)", async () => {
+		initRepo(tmpDir);
+		const snap = await gitHeadSnapshot(snapshotCtx(tmpDir));
+		writeFileSync(join(tmpDir, "a.txt"), "hello\n");
+		execSync("git add a.txt", { cwd: tmpDir });
+		execSync('git commit -q -m "add a"', { cwd: tmpDir });
+
+		const collected = await gitCommitCollector.collect(collectCtx(tmpDir, snap));
 		expect(collected.kind).toBe("ok");
 		if (collected.kind !== "ok") return;
 		expect(collected.artifacts).toHaveLength(1);
 		expect(collected.artifacts[0]?.role).toBe("commit");
 		expect(collected.artifacts[0]?.handle.kind).toBe("opaque");
+		// Subject + filesChanged interrogated at COLLECT time — the parser
+		// never shells git.
+		const meta = collected.artifacts[0]?.meta as Record<string, unknown>;
+		expect(meta.subject).toBe("add a");
+		expect(meta.filesChanged).toBe(1);
+		expect(meta.noOp).toBe(false);
+	});
+
+	it("emits a baselineMissing no-op artifact when the snapshot found no repo", async () => {
+		const collected = await gitCommitCollector.collect(collectCtx(tmpDir, undefined));
+		expect(collected.kind).toBe("ok");
+		if (collected.kind !== "ok") return;
+		expect(collected.artifacts).toHaveLength(1);
+		const meta = collected.artifacts[0]?.meta as Record<string, unknown>;
+		expect(meta.baselineMissing).toBe(true);
+		expect(meta.noOp).toBe(true);
+	});
+});
+
+describe("gitCommitParser is pure and validates its meta contract (C10)", () => {
+	const parseWith = (artifacts: ParseCtx<GitHeadSnapshot | undefined>["artifacts"]) =>
+		gitCommitParser.parse({ ...collectCtx("/nonexistent", undefined), artifacts });
+
+	it("goes fatal when handed an artifact with a foreign meta shape", async () => {
+		const result = await parseWith([{ handle: { kind: "opaque", id: "x" }, role: "commit", meta: { sha: 42 } }]);
+		expect(result.kind).toBe("fatal");
+		if (result.kind !== "fatal") return;
+		expect(result.message).toContain("gitCommitParser requires the meta gitCommitCollector emits");
+	});
+
+	it("goes fatal when handed no artifact at all", async () => {
+		const result = await parseWith([]);
+		expect(result.kind).toBe("fatal");
+	});
+
+	it("projects a complete meta into GitCommitData without any I/O", async () => {
+		const result = await parseWith([
+			{
+				handle: { kind: "opaque", id: "feed" },
+				role: "commit",
+				meta: {
+					baselineSha: "dead",
+					headSha: "feed",
+					baselineMissing: false,
+					noOp: false,
+					subject: "add a",
+					filesChanged: 3,
+				},
+			},
+		]);
+		expect(result.kind).toBe("ok");
+		if (result.kind !== "ok") return;
+		expect(result.payload.data).toEqual({ sha: "feed", prevSha: "dead", subject: "add a", filesChanged: 3 });
 	});
 });
 
 // Suppress unused-import lint when this file runs without git on PATH.
 void existsSync;
-void gitCommitParser;

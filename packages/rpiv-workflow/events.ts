@@ -11,7 +11,7 @@
  *     disposer; multiple registrations fan out per event.
  *
  * Every event fires AFTER the corresponding JSONL row lands on disk
- * (onStageEnd / onStageError / onRoute / onFanoutUnitEnd). Listeners
+ * (onStageEnd / onStageError / onRoute / onUnitEnd). Listeners
  * thus see consistent state when they read past rows via
  * `readLastStage` / `readAllStages`.
  *
@@ -26,17 +26,17 @@
  * caller through the existing path.
  */
 
-import type { FanoutUnit } from "./api.js";
+import type { CapPolicy, Unit, UnitRole } from "./api.js";
+import { formatError, globalSlot } from "./internal-utils.js";
 import { MSG_LIFECYCLE_THREW } from "./messages.js";
-import type { Output } from "./output.js";
-import type { RunWorkflowResult } from "./runner/runner.js";
+import type { Output, RunView } from "./output.js";
 import type { RunTrigger } from "./triggers.js";
-import type { RunState } from "./types.js";
+import type { RunWorkflowResult } from "./types.js";
 
 /**
  * Run-scoped context shared by every lifecycle callback. Mirrors the
  * shape `EdgeContext` and `FanoutContext` already use (frozen identity
- * + `Readonly<RunState>`) so listeners reconstruct "where am I" without
+ * + the deep-readonly `RunView`) so listeners reconstruct "where am I" without
  * widening the per-event payload.
  */
 export interface LifecycleContext {
@@ -46,7 +46,7 @@ export interface LifecycleContext {
 	totalStages: number;
 	/** What triggered this run; defaulted at `runWorkflow` entry if `options.trigger` was omitted. */
 	trigger: RunTrigger;
-	state: Readonly<RunState>;
+	state: RunView;
 }
 
 /**
@@ -64,12 +64,54 @@ export type StageRef =
 	| { kind: "script"; name: string; stageNumber: number };
 
 /**
+ * Payload for `onLoopStart`. `units` is present only when the loop
+ * precomputes its unit list (fanout) — pull loops (iterate/assess) discover
+ * units one at a time, so listeners observe them via `onUnitStart`.
+ * `kind: "verify"` is a verify-bearing stage (a desugared attempt→verify
+ * loop) — verified stages follow loop semantics: observe units, not
+ * `onStageEnd`.
+ */
+export interface LoopStartInfo {
+	kind: "fanout" | "iterate" | "assess" | "verify";
+	units?: readonly Unit[];
+}
+
+/**
+ * Per-unit event payload. `skill` is the unit's DISPATCHED skill body — the
+ * parent stage's skill for produce units, the judge's own skill (or the
+ * synthetic `<parent>-judge` label for prompt judges) for judge units — so a
+ * model-override listener can resolve a per-unit model through the existing
+ * `models.json` cascade (`skills.<name>`) without new configuration axes.
+ */
+export interface UnitEvent {
+	role: UnitRole;
+	/** 0-based generation cursor (== the round index for assess loops). */
+	index: number;
+	/** Stable audit identity (`unit.id ?? unit.label`); undefined for assess units. */
+	unitId?: string;
+	/** Display tag (`"phase 2/5"`, `"r0·judge"`). */
+	label: string;
+	/** Dispatched skill body. */
+	skill: string;
+}
+
+/** Payload for `onLoopCap` — fired when a loop's effective cap trips. */
+export interface LoopCapInfo {
+	kind: LoopStartInfo["kind"];
+	/** Units run (fanout/iterate) or rounds run (assess) when the cap tripped. */
+	count: number;
+	/** The effective cap: `min(loop.max, run.maxIterations)`. */
+	max: number;
+	policy: CapPolicy;
+}
+
+/**
  * Opt-in lifecycle listeners. Single subscriber per slot per bundle —
  * fan-out is a userland wrapper. Every callback may return a Promise;
  * the runner awaits it before advancing (back-pressure for free).
  *
  * Every event fires AFTER its corresponding JSONL row lands on disk
- * (onStageEnd / onStageError / onRoute / onFanoutUnitEnd), so a
+ * (onStageEnd / onStageError / onRoute / onUnitEnd), so a
  * listener that calls `readLastStage(cwd, ctx.runId)` from inside the
  * callback is guaranteed to observe the just-recorded row.
  *
@@ -88,8 +130,10 @@ export type StageRef =
  *   onStageRetry:    (stage, attempt)      => console.warn(`  ⟲ ${stage.name} retry #${attempt}`),
  *   onStageError:    (stage, error)        => console.error(`  ✗ ${stage.name}: ${error}`),
  *   onRoute:         (from, to)            => console.log(`  ↪ ${from.name} → ${to}`),
- *   onFanoutStart:   (stage, units)        => console.log(`  ⇉ ${stage.name} × ${units.length}`),
- *   onFanoutUnitEnd: (stage, _u, i)        => console.log(`     · ${stage.name} #${i}`),
+ *   onLoopStart:     (stage, info)         => console.log(`  ⇉ ${stage.name} [${info.kind}]`),
+ *   onUnitStart:     (stage, u)            => console.log(`     → ${u.label} (${u.role})`),
+ *   onUnitEnd:       (stage, u)            => console.log(`     · ${stage.name} #${u.index}`),
+ *   onLoopCap:       (stage, c)            => console.warn(`  ⚠ ${stage.name} capped at ${c.max}`),
  *   onWorkflowEnd:   (result)              =>
  *     console.log(result.success ? "✓ done" : `✗ ${result.error ?? "halted"}`),
  * };
@@ -126,19 +170,22 @@ export interface LifecycleListeners {
 	/** After an `EdgeFn` picks and its routing-decision row lands. `to` may be the `STOP` sentinel literal `"stop"`. */
 	onRoute?(from: StageRef, to: string, ctx: LifecycleContext): void | Promise<void>;
 
-	/** After the `FanoutFn` returns ≥1 units; before unit 1's session opens. */
-	onFanoutStart?(stage: StageRef, units: readonly FanoutUnit[], ctx: LifecycleContext): void | Promise<void>;
+	/** After `onStageStart`, before unit 1's session (after the unit list is computed for fanout). */
+	onLoopStart?(stage: StageRef, info: LoopStartInfo, ctx: LifecycleContext): void | Promise<void>;
 
-	/** Per-unit, before the unit's session opens. `unitIndex` is 1-based. */
-	onFanoutUnitStart?(
-		stage: StageRef,
-		unit: FanoutUnit,
-		unitIndex: number,
-		ctx: LifecycleContext,
-	): void | Promise<void>;
+	/**
+	 * Per unit, BEFORE the unit's session opens — fired uniformly for produce
+	 * AND judge units (closing the judge pre-session gap). This is the seam a
+	 * model-override listener flips `pi.setModel` on; units run strictly
+	 * sequentially, so the global flip is race-free.
+	 */
+	onUnitStart?(stage: StageRef, unit: UnitEvent, ctx: LifecycleContext): void | Promise<void>;
 
-	/** Per-unit, after the unit's JSONL row lands. */
-	onFanoutUnitEnd?(stage: StageRef, unit: FanoutUnit, unitIndex: number, ctx: LifecycleContext): void | Promise<void>;
+	/** Per unit, after the unit's JSONL row lands. Loop units never fire `onStageEnd`. */
+	onUnitEnd?(stage: StageRef, unit: UnitEvent, output: Output, ctx: LifecycleContext): void | Promise<void>;
+
+	/** After an `onCap: "advance"` trip — fired after the `{type:"loop-cap"}` telemetry row append attempt. */
+	onLoopCap?(stage: StageRef, info: LoopCapInfo, ctx: LifecycleContext): void | Promise<void>;
 
 	/** Last call — `result` is the same envelope `runWorkflow` returns. */
 	onWorkflowEnd?(result: RunWorkflowResult, ctx: LifecycleContext): void | Promise<void>;
@@ -180,8 +227,7 @@ export class LifecycleDispatcher {
 			try {
 				await (fn as (...a: unknown[]) => unknown)(...(args as unknown[]));
 			} catch (e) {
-				const reason = e instanceof Error ? e.message : String(e);
-				host.ui.notify(MSG_LIFECYCLE_THREW(event, reason), "warning");
+				host.ui.notify(MSG_LIFECYCLE_THREW(event, formatError(e)), "warning");
 			}
 		}
 	}
@@ -198,17 +244,7 @@ export class LifecycleDispatcher {
  */
 const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:lifecycle");
 
-type Global = Record<symbol, unknown>;
-
-function getRegistry(): LifecycleListeners[] {
-	const g = globalThis as unknown as Global;
-	let registry = g[REGISTRY_KEY] as LifecycleListeners[] | undefined;
-	if (!registry) {
-		registry = [];
-		g[REGISTRY_KEY] = registry;
-	}
-	return registry;
-}
+const getRegistry = globalSlot(REGISTRY_KEY, () => [] as LifecycleListeners[]);
 
 /**
  * Register a cross-package lifecycle-listener bundle. Returns a disposer
@@ -258,9 +294,57 @@ export function buildLifecycleContext(args: {
 	workflow: string;
 	totalStages: number;
 	trigger: RunTrigger;
-	state: Readonly<RunState>;
+	state: RunView;
 }): LifecycleContext {
 	return args;
+}
+
+/**
+ * Build a `LifecycleContext` from the current `RunContext` (typed
+ * structurally so this base-layer module never imports the runtime types).
+ * Captured per fire so listeners always see the latest `state` snapshot.
+ * THE one RunContext → LifecycleContext projection — the runner, the loop
+ * driver, and the resume entries all share it (the old per-module clones
+ * were kept aligned only by convention).
+ */
+export function lifecycleCtxFor(run: {
+	cwd: string;
+	runId: string;
+	workflow: { name: string };
+	totalStages: number;
+	trigger: RunTrigger;
+	state: RunView;
+}): LifecycleContext {
+	return buildLifecycleContext({
+		cwd: run.cwd,
+		runId: run.runId,
+		workflow: run.workflow.name,
+		totalStages: run.totalStages,
+		trigger: run.trigger,
+		state: run.state,
+	});
+}
+
+/**
+ * Build a `LifecycleContext` from any SessionContext/AuditCtx-shaped object
+ * (cwd + runId + the frozen `runIdentity` + live state). The session, audit,
+ * and extraction layers all fire through this projection instead of
+ * re-spelling the six-field literal.
+ */
+export function lifecycleCtxFromSession(s: {
+	cwd: string;
+	runId: string;
+	runIdentity: { workflow: string; totalStages: number; trigger: RunTrigger };
+	state: RunView;
+}): LifecycleContext {
+	return buildLifecycleContext({
+		cwd: s.cwd,
+		runId: s.runId,
+		workflow: s.runIdentity.workflow,
+		totalStages: s.runIdentity.totalStages,
+		trigger: s.runIdentity.trigger,
+		state: s.state,
+	});
 }
 
 /** Build the `"skill"` arm of `StageRef`. */

@@ -25,7 +25,9 @@ const ctxOf = (branch: BranchEntry[]) => ({
 describe("toolCallCollector", () => {
 	it("throws when match or toArtifact are missing", () => {
 		// @ts-expect-error — intentional misuse
-		expect(() => toolCallCollector({})).toThrow(/required functions/);
+		expect(() => toolCallCollector({})).toThrow(/`match` is required/);
+		// @ts-expect-error — intentional misuse
+		expect(() => toolCallCollector({ match: () => true })).toThrow(/`toArtifact` is required/);
 	});
 
 	it("emits one artifact per matching tool call in branch order", async () => {

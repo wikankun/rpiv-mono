@@ -4,16 +4,23 @@
  * re-exports only the symbols the rest of the package consumes.
  */
 
-export { canCompose, legalNextSkills } from "./composition.js";
-
-export { buildEffectiveContracts, harvestStageContracts } from "./harvest.js";
 export {
+	adjudicateChannel,
+	type ChannelAdjudication,
+	canCompose,
+	compareDataChannel,
+	legalNextSkills,
+} from "./composition.js";
+export {
+	getBucketKindMappings,
 	getCompositionComparators,
 	getOutcomeDerivers,
 	type OutcomeDeriverFn,
+	registerBucketKindMapping,
 	registerCompositionComparator,
 	registerOutcomeDeriver,
-} from "./registries.js";
+} from "./extension-points.js";
+export { buildEffectiveContracts, harvestStageContracts } from "./harvest.js";
 export {
 	drainSkillContractCollisions,
 	drainSkillContractProviderErrors,
@@ -23,8 +30,8 @@ export {
 	registerSkillContractsProvider,
 } from "./registry.js";
 
-import { __resetRegistries } from "./registries.js";
-import { __resetRegistry } from "./registry.js";
+import { __resetExtensionPoints } from "./extension-points.js";
+import { __resetContractRegistry } from "./registry.js";
 
 /**
  * Test reset (wired into repo-wide setup). Clears the registry, pending lazy
@@ -32,6 +39,6 @@ import { __resetRegistry } from "./registry.js";
  * registries, and the flush latch so the next case starts clean.
  */
 export function __resetSkillContracts(): void {
-	__resetRegistry();
-	__resetRegistries();
+	__resetContractRegistry();
+	__resetExtensionPoints();
 }

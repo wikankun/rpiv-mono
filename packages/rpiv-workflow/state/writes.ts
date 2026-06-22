@@ -1,25 +1,27 @@
 /**
  * Fail-soft JSONL appends. Every public helper here is a thin wrapper
- * around `tryAppendJsonl` so the write protocol (mkdirSync + append +
- * stderr warn on throw) lives in one place — changes to atomicity,
- * checksums, or alternative storage backends touch this file and this
- * file only.
+ * around `tryAppendJsonl` so the WRITE protocol (mkdirSync + append +
+ * stderr warn on throw) lives in one place — changes to append atomicity
+ * or checksums touch this file only. This is NOT a full storage-backend
+ * seam: `reads.ts`, `raw.ts`, and `names.ts` hit `node:fs` directly, so
+ * swapping the backend means touching all of `state/` (a `RunStore` port
+ * is a known possible follow-up, deliberately deferred — M13).
  *
- *   writeHeader              — best-effort; discards the return.
+ *   writeHeader              — boolean; the runner refuses the run start on failure.
  *   appendStage              — boolean; allocator gates monotonic counters on it.
  *   appendRoutingDecision    — boolean; telemetry-not-state, dropped rows surface up.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
+import { formatError } from "../internal-utils.js";
 import { runsDir, stateFilePath } from "./paths.js";
-import type { RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js";
+import type { LoopCapRow, RoutingDecision, WorkflowHeader, WorkflowStage } from "./state.js";
 
 /**
  * Shared append primitive: ensure the runs directory exists, then
  * append one JSON-serialised row + newline. Returns true on success;
- * on any throw, warns to stderr and returns false. The three public
- * append helpers below are thin wrappers — `writeHeader` discards the
- * return (best-effort), the others gate counters / telemetry on it.
+ * on any throw, warns to stderr and returns false. The public append
+ * helpers below are thin wrappers — every caller gates on the boolean.
  */
 function tryAppendJsonl(cwd: string, runId: string, row: unknown): boolean {
 	try {
@@ -29,13 +31,19 @@ function tryAppendJsonl(cwd: string, runId: string, row: unknown): boolean {
 		appendFileSync(filePath, `${JSON.stringify(row)}\n`, "utf-8");
 		return true;
 	} catch (e) {
-		console.warn(`[rpiv-workflow] workflow state: ${e instanceof Error ? e.message : String(e)}`);
+		console.warn(`[rpiv-workflow] workflow state: ${formatError(e)}`);
 		return false;
 	}
 }
 
-export function writeHeader(cwd: string, header: WorkflowHeader): void {
-	tryAppendJsonl(cwd, header.runId, header);
+/**
+ * Returns true on successful write. A lost header makes the run unlistable
+ * (`listRuns` keys on line one) and unresumable (`resolveRun` can't find it)
+ * while stage rows still land — so `runWorkflow` refuses the run start on
+ * false, before anything has executed.
+ */
+export function writeHeader(cwd: string, header: WorkflowHeader): boolean {
+	return tryAppendJsonl(cwd, header.runId, header);
 }
 
 /** Returns true on successful write — callers gate counters on this. */
@@ -54,5 +62,14 @@ export function appendStage(cwd: string, runId: string, stage: WorkflowStage): b
  * for transient disk weather without preserving any invariant.
  */
 export function appendRoutingDecision(cwd: string, runId: string, row: RoutingDecision): boolean {
+	return tryAppendJsonl(cwd, runId, row);
+}
+
+/**
+ * Append a loop-cap telemetry row (an `onCap: "advance"` trip). Telemetry,
+ * not a reconstruction input — a dropped write degrades the trail but never
+ * gates the chain (the live soft-stop toast is the user-facing signal).
+ */
+export function appendLoopCap(cwd: string, runId: string, row: LoopCapRow): boolean {
 	return tryAppendJsonl(cwd, runId, row);
 }

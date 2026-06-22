@@ -76,7 +76,25 @@ export interface WorkflowHostContext {
 		setStatus(key: string, text: string | undefined): void;
 	};
 	sessionManager: {
+		/**
+		 * The session transcript (Pi: a message-union array with private
+		 * discriminators). DELIBERATELY `unknown` — naming a workflow-domain
+		 * type here would break the no-cast structural pass-through of Pi's
+		 * ctx. The runtime never calls this directly: `readBranch(ctx)`
+		 * (transcript.ts) is the single boundary that narrows the value to
+		 * `BranchEntry[]`, the workflow-domain transcript shape.
+		 */
 		getBranch(): unknown;
+		/**
+		 * Session identity + on-disk location of the active session — read by
+		 * `readSessionRef` (transcript.ts) so every stage row records which Pi
+		 * session backed it (`WorkflowStage.session`). `getSessionFile` is
+		 * `undefined` for non-persisting (in-memory) sessions. Both already
+		 * exist on Pi's `ReadonlySessionManager` — type-only widening; the
+		 * tripwire proves it.
+		 */
+		getSessionId(): string;
+		getSessionFile(): string | undefined;
 	};
 	waitForIdle(): Promise<void>;
 	/**
@@ -94,6 +112,18 @@ export interface WorkflowHostContext {
 	 * Inside a session use `WorkflowSessionContext`, where it is required.
 	 */
 	sendUserMessage?(content: string): Promise<void>;
+	/**
+	 * Reopen a persisted session file at its leaf and run `withSession` on
+	 * the replacement ctx — the resume promotion/reattach path
+	 * (`resumeStageWithSession`, run-stage.ts) adopts an interrupted stage's
+	 * session through this. Declared exactly like `newSession`; OPTIONAL like
+	 * `sendUserMessage` — only command-capable contexts carry it, and a host
+	 * without it degrades to cold re-run (the fallback ladder's rung 3).
+	 */
+	switchSession?(
+		sessionPath: string,
+		options: { withSession: (replacement: WorkflowSessionContext) => Promise<void> },
+	): Promise<{ cancelled: boolean }>;
 }
 
 /**

@@ -7,7 +7,7 @@ order: 6
 
 The idea behind `/wf` is small: compose skills as skills, on top of an existing coding agent, with each step in a **fresh session**, **scoped tools**, and a **verifiable handoff** to the next. The runtime nails two of those outright — a clean session per stage, and a typed contract between stages the runner checks before it lets the chain advance. Scoped tools sit at the skill layer; the sandbox is the host's job. This guide is about authoring the first two yourself.
 
-[Run a workflow](/docs/guides/run-a-workflow) is the consumer's tour — the five bundled chains and when to reach for each. This is the producer's: how to express your own chain as a typed graph, and the two stage capabilities that landed after the runtime's first cut — raw-text `prompt` dispatch and the sequential `iterate` mode.
+[Run a workflow](/docs/guides/run-a-workflow) is the consumer's tour — the six bundled chains and when to reach for each. This is the producer's: how to express your own chain as a typed graph, and the two stage capabilities that landed after the runtime's first cut — raw-text `prompt` dispatch and the sequential `iterate` mode.
 
 ## The graph is the program
 
@@ -144,7 +144,7 @@ Some stages do one thing per unit of work. There are two ways to split a stage i
 **`iterate`** is *pull*: the runner calls your `IterateFn` one unit at a time, feeding each call the validated outputs of every prior unit in the same stage. Return the next unit, or `null` to terminate. Each unit runs the stage's `outcome` collector exactly like a one-shot `produces` pass — it validates, appends its `Output` to `state.named[outcome.name]`, and rolls the primary forward. Reach for it when each unit must build on the last.
 
 ```ts
-import type { IterateFn } from "@juicesharp/rpiv-workflow";
+import { iterate, type IterateFn } from "@juicesharp/rpiv-workflow";
 
 // one blueprint pass per review phase,
 // each building on the plans already produced
@@ -162,7 +162,7 @@ const perPhase: IterateFn = ({ artifact, accumulated, index, cwd }) => {
   };
 };
 
-produces({ outcome: rpivBucketOutcome("plans"), iterate: perPhase })
+produces({ outcome: rpivBucketOutcome("plans"), loop: iterate({ next: perPhase }) })
 ```
 
 | | `fanout` | `iterate` |
@@ -185,8 +185,8 @@ const polishWorkflow = defineWorkflow({
   start: "architecture-review",
   stages: {
     "architecture-review": produces(),
-    blueprint: produces({ iterate: REVIEW_PHASE_ITERATE }),
-    implement: acts({ fanout: PLANS_PHASE_FANOUT, reads: ["plans"] }),
+    blueprint: produces({ loop: REVIEW_PHASE_ITERATE }),
+    implement: acts({ loop: PLANS_PHASE_FANOUT, reads: ["plans"] }),
     validate: produces({ prompt: VALIDATE_PLANS_PROMPT }),
     "code-review": produces(),
     commit: acts({ outcome: gitCommitOutcome }),
@@ -197,8 +197,8 @@ const polishWorkflow = defineWorkflow({
     implement: "validate",
     validate: "code-review",
     "code-review": gate("blockers_count", {
-      commit: eq(0),
       blueprint: gt(0),
+      commit: eq(0),
     }),
     commit: "stop",
   },
@@ -251,7 +251,7 @@ The piece worth circling back to is the agent authoring the graph itself. Writin
 
 ## Next steps
 
-- [Run a workflow](/docs/guides/run-a-workflow): the five bundled chains and the runtime surface, from the consumer's side
+- [Run a workflow](/docs/guides/run-a-workflow): the six bundled chains and the runtime surface, from the consumer's side
 - [Pick your path](/docs/guides/pick-a-path): the scope map the bundled workflows mirror
 - [Reset between skills](/docs/guides/reset-between-skills): the fresh-context rule the runner enforces for you
 - [Authoring reference](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-workflow/docs/workflow-authoring.md): every stage factory, the collector and parser catalogs, the full validation rules

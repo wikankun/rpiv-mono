@@ -7,6 +7,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelKey, parseModelKey } from "@juicesharp/rpiv-config";
 import { loadAdvisorConfig, validateDisabledForModels } from "./config.js";
+import { reconcileAdvisorTool } from "./handlers.js";
 import { ADVISOR_TOOL_NAME, errModelUnavailable, msgAdvisorRestored, msgAdvisorRestoredInactive } from "./messages.js";
 import { isExecutorBlocked, setDisabledForModels } from "./policy.js";
 import { setAdvisorEffort, setAdvisorModel } from "./state.js";
@@ -32,10 +33,32 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	setDisabledForModels(validateDisabledForModels(config.disabledForModels));
 
-	if (!config.modelKey) return;
+	// No usable advisor model → clear in-memory selection, then strip the tool
+	// (and its prompt block) from the active set. Clearing state mirrors the
+	// /advisor disable path (command.ts applyDisable): `selectedAdvisor` is
+	// module-level and persists across session_start fires, so leaving it stale
+	// would let the per-turn before_agent_start strip read a truthy model and
+	// re-add the very tool we just stripped (e.g. a configured model removed
+	// from the registry mid-process). The tool is registered active-by-default
+	// at load, so its promptSnippet/promptGuidelines otherwise linger in the
+	// base system prompt even though every advisor() call would fail with
+	// ERR_NO_MODEL. See issue #72.
+	const deactivate = (): void => {
+		setAdvisorModel(undefined);
+		setAdvisorEffort(undefined);
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
+	};
+
+	if (!config.modelKey) {
+		deactivate();
+		return;
+	}
 
 	const parsed = parseModelKey(config.modelKey);
-	if (!parsed) return;
+	if (!parsed) {
+		deactivate();
+		return;
+	}
 
 	const notifyOnce = (msg: string, level: "info" | "warning" | "error"): void => {
 		if (!ctx.hasUI || restoreAnnounced) return;
@@ -45,6 +68,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	const model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
 	if (!model) {
+		deactivate();
 		notifyOnce(errModelUnavailable(config.modelKey), "warning");
 		return;
 	}
@@ -55,6 +79,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 	}
 
 	if (isExecutorBlocked(ctx, pi.getThinkingLevel())) {
+		reconcileAdvisorTool(pi, ctx, { blocked: true });
 		const advisorLabel = modelKey(model);
 		notifyOnce(msgAdvisorRestoredInactive(advisorLabel, config.effort), "info");
 		return;

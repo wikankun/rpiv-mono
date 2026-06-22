@@ -9,10 +9,10 @@
  */
 
 import type { Workflow } from "../api.js";
-import { resolveSkill } from "../internal-utils.js";
+import { isDispatchingStage, resolveSkill } from "../chain-state.js";
 import { extractJsonSchema } from "../json-schema.js";
-import { isDispatchingStage } from "../load/alias.js";
 import type { ConsumesSpec, ProducesSpec, SkillContract } from "../skill-contract.js";
+import { readName } from "../stage-def.js";
 import { getSkillContracts } from "./registry.js";
 
 /**
@@ -44,7 +44,7 @@ export function harvestStageContracts(workflows: readonly Workflow[]): Map<strin
 			const skill = resolveSkill(stage, stageName);
 			const producesData = extractJsonSchema(stage.outputSchema);
 			const consumesData = extractJsonSchema(stage.inputSchema);
-			const reads = stage.reads?.length ? Object.fromEntries(stage.reads.map((r) => [r, {}])) : undefined;
+			const reads = stage.reads?.length ? Object.fromEntries(stage.reads.map((r) => [readName(r), {}])) : undefined;
 			const produces: ProducesSpec | undefined =
 				stage.kind === "produces" || producesData
 					? { kind: stage.kind, ...(producesData ? { data: producesData } : {}) } // real StageKind ("produces" | "side-effect")
@@ -66,7 +66,7 @@ export function harvestStageContracts(workflows: readonly Workflow[]): Map<strin
 
 /**
  * Build the effective registry the loader hands to validation + the runner:
- * `harvested` gap-fill first, then `declared`/injected contracts override per
+ * `harvested` gap-fill first, then registered (`declared`-source) contracts override per
  * skill (declared outranks harvested). Returns a NEW map — never mutates the
  * shared global registry returned by `getSkillContracts()`. Co-located with
  * `harvestStageContracts` because the merge precedence is contract-domain logic,

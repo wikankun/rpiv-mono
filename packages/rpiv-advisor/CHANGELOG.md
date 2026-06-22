@@ -7,6 +7,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Moved `typebox` from `peerDependencies` to `dependencies` (`^1.1.24`, matching the Pi host's range) so the tool's parameter schema resolves under installers that don't materialise peer deps. Fixes `ERR_MODULE_NOT_FOUND: typebox` on standalone consumer installs (#79).
+
+## [1.20.0] - 2026-06-15
+
+### Fixed
+- Restore now strips the advisor tool (and its prompt block) from the active set when there is no usable advisor model — missing config, an unparseable model key, or a model no longer in the registry. The tool is registered active-by-default at load, so its prompt snippet previously lingered in the base system prompt even though every `advisor()` call would fail with `ERR_NO_MODEL` (#72).
+- Clear the stale in-memory advisor selection on a no-model restore. The module-level selection persists across `session_start` fires, so a model removed from the registry mid-process would otherwise let the per-turn `before_agent_start` strip read a truthy model and re-add the tool just stripped — the strip now sticks.
+
 ## [1.19.1] - 2026-06-10
 
 ## [1.19.0] - 2026-06-09

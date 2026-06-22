@@ -2,11 +2,18 @@
  * Union collector — runs N collectors and concatenates their artifacts.
  *
  * Useful for the "look in transcript OR tool calls" pattern, or for
- * combining a workspace-diff scan with a transcript URL scan. The
- * sub-collectors run sequentially; their `snapshot` hooks are NOT
- * threaded (each collector gets its own snapshot only if it declares
- * one and is invoked through `OutputSpec.collector` directly — wrapping
- * collectors inside a union loses individual snapshots today).
+ * combining a workspace-diff scan with a transcript URL scan.
+ *
+ * Snapshot fanout: when any sub-collector declares a `snapshot` hook, the
+ * union declares one too — it captures every sub-collector's snapshot into a
+ * positional array and threads `snapshots[i]` back into sub-collector *i*'s
+ * `collect`. A diff-based collector (workspace-diff, git-commit) composed
+ * into a union therefore behaves exactly as it would standalone. When no
+ * sub-collector snapshots, the union declares no hook (zero cost). A
+ * sub-collector snapshot throw propagates to the runner's
+ * `captureStageSnapshot` (which warns once and degrades the WHOLE capture to
+ * `undefined`) — sub-collectors must tolerate an `undefined` snapshot, the
+ * same contract they honor standalone.
  *
  * Fatal policy: `unionCollectors` returns `fatal` only when EVERY
  * sub-collector returned fatal (carries the last fatal message for
@@ -25,17 +32,29 @@ import type { Artifact } from "../../handle.js";
 import type { ArtifactCollector, CollectResult } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
 
-export function unionCollectors(...collectors: ArtifactCollector[]): ArtifactCollector {
+/** Positional sub-collector snapshots; `undefined` when capture degraded or no sub declared one. */
+export type UnionSnapshot = unknown[] | undefined;
+
+export function unionCollectors(...collectors: ArtifactCollector[]): ArtifactCollector<UnionSnapshot> {
 	if (collectors.length === 0) {
 		throw new Error("unionCollectors: at least one collector is required");
 	}
-	return defineCollector({
+	const anySnapshots = collectors.some((c) => typeof c.snapshot === "function");
+	return defineCollector<UnionSnapshot>({
+		...(anySnapshots
+			? {
+					snapshot: async (ctx): Promise<unknown[]> =>
+						Promise.all(collectors.map(async (c) => (c.snapshot ? await c.snapshot(ctx) : undefined))),
+				}
+			: {}),
 		collect: async (ctx) => {
+			const snapshots = Array.isArray(ctx.snapshot) ? ctx.snapshot : undefined;
 			const all: Artifact[] = [];
 			let lastFatalMessage: string | undefined;
 			let everySubCollectorFatal = true;
-			for (const c of collectors) {
-				const result: CollectResult = await c.collect(ctx);
+			for (let i = 0; i < collectors.length; i++) {
+				const c = collectors[i]!;
+				const result: CollectResult = await c.collect({ ...ctx, snapshot: snapshots?.[i] });
 				if (result.kind === "fatal") {
 					lastFatalMessage = result.message;
 					continue;

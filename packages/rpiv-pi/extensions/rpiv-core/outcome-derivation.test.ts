@@ -5,9 +5,15 @@
  * calls from `built-in-workflows.ts` — derivation must reproduce them exactly.
  */
 
+import {
+	__resetSkillContracts,
+	getBucketKindMappings,
+	registerBucketKindMapping,
+} from "@juicesharp/rpiv-workflow/internal";
 import type { SkillContract, SkillContractMap, Workflow } from "@juicesharp/rpiv-workflow/registration";
 import { acts, defineWorkflow, produces } from "@juicesharp/rpiv-workflow/registration";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
 import { builtInWorkflows } from "./built-in-workflows.js";
 import { BUCKET_BY_KIND, deriveOutcomes } from "./outcome-derivation.js";
 
@@ -89,9 +95,14 @@ describe("deriveOutcomes", () => {
 		const contracts = contractsFromKinds([["s1", "plan"]]);
 		const issues: Array<{ message: string; severity: string }> = [];
 
-		deriveOutcomes([w], contracts, (message, severity) => {
-			issues.push({ message, severity });
-		});
+		deriveOutcomes(
+			[w],
+			contracts,
+			(message, severity) => {
+				issues.push({ message, severity });
+			},
+			new Map(),
+		);
 
 		expect(w.stages.s1.outcome).toBeDefined();
 		expect(w.stages.s1.outcome!.name).toBe("plans");
@@ -107,7 +118,7 @@ describe("deriveOutcomes", () => {
 		});
 		const contracts = contractsFromKinds([["s1", "plan"]]);
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.s1.outcome!.name).toBe("custom"); // unchanged
 	});
@@ -121,7 +132,7 @@ describe("deriveOutcomes", () => {
 		});
 		const contracts = contractsFromKinds([["s1", "plan"]]);
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.s1.outcome).toBeUndefined();
 	});
@@ -136,7 +147,7 @@ describe("deriveOutcomes", () => {
 		const contracts = new Map<string, SkillContract>();
 		contracts.set("s1", { source: "declared", produces: { kind: "side-effect" } });
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.s1.outcome).toBeUndefined();
 	});
@@ -151,9 +162,14 @@ describe("deriveOutcomes", () => {
 		const contracts = contractsFromKinds([["s1", "unknown-kind"]]);
 		const issues: Array<{ message: string; severity: string }> = [];
 
-		deriveOutcomes([w], contracts, (message, severity) => {
-			issues.push({ message, severity });
-		});
+		deriveOutcomes(
+			[w],
+			contracts,
+			(message, severity) => {
+				issues.push({ message, severity });
+			},
+			new Map(),
+		);
 
 		expect(w.stages.s1.outcome).toBeUndefined(); // not wired
 		expect(issues).toHaveLength(1);
@@ -170,7 +186,7 @@ describe("deriveOutcomes", () => {
 		});
 		const contracts = new Map<string, SkillContract>();
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.s1.outcome).toBeUndefined();
 	});
@@ -184,7 +200,7 @@ describe("deriveOutcomes", () => {
 		});
 		const contracts = contractsFromKinds([["blueprint", "plan"]]);
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.blueprint.outcome!.name).toBe("plans");
 	});
@@ -198,7 +214,7 @@ describe("deriveOutcomes", () => {
 		});
 		const contracts = contractsFromKinds([["blueprint", "plan"]]);
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		expect(w.stages.s1.outcome!.name).toBe("plans");
 	});
@@ -217,7 +233,7 @@ describe("deriveOutcomes", () => {
 		}
 		const contracts = contractsFromKinds(skills.map((s) => [s, "plan"]));
 
-		deriveOutcomes([w], contracts, () => {});
+		deriveOutcomes([w], contracts, () => {}, new Map());
 
 		for (const skill of skills) {
 			expect(w.stages[skill].outcome?.name).toBe("plans");
@@ -304,9 +320,14 @@ describe("equivalence — built-in workflows", () => {
 			const stripped = stripOutcomes(w);
 			const issues: Array<{ message: string; severity: string }> = [];
 
-			deriveOutcomes([stripped], allContracts, (message, severity) => {
-				issues.push({ message, severity });
-			});
+			deriveOutcomes(
+				[stripped],
+				allContracts,
+				(message, severity) => {
+					issues.push({ message, severity });
+				},
+				new Map(),
+			);
 
 			for (const [stageName, stage] of Object.entries(stripped.stages)) {
 				const key = `${w.name}::${stageName}`;
@@ -359,6 +380,113 @@ describe("equivalence — built-in workflows", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Extended bucket mappings (registerBucketKindMapping)
+// ---------------------------------------------------------------------------
+
+describe("deriveOutcomes with extended bucket mappings", () => {
+	afterEach(() => {
+		__resetSkillContracts();
+	});
+
+	it("derives outcome from a registered bucket mapping for unknown artifactKind", () => {
+		registerBucketKindMapping("custom-artifact", "custom-bucket");
+		const w = defineWorkflow({
+			name: "test",
+			start: "s1",
+			stages: { s1: produces() },
+			edges: { s1: "stop" },
+		});
+		const contracts = contractsFromKinds([["s1", "custom-artifact"]]);
+
+		deriveOutcomes([w], contracts, () => {}, getBucketKindMappings());
+
+		expect(w.stages.s1.outcome).toBeDefined();
+		expect(w.stages.s1.outcome!.name).toBe("custom-bucket");
+	});
+
+	it("extended mapping overrides hardcoded BUCKET_BY_KIND entry", () => {
+		registerBucketKindMapping("plan", "my-custom-plans");
+		const w = defineWorkflow({
+			name: "test",
+			start: "s1",
+			stages: { s1: produces() },
+			edges: { s1: "stop" },
+		});
+		const contracts = contractsFromKinds([["s1", "plan"]]);
+
+		deriveOutcomes([w], contracts, () => {}, getBucketKindMappings());
+
+		expect(w.stages.s1.outcome).toBeDefined();
+		expect(w.stages.s1.outcome!.name).toBe("my-custom-plans");
+	});
+
+	it("warns ONCE per pass when a registered mapping overrides a built-in kind", () => {
+		registerBucketKindMapping("plan", "my-custom-plans");
+		const w = defineWorkflow({
+			name: "test",
+			start: "s1",
+			stages: { s1: produces(), s2: produces() },
+			edges: { s1: "s2", s2: "stop" },
+		});
+		const contracts = contractsFromKinds([
+			["s1", "plan"],
+			["s2", "plan"],
+		]);
+		const issues: Array<{ message: string; severity: string }> = [];
+
+		deriveOutcomes(
+			[w],
+			contracts,
+			(message, severity) => issues.push({ message, severity }),
+			getBucketKindMappings(),
+		);
+
+		// Both stages still derive the overriding bucket…
+		expect(w.stages.s1.outcome!.name).toBe("my-custom-plans");
+		expect(w.stages.s2.outcome!.name).toBe("my-custom-plans");
+		// …and the redirect surfaces exactly once, as a warning naming both buckets.
+		const warnings = issues.filter((i) => i.message.includes("overrides the built-in bucket"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]!.severity).toBe("warning");
+		expect(warnings[0]!.message).toContain('"plan"');
+		expect(warnings[0]!.message).toContain('"my-custom-plans"');
+		expect(warnings[0]!.message).toContain('"plans"');
+	});
+
+	it("does not warn when the registered mapping matches the built-in bucket", () => {
+		registerBucketKindMapping("plan", "plans");
+		const w = defineWorkflow({
+			name: "test",
+			start: "s1",
+			stages: { s1: produces() },
+			edges: { s1: "stop" },
+		});
+		const contracts = contractsFromKinds([["s1", "plan"]]);
+		const issues: string[] = [];
+
+		deriveOutcomes([w], contracts, (message) => issues.push(message), getBucketKindMappings());
+
+		expect(w.stages.s1.outcome!.name).toBe("plans");
+		expect(issues).toEqual([]);
+	});
+
+	it("hardcoded BUCKET_BY_KIND still works when no extended mapping is registered", () => {
+		const w = defineWorkflow({
+			name: "test",
+			start: "s1",
+			stages: { s1: produces() },
+			edges: { s1: "stop" },
+		});
+		const contracts = contractsFromKinds([["s1", "plan"]]);
+
+		deriveOutcomes([w], contracts, () => {}, new Map());
+
+		expect(w.stages.s1.outcome).toBeDefined();
+		expect(w.stages.s1.outcome!.name).toBe("plans");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Reload regression — peek semantics must re-wire outcomes on fresh stage
 // objects from overlay re-imports.
 // ---------------------------------------------------------------------------
@@ -375,7 +503,7 @@ describe("reload regression: deriveOutcomes re-wires on fresh stage objects", ()
 			edges: { s1: "stop" },
 		});
 		const mutable1 = { ...w1, stages: { s1: { ...w1.stages.s1 } } } as Workflow;
-		deriveOutcomes([mutable1], contracts, () => {});
+		deriveOutcomes([mutable1], contracts, () => {}, new Map());
 		expect(mutable1.stages.s1.outcome?.name).toBe("plans");
 
 		// Simulate reload: fresh stage objects (no outcome) from cache re-import
@@ -389,7 +517,7 @@ describe("reload regression: deriveOutcomes re-wires on fresh stage objects", ()
 		expect(mutable2.stages.s1.outcome).toBeUndefined(); // fresh — no outcome yet
 
 		// Second derivation pass on fresh objects (peek semantics)
-		deriveOutcomes([mutable2], contracts, () => {});
+		deriveOutcomes([mutable2], contracts, () => {}, new Map());
 		expect(mutable2.stages.s1.outcome?.name).toBe("plans");
 	});
 
@@ -403,14 +531,19 @@ describe("reload regression: deriveOutcomes re-wires on fresh stage objects", ()
 		});
 		const mutable = { ...w, stages: { s1: { ...w.stages.s1 } } } as Workflow;
 
-		deriveOutcomes([mutable], contracts, () => {});
+		deriveOutcomes([mutable], contracts, () => {}, new Map());
 		expect(mutable.stages.s1.outcome?.name).toBe("plans");
 
 		// Running again on the already-derived workflow is a no-op (explicit wins)
 		const issues: Array<{ message: string; severity: string }> = [];
-		deriveOutcomes([mutable], contracts, (message, severity) => {
-			issues.push({ message, severity });
-		});
+		deriveOutcomes(
+			[mutable],
+			contracts,
+			(message, severity) => {
+				issues.push({ message, severity });
+			},
+			new Map(),
+		);
 		expect(mutable.stages.s1.outcome?.name).toBe("plans"); // unchanged
 		expect(issues).toHaveLength(0);
 	});

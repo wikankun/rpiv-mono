@@ -1,6 +1,6 @@
 {
 	"name": "@juicesharp/rpiv-config",
-	"version": "1.19.1",
+	"version": "1.20.0",
 	"description": "Shared config I/O utilities for rpiv-mono sibling packages",
 	"keywords": [
 		"rpiv",
@@ -33,7 +33,7 @@
 	"exports": {
 		".": "./index.ts"
 	},
-	"peerDependencies": {
-		"typebox": "*"
+	"dependencies": {
+		"typebox": "^1.1.24"
 	}
 }

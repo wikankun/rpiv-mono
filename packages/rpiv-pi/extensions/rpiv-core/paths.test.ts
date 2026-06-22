@@ -1,6 +1,6 @@
 /**
- * Tests for `BUNDLED_SKILL_NAMES` enumeration — Q39 of the 2026-05-23
- * review. The eager IIFE swallowed `readdirSync` failures into an empty
+ * Tests for `BUNDLED_SKILL_NAMES` enumeration. The eager IIFE swallowed
+ * `readdirSync` failures into an empty
  * Set with no diagnostic, leaving `validateDag` to reject every skill
  * node as "unknown bundled skill" and the user with no hint that the
  * directory listing itself failed (stripped install, EACCES on the

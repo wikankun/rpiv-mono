@@ -10,7 +10,7 @@
  * packages with one canonical implementation.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,8 @@ export interface ShipManifestResult {
 	onDisk: readonly string[];
 	/** On-disk files NOT covered by the `files` array — these would be missing from the published tarball. */
 	missing: readonly string[];
+	/** `files` entries with no corresponding path on disk — ghost entries that ship nothing. */
+	stale: readonly string[];
 }
 
 /**
@@ -35,7 +37,14 @@ export interface ShipManifestResult {
  *
  * Skips: dotfiles/dotdirs, `node_modules`, `docs`, `*.test.ts`, `test-fixtures.ts`.
  * Does NOT check: asset directories (e.g. `locales/*.json`), `exports` map,
- * `main`/`module` fields, or extraneous entries in `files`.
+ * `main`/`module` fields.
+ *
+ * The check is two-way: `missing` flags on-disk production files the tarball
+ * would omit; `stale` flags `files` entries that point at nothing on disk
+ * (asset entries like `README.md` count as present — staleness is plain
+ * existence, not the production-`.ts` walk). `!`-prefixed negation patterns
+ * (the npm test-file exclusion glob, for instance) are exclusion rules, not
+ * paths — they are skipped by both checks.
  */
 export function verifyShipManifest(packageDirOrUrl: string): ShipManifestResult {
 	const packageDir = packageDirOrUrl.startsWith("file:") ? dirname(fileURLToPath(packageDirOrUrl)) : packageDirOrUrl;
@@ -45,6 +54,13 @@ export function verifyShipManifest(packageDirOrUrl: string): ShipManifestResult 
 	const exactFiles = new Set<string>();
 	const dirPrefixes: string[] = [];
 	for (const entry of declared) {
+		// `!`-prefixed entries are npm negation/exclusion patterns (the
+		// test-file exclusion glob, for instance), not paths on disk — they
+		// carve files OUT of the tarball rather than declaring inclusion, so
+		// they neither cover an on-disk file nor count toward staleness. The
+		// production-`.ts` walk already omits test files, so the common
+		// test-file exclusion has no effect on the `missing` computation.
+		if (entry.startsWith("!")) continue;
 		// Treat trailing-slash entries AND bare directory names that exist on
 		// disk as recursive directory inclusion — matches npm's own `files`
 		// semantics so the test answers "would npm publish actually include this?"
@@ -58,8 +74,9 @@ export function verifyShipManifest(packageDirOrUrl: string): ShipManifestResult 
 
 	const onDisk = walkProductionTs(packageDir, packageDir);
 	const missing = onDisk.filter((f) => !isCovered(f, exactFiles, dirPrefixes));
+	const stale = declared.filter((entry) => !entry.startsWith("!") && !existsSync(resolve(packageDir, entry)));
 
-	return { declared, onDisk, missing };
+	return { declared, onDisk, missing, stale };
 }
 
 function isDirOnDisk(packageDir: string, entry: string): boolean {

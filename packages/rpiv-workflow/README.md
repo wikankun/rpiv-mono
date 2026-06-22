@@ -21,6 +21,8 @@ This package serves four overlapping audiences. Find yours, then jump to the mat
 - **I'm bundling workflows inside my own Pi extension.** → [Programmatic registration](#programmatic-registration).
 - **I'm embedding the runtime in a non-Pi host.** → [Host boundary](#host-boundary) + [`runWorkflow`](#programmatic-runner).
 
+Whatever the lane, the [Glossary](#glossary) at the bottom pins one name per concept.
+
 ## Install
 
 ```sh
@@ -97,6 +99,8 @@ The key is the **skill** name (`stage.skill ?? <stage key>`), not the stage id. 
 
 A workflow is a typed graph: named entry point, a `stages` record, and an `edges` table that maps each stage to another stage name, the sentinel `"stop"`, or a predicate function that chooses at runtime.
 
+> **Typing model.** Inter-stage data typing is **runtime-contract-based**: `outputSchema` / `inputSchema` (Standard Schema v1) validate `output.data` when stages run, and skill contracts adjudicate composition at load time. The `StageDef<TIn, TOut>` type parameters are local inference helpers for a single factory call — they are erased at the `Workflow.stages` boundary (every stage collapses to `StageDef`), so they do **not** propagate types across edges. Don't lean on them for cross-stage safety; lean on schemas and contracts. A typed builder API that carries types through the graph is on the roadmap, not in this release.
+
 Three factories for the two stage kinds:
 
 - `produces(overrides?)` — `kind: "produces"`. The skill writes a file the next stage reads. Halts the chain if the path doesn't appear in the transcript. Without a Pi session, use [`produces.script`](#script-stages-no-pi-session).
@@ -120,20 +124,73 @@ Names address `state.named`, an accumulating registry every `produces` stage app
 
 Slots are arrays — iteration history is preserved across backward-jump loops; the default read resolves to `array.at(-1)`. Load-time validation rejects `reads:` references whose name no produces stage publishes; the `ensureNamedReads` preflight halts at runtime when a name's slot is empty (the producer hasn't fired yet on this path).
 
-Conditional routing uses `gate(field, branches)` with the bundled predicate helpers (`gt` / `gte` / `lt` / `lte` / `eq`):
+Conditional routing uses `gate(field, branches, otherwise)` with the bundled predicate helpers (`gt` / `gte` / `lt` / `lte` / `eq`):
 
 ```ts
 import { gate, gt, eq } from "@juicesharp/rpiv-workflow";
-edges: { "code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }) }
+edges: { "code-review": gate("blockers_count", { revise: gt(0), commit: eq(0) }, "commit") }
 ```
 
-Branches are evaluated against `Number(output.data[field])` in declaration order; the first matching predicate wins, and the last declared branch is the fallback when no predicate matches (so missing or non-numeric fields route to the last branch).
+Branches are evaluated against `Number(output.data[field])` in declaration order; the first matching predicate wins. When no predicate matches (including a missing or non-numeric field, which coerces to `NaN`), the explicit `otherwise` branch is taken and the run's routing-audit row carries a note saying the fallback fired — silent fallthrough is not a thing. Branch keys must not be integer-like (`"2"`): JS object literals reorder such keys ahead of declaration order, so `gate` rejects them at construction.
 
 `gate` is the numeric convenience only. String/enum, multi-field, or computed routing uses `defineRoute(targets, fn, opts?)` — the body is plain TS (e.g. `output.data.verdict === "approve" ? "commit" : "revise"`), so there's no separate string helper. By default `opts.readsData` is `true` (reads `output.data`, requires the source stage to declare an `outputSchema`); pass `{ readsData: false }` for a route that consults only `state` / `output.meta`.
 
+### Model-judged loops — `assess`
+
+`assess` is the third loop primitive, alongside `fanout` (breadth) and `iterate` (TS-judged depth). It's a **depth loop whose termination is decided by a separate model judge** — for when "are we done yet?" needs a model to read the work, not a synchronous TS predicate. Set it on a `produces()` stage.
+
+Each round runs **two** sessions:
+
+1. a **producer** — this stage's skill/outcome, emitting the work artifact;
+2. a **judge** — a separate session emitting a validated verdict `{ done, feedback }`.
+
+If `judge.done(verdict)` is `true`, the loop stops and the **producer** output (never the verdict) is the stage result. Otherwise `feedForward` builds the next producer prompt from the verdict's feedback, and the loop continues.
+
+```ts
+import { produces, directoryPathCollector, jsonBodyParser } from "@juicesharp/rpiv-workflow";
+
+// The judge's verdict outcome. The collector MUST materialize ≥1 artifact —
+// here a JSON file the parser reads into { done, feedback }. (See the
+// ≥1-artifact constraint below.) Its `name` is its OWN channel, distinct
+// from the producer outcome's name.
+const verdictSpec = {
+  name: "verdicts",
+  collector: directoryPathCollector({ dir: ".rpiv/artifacts/verdicts", ext: "json" }),
+  parser: jsonBodyParser, // output.data = { done: boolean, feedback?: string }
+};
+
+breakdown: produces({
+  outcome: taskListOutcome,                 // producer outcome (the task list)
+  assess: {
+    judge: {
+      skill: "grade-breakdown",             // skill judge — producer handle auto-injected
+      outcome: verdictSpec,
+      done: (v) => Boolean(v.data.done),    // sync TS reading the model-made verdict
+    },
+    feedForward: ({ verdict }) => `Decompose further. Notes: ${verdict.data.feedback}`,
+    max: 8,                                 // default 8, clamped by run.maxIterations
+  },
+}),
+```
+
+**Skill vs. prompt judge.** Exactly one of `judge.skill` / `judge.prompt` is the dispatch discriminator (validated at load — both or neither is an error):
+
+- **Skill judge** (`judge.skill` set): dispatched as `/skill:<judge.skill> <producerHandle>` — the latest producer artifact's handle is auto-injected as the input, exactly like any skill stage. `judge.prompt` is optional.
+- **Prompt judge** (`judge.skill` absent): the resolved `judge.prompt` text is sent verbatim, so `judge.prompt` is **required** — the author embeds the producer handle/output (and the frozen `entryArtifact`, if wanted) into the prompt themselves, since a dispatched session delivers only the prompt text.
+
+**≥1-artifact judge constraint.** The judge runs as a `produces`-kind session, so `enforceCompletionContract` makes a judge whose collector returns **zero** artifacts a **fatal halt** — no retry, no soft-stop. A judge that replies "not done" inline without writing anything *kills the run*. Always have the judge materialize its verdict (e.g. write a JSON file the collector enumerates and the parser reads), as `verdictSpec` does above.
+
+**Soft-stop at `max`.** When the round cap is hit without `done`, the loop **soft-stops**: it emits a warning, keeps the **last producer output** as the stage result, and advances downstream. No terminal failure, no new error code. `max` defaults to 8 and is clamped by `run.maxIterations`.
+
+**Judge sessions use framework defaults.** The judge runs on a synthetic `produces` def, so it does **not** inherit the parent stage's `onInvalid` / `maxRetries` / `outputSchema` / `validateTimeoutMs` — those apply to the **producer** sessions only; the judge gets framework defaults. (A skill judge still picks up its own declared skill-contract.) The producer and judge publish into **distinct** `state.named` channels (producer's `outcome.name` vs. `judge.outcome.name`), so verdicts never collide with producer outputs.
+
+**Determinism contract (for resume).** Like `iterate`, `feedForward` and `judge.done` must be **deterministic** w.r.t. their inputs. Each round persists two audit rows (`r{n}·produce`, `r{n}·judge`); the judge's verdict is recorded specifically so resume **trusts** it rather than re-grading a non-deterministic model. On resume only the pending sub-step re-runs; a boundary guard catches drift in `feedForward` / `judge.done` and fails terminally rather than re-running wrong work.
+
+`assess` is mutually exclusive with `fanout` / `iterate` / `run` / `prompt` / `reads`, requires `kind: "produces"`, and rejects `sessionPolicy: "continue"` (all enforced at load).
+
 ## Script stages (no Pi session)
 
-Some stages don't need an LLM — they merge two upstream artifacts, bump a version field, or fire a post-run notification. The `.script` accessor on each factory runs a pure TS function in place of a Pi skill body. No `/skill:<name>` dispatch, no session, no transcript scan: the function gets a `ScriptContext` (`cwd`, `input` — upstream `Output` envelope, `state` — `Readonly<RunState>`) and either returns the new envelope (`produces.script`) or returns `void` (`acts.script` / `terminal.script`).
+Some stages don't need an LLM — they merge two upstream artifacts, bump a version field, or fire a post-run notification. The `.script` accessor on each factory runs a pure TS function in place of a Pi skill body. No `/skill:<name>` dispatch, no session, no transcript scan: the function gets a `ScriptContext` (`cwd`, `input` — upstream `Output` envelope, `state` — the deep-readonly `RunView`) and either returns the new envelope (`produces.script`) or returns `void` (`acts.script` / `terminal.script`).
 
 Stages with `.run` set CANNOT also declare `skill`, `outcome`, `fanout`, or `sessionPolicy: "continue"` — load-time validation rejects the combination. `produces.script` may declare `outputSchema` + `maxRetries` + `onInvalid` (same retry semantics as skill stages); `acts.script` / `terminal.script` may declare `inputSchema` for the upstream-data contract.
 
@@ -359,9 +416,9 @@ const result = await runWorkflow(ctx, {
 });
 ```
 
-Every callback receives a `LifecycleContext` with `runId`, `workflow`, `totalStages`, the `trigger` metadata, and a `Readonly<RunState>` snapshot. Events fire AFTER their JSONL row lands on disk, so a listener that calls `readLastStage(cwd, ctx.runId)` is guaranteed to see the just-recorded row. Callbacks may be async — the runner awaits them before advancing, giving back-pressure for free. Throws are caught + surfaced through `ctx.ui.notify(..., "warning")`; they never halt the run.
+Every callback receives a `LifecycleContext` with `runId`, `workflow`, `totalStages`, the `trigger` metadata, and a deep-readonly `RunView` snapshot of the run's data channels. Events fire AFTER their JSONL row lands on disk, so a listener that calls `readLastStage(cwd, ctx.runId)` is guaranteed to see the just-recorded row. Callbacks may be async — the runner awaits them before advancing, giving back-pressure for free. Throws are caught + surfaced through `ctx.ui.notify(..., "warning")`; they never halt the run.
 
-Available callbacks: `onWorkflowStart`, `onStageStart`, `onStageEnd`, `onStageRetry`, `onStageError`, `onRoute`, `onFanoutStart`, `onFanoutUnitStart`, `onFanoutUnitEnd`, `onWorkflowEnd`. See the `LifecycleListeners` JSDoc for the per-event payload.
+Available callbacks: `onWorkflowStart`, `onStageStart`, `onStageEnd`, `onStageRetry`, `onStageError`, `onRoute`, `onLoopStart`, `onUnitStart`, `onUnitEnd`, `onLoopCap`, `onWorkflowEnd`. See the `LifecycleListeners` JSDoc for the per-event payload.
 
 ### Trigger
 
@@ -378,10 +435,10 @@ type RunTrigger =
 
 ## Outcomes — collectors and parsers
 
-Each `produces` stage wires an `OutputSpec` that tells the runtime three things:
+Each `produces` stage wires an `Outcome` (formerly `OutputSpec` — the old name remains as a deprecated alias for one release) that tells the runtime three things:
 
 ```ts
-interface OutputSpec<Snapshot, Kind, Data> {
+interface Outcome<Snapshot, Kind, Data> {
   name?:     string;                                // CATEGORISE — the publish slot in state.named (optional)
   collector: ArtifactCollector<Snapshot>;          // ENUMERATE — what did the stage produce?
   parser?:   ArtifactParser<Snapshot, Kind, Data>; // INTERPRET — what's the typed data channel?
@@ -508,3 +565,19 @@ export default defineWorkflow({
 The contract is identical — author an async `~standard.validate` and the runner awaits it. A schema whose Promise never settles is bounded by the stage's `validateTimeoutMs` (default 5 min); a rejected Promise surfaces as a clean stage halt, attributed to the stage, with the same error class as a shape-failure halt. No opt-in flag, no parallel code path.
 
 > Keep validation separate from the collector + parser. The collector's job is "what did the agent produce?" (enumerate); the parser's job is "parse it into typed data" (shape). The validator's job is "is the result correct?" (check + verify). With async validators available you don't have to push I/O verification into a custom collector/parser — keep them pure and put correctness checks on `outputSchema`.
+
+## Glossary
+
+One canonical name per concept. Where two words exist for the same thing, the split is deliberate: one is the **authoring surface** (what you type in a workflow file), the other is the **data vocabulary** (what lands in rows, envelopes, and types).
+
+| Term | Meaning |
+|------|---------|
+| **Workflow** | The typed graph: a name, a `start` stage, a `stages` record, an `edges` table. Built with `defineWorkflow`, loaded from config layers or registered programmatically. |
+| **Stage** | One node of the graph — a unit of dispatch (skill session, prompt, or script). Two kinds: `"produces"` and `"side-effect"`. |
+| **Kind vs. factory** | `kind` is the persisted data discriminator (`"produces"` \| `"side-effect"`); the factories are authoring verbs: `produces()` → `"produces"`, `acts()` → `"side-effect"`, `terminal()` → `"side-effect"` + `inheritsArtifacts: false`. `acts` is a verb because it reads naturally in a stage record (`commit: acts()`); `"side-effect"` is descriptive because it reads naturally in rows and output envelopes. `terminal` is **not** a third kind — it's `acts` plus an artifact-isolation flag. |
+| **Run** | One execution of a workflow: a `runId`, an append-only JSONL run file (the system of record for resume), and the in-memory state the runner threads. |
+| **Chain** | The path a run walks through the graph — stage activations following `edges` from `start` until `"stop"` or a halt. Loops add generations *within* one chain position. |
+| **Output** | The envelope one stage activation hands downstream: `{ kind, data, meta, artifacts }` (`Output<K, D>`, `output.ts`). What predicates, routes, downstream prompts, and the audit log see. |
+| **Outcome** | The producer-side declaration of *how* a stage's Output gets built from a session: `{ collector, parser? }` (`Outcome`, `output-spec.ts`). The collector enumerates artifacts; the parser interprets them into `data`. |
+| **Verdict** | A judge's Output (`type Verdict = Output`). In `assess` / `verify` loops the judge emits a verdict that `done` reads; verdicts are recorded for resume but never become the stage result. |
+| **Contract** | A skill contract — what a skill `consumes` / `produces`. Declared by the skill's owner or harvested from stage declarations; adjudicated at load time (`canCompose`, the validator) to check composition. |

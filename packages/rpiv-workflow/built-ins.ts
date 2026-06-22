@@ -12,46 +12,28 @@
  * `registerBuiltIns(...)` from their extension entry point with workflows
  * that name their own bundled skills.
  *
- * The registry array is anchored on a `Symbol.for` slot on `globalThis`.
- * Pi may load this module more than once — once for the rpiv-workflow
- * extension itself, and once via the rpiv-pi `import { registerBuiltIns }
- * from "@juicesharp/rpiv-workflow"` cross-package resolution — and
- * module-local state would be siloed between those copies.
- * `globalThis[KEY]` is process-wide and survives the dup load.
+ * The registry array is anchored on a `Symbol.for` slot on `globalThis`
+ * (via `globalSlot`). Pi may load this module more than once — once for the
+ * rpiv-workflow extension itself, and once via the rpiv-pi
+ * `import { registerBuiltIns } from "@juicesharp/rpiv-workflow"`
+ * cross-package resolution — and module-local state would be siloed between
+ * those copies. `globalThis[KEY]` is process-wide and survives the dup load.
  */
 
 import type { Workflow } from "./api.js";
+import { globalSlot, lazyProviderRegistry } from "./internal-utils.js";
 
 const REGISTRY_KEY = Symbol.for("@juicesharp/rpiv-workflow:built-ins");
-const PROVIDERS_KEY = Symbol.for("@juicesharp/rpiv-workflow:built-in-providers");
-const FLUSH_KEY = Symbol.for("@juicesharp/rpiv-workflow:built-in-flush");
 
-/** A lazy contributor of built-in workflows — run once by `flushBuiltInProviders`. */
-type BuiltInsProvider = () => void | Promise<void>;
-
-type Global = Record<symbol, unknown>;
-
-function getRegistry(): Workflow[] {
-	const g = globalThis as unknown as Global;
-	let registry = g[REGISTRY_KEY] as Workflow[] | undefined;
-	if (!registry) {
-		registry = [];
-		g[REGISTRY_KEY] = registry;
-	}
-	return registry;
-}
-
-// Provider list + flush latch use the same `Symbol.for` global-slot strategy as
-// the registry, so a duplicate module load shares one process-wide state.
-function getProviders(): BuiltInsProvider[] {
-	const g = globalThis as unknown as Global;
-	let providers = g[PROVIDERS_KEY] as BuiltInsProvider[] | undefined;
-	if (!providers) {
-		providers = [];
-		g[PROVIDERS_KEY] = providers;
-	}
-	return providers;
-}
+const getRegistry = globalSlot(REGISTRY_KEY, () => [] as Workflow[]);
+// Provider lifecycle (register / flush-on-demand; each provider runs once,
+// post-flush registrations run on the next flush — `/reload` re-registration
+// refreshes) via the shared `lazyProviderRegistry` helper — same global-slot
+// strategy as the registry, so a duplicate module load shares one
+// process-wide state. Safe to re-flush: `registerBuiltIns` replaces by name.
+// No `onError`: built-in providers are trusted in-process code, a throw
+// propagates to the awaiting `loadWorkflows` caller.
+const providers = lazyProviderRegistry("@juicesharp/rpiv-workflow:built-in-providers");
 
 /**
  * Register one or more workflows into the `built-in` layer. Idempotent on
@@ -74,8 +56,8 @@ export function registerBuiltIns(workflows: readonly Workflow[]): void {
  * defer constructing its workflow definitions off startup and onto first `/wf`.
  * Register before the first read — `/wf` is the earliest reader.
  */
-export function registerBuiltInsProvider(provider: BuiltInsProvider): void {
-	getProviders().push(provider);
+export function registerBuiltInsProvider(provider: () => void | Promise<void>): void {
+	providers.register(provider);
 }
 
 /**
@@ -84,13 +66,7 @@ export function registerBuiltInsProvider(provider: BuiltInsProvider): void {
  * first flush won't run — acceptable, all register at extension load.
  */
 export function flushBuiltInProviders(): Promise<void> {
-	const g = globalThis as unknown as Global;
-	const existing = g[FLUSH_KEY] as Promise<void> | undefined;
-	if (existing) return existing;
-	const pending = getProviders().splice(0);
-	const flush = Promise.all(pending.map((p) => p())).then(() => undefined);
-	g[FLUSH_KEY] = flush;
-	return flush;
+	return providers.flush();
 }
 
 /** Read-only view of the registry — consumed by `load.ts`. */
@@ -104,6 +80,5 @@ export function getBuiltIns(): readonly Workflow[] {
  */
 export function __resetBuiltIns(): void {
 	getRegistry().length = 0;
-	getProviders().length = 0;
-	(globalThis as unknown as Global)[FLUSH_KEY] = undefined;
+	providers.reset();
 }

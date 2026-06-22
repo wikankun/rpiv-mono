@@ -5,10 +5,11 @@
  *    continueHost, registeredSkills, maxBackwardJumps). Read by every
  *    layer; mutated only by the runner.
  *  - `RunState` — mutable bookkeeping (output, counters, telemetry,
- *    termination). Read by every layer; mutated by the runner + the audit
- *    layer. Always read the chain's primary artifact via
- *    `currentPrimaryArtifact(state)` (internal-utils.ts) — it prefers
- *    `output.artifacts[0]` and falls back to `fallbackPrimaryArtifact`.
+ *    termination). Read by every layer; mutated through the chain-state
+ *    authorities (chain-state.ts) by the runner, the loop driver, the audit
+ *    layer, and the resume fold — external consumers get the deep-readonly
+ *    `RunView` projection instead. Always read the chain's primary artifact
+ *    via `currentPrimaryArtifact(state)` (chain-state.ts).
  *  - `WorkflowHostContext` — the host port (defined in `host.js`, re-exported
  *    here) threaded from `withSession` callbacks down through stage/phase
  *    helpers, so the runtime layers import all three nouns from one module.
@@ -23,9 +24,9 @@
  */
 
 import type { StageDef, Workflow } from "./api.js";
+import type { LifecycleDispatcher, LifecycleListeners } from "./events.js";
 import type { Artifact } from "./handle.js";
 import type { WorkflowHost, WorkflowHostContext } from "./host.js";
-import type { LifecycleDispatcher } from "./lifecycle.js";
 import type { Output } from "./output.js";
 import type { SkillContractMap } from "./skill-contract.js";
 import type { RunTrigger } from "./triggers.js";
@@ -87,13 +88,147 @@ export interface RunState {
 		 * in the common case.
 		 */
 		droppedRoutingRows: Array<{ fromStageIndex: number; fromStage: string; decision: string }>;
+		/**
+		 * Stages whose terminal failure/aborted row failed to append. Unlike
+		 * routing rows these ARE reconstruction inputs — a trail missing its
+		 * failure row reads "completed" at the tail and a later resume would
+		 * route onward past the stage that actually failed. Surfaced in
+		 * `RunWorkflowResult.droppedFailureRows`; consumers holding entries
+		 * must not resume the run from disk. Empty in the common case.
+		 */
+		droppedFailureRows: string[];
 	};
 
 	// ── Termination (set once at end-of-run) ───────────────────────────
-	termination: {
-		success: boolean;
-		error: string | undefined;
-	};
+	/**
+	 * How the run ended — `"running"` until the single end-of-run write via
+	 * `terminate()` (audit.ts), the ONLY sanctioned mutator. Discriminated so
+	 * every outcome is representable (cancellation used to be smuggled
+	 * through the error string) and so a halt site can't set half the shape.
+	 */
+	termination: RunTermination;
+}
+
+/**
+ * Run-termination outcome — the discriminated form behind
+ * `RunState.termination` and `RunWorkflowResult.termination`.
+ *
+ *  - `"running"`   — not terminated yet (also: the runner unwound without
+ *                    reaching any terminal write — treated as failure).
+ *  - `"completed"` — the chain reached `stop`.
+ *  - `"failed"`    — a stage/preflight/routing halt; `error` carries the cause.
+ *  - `"aborted"`   — cooperative cancellation via `RunWorkflowOptions.signal`,
+ *                    or the model aborted the stage.
+ *  - `"cancelled"` — the user dismissed the live session mid-stage.
+ */
+export type RunTermination =
+	| { status: "running"; error?: undefined }
+	| { status: "completed"; error?: undefined }
+	| { status: "failed"; error: string }
+	| { status: "aborted"; error: string }
+	| { status: "cancelled"; error: string };
+
+// ---------------------------------------------------------------------------
+// Public run envelope — options in, result out
+// ---------------------------------------------------------------------------
+// Lives here (the runtime-types leaf), NOT in runner/runner.ts: the result
+// envelope is public surface consumed by events.ts (`onWorkflowEnd`) and
+// every embedder — a base-layer module must not import the deepest engine
+// module to name it.
+
+export interface RunWorkflowOptions {
+	/** Workflow to execute — caller resolves by name from `LoadedWorkflows`. */
+	workflow: Workflow;
+	/** Passed to the start stage as its argument. */
+	input: string;
+	/** Required for "continue"-policy stages (host.sendUserMessage). */
+	host?: WorkflowHost;
+	/** Defaults to MAX_BACKWARD_JUMPS. */
+	maxBackwardJumps?: number;
+	/** Run-wide safety cap on loop units (all kinds). Defaults to MAX_ITERATIONS. */
+	maxIterations?: number;
+	/**
+	 * What triggered this run. `/wf` sets `{ kind: "command", name: "wf" }`;
+	 * programmatic embedders default to `DEFAULT_TRIGGER`. Recorded in the
+	 * JSONL header and surfaced on every lifecycle callback via
+	 * `LifecycleContext.trigger`.
+	 */
+	trigger?: RunTrigger;
+	/**
+	 * Per-call lifecycle listener bundle. Fires AFTER every globally
+	 * registered bundle (see `registerLifecycle`). Listener throws are
+	 * caught + logged via `ctx.ui.notify(..., "warning")`; never halt the
+	 * run.
+	 */
+	lifecycle?: LifecycleListeners;
+	/**
+	 * Cooperative cancellation. When the signal is aborted, the runner stops at
+	 * the next between-stage seam — it records an `"aborted"` terminal row for
+	 * the stage about to run and returns `{ success: false }` with an aborted
+	 * error. It does NOT interrupt a stage already streaming (Pi owns the live
+	 * session), so cancellation takes effect at the next stage boundary, not
+	 * mid-stage.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Human-readable alias for this run. Stored in the JSONL header and the
+	 * sidecar names.json index. Rejected if already in use — the error
+	 * identifies the conflicting runId.
+	 */
+	name?: string;
+}
+
+export interface RunWorkflowResult {
+	/**
+	 * The run's identity on disk — the `<run-id>` portion of
+	 * `<cwd>/.rpiv/workflows/runs/<run-id>.jsonl`. Live consumers can hand
+	 * this to `readLastStage` / `listArtifacts` / future inspect-past-run
+	 * helpers without recomputing the slug.
+	 *
+	 * Undefined ONLY for pre-flight rejections (start stage not declared,
+	 * continue-policy stages without pi) where no JSONL file was created.
+	 */
+	runId?: string;
+	stagesCompleted: number;
+	success: boolean;
+	/**
+	 * Primary artifact at run termination, serialised to its handle's
+	 * canonical string form (fs → path, url → href, opaque → id). Undefined
+	 * if no produces stage produced one. Callers that need the full
+	 * structured handle read `output.artifacts[0]` off the run's last
+	 * recorded stage (via `readLastStage`).
+	 */
+	lastArtifact?: string;
+	error?: string;
+	/**
+	 * Discriminated termination outcome — the full-fidelity form behind the
+	 * `success`/`error` projections above (which can't represent "cancelled"
+	 * vs "aborted" vs "failed"). `{ status: "running" }` means the runner
+	 * unwound without reaching any terminal write — callers treat it as
+	 * failure, same as the `success: false` projection does.
+	 *
+	 * Undefined ONLY for pre-flight rejections (no run was constructed) —
+	 * same rule as `runId`.
+	 */
+	termination?: RunTermination;
+	/**
+	 * Routing decisions made in memory but whose JSONL audit row failed to
+	 * persist. Empty in the common case. Surfaced so consumers reading the
+	 * run's JSONL can disambiguate a missing routing row ("deterministic
+	 * edge — never written") from a dropped one ("decision was made, write
+	 * failed"). The run still succeeds — routing rows are telemetry, not
+	 * reconstruction inputs.
+	 */
+	droppedRoutingRows?: Array<{ fromStageIndex: number; fromStage: string; decision: string }>;
+	/**
+	 * Stages whose terminal failure/aborted row failed to persist. Empty in
+	 * the common case. Unlike routing rows, failure rows ARE reconstruction
+	 * inputs: a trail missing its failure row reads as if the run stopped
+	 * after its last successful stage, so a later resume would route onward
+	 * past the stage that actually failed. Consumers holding this list should
+	 * not resume the run from disk.
+	 */
+	droppedFailureRows?: string[];
 }
 
 /** Per-run context the chain carries from stage to stage. */
@@ -130,9 +265,9 @@ export interface RunContext {
 	 */
 	registeredSkills?: ReadonlySet<string>;
 	/**
-	 * Snapshot of the declared/injected skill-contract registry, taken once in
+	 * Snapshot of the registered skill-contract registry, taken once in
 	 * `buildRunContext` (mirrors `registeredSkills`). This is the
-	 * declared/injected registry — NOT the harvested-merged
+	 * registered (`declared`-source) registry — NOT the harvested-merged
 	 * `LoadedWorkflows.skillContracts` — because both runtime uses only add
 	 * value over a declared contract:
 	 *   - `ensureContractInputValid` mirrors a declared `consumes.data` that
@@ -166,16 +301,16 @@ export interface RunContext {
 	continueHost?: WorkflowHost;
 	maxBackwardJumps: number;
 	/**
-	 * Run-wide safety cap on `iterate`-stage units. The generator is
-	 * loop-terminated (returns `null`), not array-bounded like `fanout`, so the
-	 * runner backstops a runaway generator: when `accumulated.length` reaches
-	 * this, the stage halts with a terminal failure. Defaults to
-	 * `MAX_ITERATIONS`.
+	 * Run-wide safety cap on loop units — clamps the effective cap of EVERY
+	 * loop kind (`min(loop.max, run.maxIterations)`), the backstop for a
+	 * source that never terminates (a pull generator that never returns
+	 * `null`, an assess `done` that never trips). What happens at the cap is
+	 * the loop's `CapPolicy`. Defaults to `MAX_ITERATIONS`.
 	 */
 	maxIterations: number;
 	/** What triggered the run; defaulted at `runWorkflow` entry. */
 	trigger: RunTrigger;
-	/** Lifecycle event dispatcher — see `lifecycle.ts`. Threaded by reference. */
+	/** Lifecycle event dispatcher — see `events.ts`. Threaded by reference. */
 	lifecycle: LifecycleDispatcher;
 	/**
 	 * Optional cooperative-cancellation signal from `RunWorkflowOptions.signal`.
@@ -188,10 +323,10 @@ export interface RunContext {
 }
 
 /**
- * Per-stage / per-unit common base. Extended by `StageSession` and
- * `FanoutSession`; consumed in pick form by `AuditCtx` (audit.ts) so the audit
- * layer pins its dependency on this shape structurally instead of
- * duplicating the field list.
+ * Per-stage / per-unit common base. Extended by `StageSession` (loop units
+ * thread their identity through `StageSession.unit`); consumed in pick form by
+ * `AuditCtx` (audit.ts) so the audit layer pins its dependency on this shape
+ * structurally instead of duplicating the field list.
  *
  * `stageName` is the workflow stage's record key — the value that lands
  * in `WorkflowStage.stage`. `skill` is the Pi skill body the runner
@@ -210,7 +345,7 @@ export interface SessionContext {
 	stageName: string;
 	/** Pi skill body — `/skill:<skill>` dispatch + status-line label + JSONL `WorkflowStage.skill`. */
 	skill: string;
-	/** Shared lifecycle dispatcher. Threaded from `RunContext` so the audit layer can fire `onStageEnd` / `onStageError` / `onFanoutUnitEnd` without re-importing it. */
+	/** Shared lifecycle dispatcher. Threaded from `RunContext` so the audit layer can fire `onStageEnd` / `onStageError` / `onUnitEnd` without re-importing it. */
 	lifecycle: LifecycleDispatcher;
 	/**
 	 * Read-only run identity passed to lifecycle callbacks. Captured at
@@ -222,12 +357,39 @@ export interface SessionContext {
 		totalStages: number;
 		trigger: RunTrigger;
 	};
+	/**
+	 * The activation's allocated JSONL stage number. Assigned ONCE (via
+	 * `allocateStageNumber`) when output production begins, BEFORE the output
+	 * envelope is built — the envelope's `meta.stageNumber`, the audit row
+	 * (success or failure), and every lifecycle ref for this activation then
+	 * agree on one explicit value. Undefined until the activation reaches
+	 * output production; pre-output halts allocate at record time instead.
+	 */
+	allocatedStageNumber?: number;
+}
+
+/**
+ * Unit identity threaded onto a loop unit's session. Source of the
+ * structured JSONL row fields (`unitRowFields`, audit.ts) and the public
+ * `UnitEvent` lifecycle payload. `parent` is the loop stage's record key —
+ * the value resume dispatch and the fold key on; `label` feeds the decorated
+ * display string, the status line, and the per-unit toast.
+ */
+export interface UnitRef {
+	parent: string;
+	role: import("./api.js").UnitRole;
+	/** 0-based generation cursor (== the round index for assess loops). */
+	index: number;
+	/** Stable audit identity (`unit.id ?? unit.label` for fanout/iterate; undefined for assess). */
+	id?: string;
+	/** Display tag. */
+	label: string;
 }
 
 export interface StageSession extends SessionContext {
 	stage: StageDef;
 	/**
-	 * Declared/injected skill-contract registry, threaded from
+	 * Registered skill-contract registry, threaded from
 	 * `RunContext.skillContracts` at session construction. Lets output
 	 * validation fall back to the dispatched skill's `produces.data` when the
 	 * stage carries no `outputSchema` of its own. Fail-soft: absent for
@@ -248,28 +410,24 @@ export interface StageSession extends SessionContext {
 	continueHost?: WorkflowHost;
 	/** Only set for continue stages — branch slice offset. */
 	branchOffset?: number;
-	onFailure?: (ctx: WorkflowHostContext) => void;
-	onSuccess: (ctx: WorkflowHostContext, artifact: Artifact | undefined) => Promise<void>;
-}
-
-/**
- * One unit of a fanout iteration. `label` is the user-supplied
- * disambiguating tag from `FanoutUnit.label`; it's woven into the status
- * line (`STATUS_FANOUT_UNIT`). The JSONL row's `stage` value (built by
- * `fanoutRowStage`) prefixes the parent's `stageName` with `id ?? label`
- * so the runner adds no implicit wording.
- */
-export interface FanoutSession extends SessionContext {
-	/** 1-based position within the run's fanout array — for halt diagnostics. */
-	unitIndex: number;
-	/** From `FanoutUnit.label` — already disambiguating, e.g. `"phase 2/5"`. */
-	label: string;
 	/**
-	 * From `FanoutUnit.id` when set — stable audit identifier preferred
-	 * over `label` in JSONL rows. Undefined when the user supplied none.
+	 * Present iff this session IS one loop unit. Pre-decorated at session
+	 * construction by the driver (`stageName` carries the DISPLAY decoration;
+	 * this field carries the machine identity). Drives: structured row fields,
+	 * `onUnitEnd` instead of `onStageEnd`, the labeled per-unit toast, and
+	 * unit-attributed failure rows.
 	 */
-	id?: string;
-	/** Parent stage's 0-based index. */
-	stageIndex: number;
-	onSuccess: (ctx: WorkflowHostContext) => Promise<void>;
+	unit?: UnitRef;
+	onFailure?: (ctx: WorkflowHostContext) => void;
+	/**
+	 * Receives the stage's VALIDATED Output envelope (not just
+	 * `artifacts[0]`) — loop continuations thread it into `accumulated` /
+	 * `feedForward` directly, removing the `run.state.output!` back-read
+	 * pattern the old drivers carried.
+	 *
+	 * Return type is `Promise<unknown>` (not `void`) so the chain walk's
+	 * `ChainOutcome`-returning continuations plug in directly; the session
+	 * layer only awaits settlement.
+	 */
+	onSuccess: (ctx: WorkflowHostContext, output: Output) => Promise<unknown>;
 }

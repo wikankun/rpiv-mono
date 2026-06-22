@@ -17,13 +17,13 @@ import { createMockPi, createMockSessionChain, mockAssistantMessage } from "@jui
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acts, defineWorkflow, produces } from "./api.js";
 import { fs as fsHandle, handleToString } from "./handle.js";
-import type { OutputSpec } from "./output.js";
+import type { Outcome } from "./output-spec.js";
 import { runWorkflow } from "./runner/index.js";
 
 const PATTERN = /\.rpiv\/artifacts\/[\w.-]+\/[\w.-]+\.md/g;
 
 /** Transcript-scan outcome (no disk read) — publishes under `name`. */
-const makeOutcome = (name: string): OutputSpec<unknown, "artifact-md", Record<string, unknown>> => ({
+const makeOutcome = (name: string): Outcome<unknown, "artifact-md", Record<string, unknown>> => ({
 	name,
 	collector: {
 		collect: (ctx) => {

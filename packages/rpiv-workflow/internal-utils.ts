@@ -1,5 +1,9 @@
 /**
- * Internal utilities shared across the rpiv-workflow package.
+ * Internal utilities shared across the rpiv-workflow package — GENERIC
+ * helpers only (error rendering, timeouts, global slots, structural
+ * equality). Workflow-domain helpers live in their domain modules:
+ * chain/artifact authorities in `chain-state.ts`, audit-row plumbing in
+ * `audit-rows.ts`, schema-timeout signalling in `validate-output.ts`.
  *
  * Not part of the public surface — not re-exported from `index.ts`. If a
  * helper graduates into the documented authoring or embedding contract,
@@ -7,10 +11,6 @@
  */
 
 import { isAbsolute, join } from "node:path";
-import type { StageDef } from "./api.js";
-import type { Artifact } from "./handle.js";
-import type { Output } from "./output.js";
-import type { RunState } from "./types.js";
 
 /** Exhaustiveness guard for discriminated-union switches. */
 export function assertNever(value: never): never {
@@ -18,39 +18,16 @@ export function assertNever(value: never): never {
 }
 
 /**
- * Canonical accessor for "the primary artifact the chain is currently
- * carrying." Reads the rolling slot maintained by the runner —
- * produces stages update it on success; side-effect stages leave it
- * alone. Replaces the load-bearing single-string artifact_path mirror
- * from the pre-collector shape.
+ * Render a caught `unknown` as a human-readable message. The ONE spelling of
+ * the `instanceof Error` dance — every catch block that needs the reason as a
+ * string calls this instead of inlining the ternary.
  */
-export function currentPrimaryArtifact(state: RunState): Artifact | undefined {
-	return state.primaryArtifact;
+export function formatError(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
 }
 
-/**
- * Resolve the `state.named` key a produces stage appends its `Output`
- * envelope onto. Two layers of fallback, in priority order:
- *   1. `stage.outcome?.name` — categorical name carried by the outcome.
- *   2. The stage's record key — always defined.
- *
- * Single source of truth for the key derivation so the skill-stage path
- * and the script-stage path stay in lockstep, and so `validateWorkflow`
- * can compute the same key set at load time.
- */
-export function resolvePublishName(def: StageDef, stageName: string): string {
-	return def.outcome?.name ?? stageName;
-}
-
-/**
- * Resolve a stage's effective skill — the contract-registry key. Twin of
- * `resolvePublishName`. Single source of truth so the runtime resolution
- * (`resolveStage`) and the load-time lookups (`validate-workflow.ts`) key the
- * registry identically and can't drift.
- */
-export function resolveSkill(def: StageDef, stageName: string): string {
-	return def.skill ?? stageName;
-}
+/** Single source of ISO-8601 timestamps for audit rows + output meta. */
+export const nowIso = (): string => new Date().toISOString();
 
 /**
  * Create a lazily-initialised global-slot getter anchored on a `Symbol.for` key.
@@ -75,11 +52,81 @@ export function globalSlot<T>(key: symbol, init: () => T): () => T {
 	};
 }
 
-/** Thrown by `withTimeout` when the caller passes a `SchemaTimeoutError`
- *  instance as the message. Lets consumers distinguish timeout errors from
- *  inner-promise rejections via `instanceof` instead of string-identity
- *  comparison. */
-export class SchemaTimeoutError extends Error {}
+/**
+ * Register-providers / flush-on-demand lifecycle over global slots —
+ * the shared structure behind `registerBuiltInsProvider`/`flushBuiltInProviders`
+ * and their skill-contract twins, which were implemented twice near
+ * line-for-line (D2). The one real divergence — error posture — is the
+ * `onError` parameter: when given, each provider throw is RECORDED via the
+ * callback (the registry stays usable, the caller drains and surfaces);
+ * when omitted, a throw rejects the flush promise (trusted in-process
+ * providers).
+ *
+ * Flush semantics: each provider runs AT MOST ONCE, but the flush is not a
+ * one-shot process latch — providers registered after a flush run on the
+ * NEXT flush, chained after everything that already ran. This is what makes
+ * `/reload` work: Pi re-runs extension entries (which re-register their
+ * providers) while these slots survive on `globalThis`; the next consumer
+ * read then flushes the re-registered providers, so owner-scoped
+ * registrations refresh (the contract registry's prune-on-reload semantics
+ * depend on this).
+ *
+ * State (provider list + flush chain) is anchored on `Symbol.for` slots
+ * derived from `key`, so a duplicate module load shares one process-wide
+ * lifecycle — same rationale as `globalSlot` itself. The chain is a mutable
+ * box because the slot value must never be reset to `undefined` (globalSlot
+ * would re-init), only its contents.
+ */
+export interface LazyProviderRegistry {
+	/** Register a lazy thunk — runs once, on the next `flush()`. */
+	register(provider: () => void | Promise<void>): void;
+	/**
+	 * Run every not-yet-run provider, chained after prior flushes; memoized
+	 * when nothing new is pending. Concurrency-safe (callers await the same
+	 * promise; a provider registered mid-flight runs on the next call). A
+	 * provider throw (no-onError variant) rejects only that flush — later
+	 * registrations run on subsequent flushes.
+	 */
+	flush(): Promise<void>;
+	/** Test reset: clears pending providers and the flush chain. */
+	reset(): void;
+}
+
+export function lazyProviderRegistry(key: string, opts?: { onError: (err: unknown) => void }): LazyProviderRegistry {
+	type Provider = () => void | Promise<void>;
+	const getProviders = globalSlot(Symbol.for(`${key}:providers`), () => [] as Provider[]);
+	const getFlushBox = globalSlot(Symbol.for(`${key}:flush`), () => ({
+		flushed: undefined as Promise<void> | undefined,
+	}));
+	const onError = opts?.onError;
+	return {
+		register(provider) {
+			getProviders().push(provider);
+		},
+		flush() {
+			const box = getFlushBox();
+			const pending = getProviders().splice(0);
+			if (pending.length === 0) return box.flushed ?? Promise.resolve();
+			const run = () =>
+				Promise.all(
+					pending.map((p) => {
+						const r = Promise.resolve().then(p);
+						return onError ? r.catch(onError) : r;
+					}),
+				).then(() => undefined);
+			// Chain after the prior flush — settled either way — so registration
+			// order is preserved across reload generations and a rejection (no-
+			// onError variant) only fails the callers awaiting THAT flush; later
+			// registrations still run, so `/reload` can recover from a bad provider.
+			box.flushed = box.flushed ? box.flushed.then(run, run) : run();
+			return box.flushed;
+		},
+		reset() {
+			getProviders().length = 0;
+			getFlushBox().flushed = undefined;
+		},
+	};
+}
 
 /**
  * Race a promise against `ms`. The inner promise is NOT cancelled — Pi's
@@ -87,8 +134,9 @@ export class SchemaTimeoutError extends Error {}
  * inert when the next stage's `newSession` replaces the ctx.
  *
  * When `message` is a string, a plain `Error` is thrown on timeout
- * (backward-compatible). When `message` is an `Error` (e.g.
- * `SchemaTimeoutError`), it is thrown directly so `instanceof` checks work.
+ * (backward-compatible). When `message` is an `Error` instance (e.g.
+ * `SchemaTimeoutError` from validate-output.ts), it is thrown directly so
+ * `instanceof` checks work.
  */
 export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string | Error): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -99,40 +147,6 @@ export async function withTimeout<T>(promise: Promise<T>, ms: number, message: s
 		return await Promise.race([promise, timeout]);
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
-	}
-}
-
-/**
- * The single authority for "a completed produces stage mutates the rolling
- * artifact state." Called by the live skill path (sessions/sessions.ts), the
- * live script path (runner/script-stage.ts), and state reconstruction
- * (runner/resume.ts) — keeping all three in lockstep (parity-tested).
- *
- * Scope: primary slot + named-publish registry ONLY. `state.output` and
- * `state.stagesCompleted` stay at call sites — `state.output` lives in the
- * shared, gated `tryRecordStage` (also serving fanout, which never advances
- * the primary), so folding it here would couple fanout to the produces rule.
- *
- *   - kind "produces"            → first artifact wins the rolling slot; the
- *                                  full Output appends onto state.named[key].
- *   - inheritsArtifacts === false → clear the slot (terminal()).
- *   - other side-effect          → leave the slot untouched.
- */
-export function applyCompletedStage(state: RunState, def: StageDef, stageName: string, output: Output): void {
-	if (def.kind === "produces") {
-		const next = output.artifacts[0];
-		if (next) state.primaryArtifact = next;
-		const key = resolvePublishName(def, stageName);
-		let slot = state.named[key];
-		if (!slot) {
-			slot = [];
-			state.named[key] = slot;
-		}
-		slot.push(output);
-		return;
-	}
-	if (def.inheritsArtifacts === false) {
-		state.primaryArtifact = undefined;
 	}
 }
 
@@ -148,8 +162,8 @@ export function resolveUnderCwd(cwd: string, p: string): string {
 
 /**
  * Structural (key-order-independent) deep equality. Used by the
- * cross-owner collision check in `skill-contracts.ts` (later
- * `skill-contracts/registry.ts`) so two semantically-identical contracts
+ * cross-owner collision check in `skill-contracts/registry.ts`
+ * so two semantically-identical contracts
  * built by different code paths (or with different YAML key order) don't
  * read as divergent — `JSON.stringify` is insertion-order dependent and
  * would raise a spurious collision warning. Contracts are plain JSON data

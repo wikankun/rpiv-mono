@@ -8,18 +8,16 @@ import type { EdgeTarget, FanoutFn, ScriptContext, StageDef, StageKind, StageSch
 import { defineRoute, defineWorkflow, gate, produces, terminal } from "./api.js";
 import { registerBuiltIns } from "./built-ins.js";
 import { fs as fsHandle } from "./handle.js";
-import type { OutputSpec } from "./output.js";
+import { fanout } from "./loop-constructors.js";
+import type { Outcome } from "./output-spec.js";
 import { eq, gt } from "./predicates.js";
 import { runWorkflow, runWorkflowByName } from "./runner/index.js";
 import type { CompositionComparator } from "./skill-contract.js";
 import { registerCompositionComparator, registerSkillContracts } from "./skill-contracts/index.js";
-import {
-	addNameToIndex,
-	appendRoutingDecision,
-	readHeader,
-	readNamesIndex,
-	readRoutingDecisions,
-} from "./state/index.js";
+import { appendRoutingDecision, readHeader, readNamesIndex, readRoutingDecisions, writeHeader } from "./state/index.js";
+// Deep import: addNameToIndex is deliberately NOT on the state barrels
+// (production code goes through claimName); tests seed collisions directly.
+import { addNameToIndex } from "./state/names.js";
 import { hasAssistantMessage, lastAssistantStopReason } from "./transcript.js";
 import { typeboxSchema } from "./typebox-adapter.js";
 
@@ -78,7 +76,7 @@ const parseFmTestOnly = (content: string): Record<string, unknown> => {
 	return fm;
 };
 
-const transcriptArtifactMdOutcome: OutputSpec<unknown, "artifact-md", Record<string, unknown>> = {
+const transcriptArtifactMdOutcome: Outcome<unknown, "artifact-md", Record<string, unknown>> = {
 	collector: {
 		collect: (ctx) => {
 			let lastMatch: string | undefined;
@@ -155,7 +153,7 @@ describe("runWorkflow", () => {
 	 *
 	 *   wf("tiny", ["research"])
 	 *   wf("rev", ["research", "code-review", "revise", "commit"], {}, {
-	 *     "code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+	 *     "code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 	 *   })
 	 */
 	const wf = (
@@ -176,7 +174,7 @@ describe("runWorkflow", () => {
 				kind: defaultStrategy,
 				sessionPolicy: "fresh",
 			};
-			const merged: StageDef = { ...base, ...(stageOverrides[id] ?? {}) };
+			const merged = { ...base, ...(stageOverrides[id] ?? {}) } as StageDef;
 			// produces stages get a test-local transcript-scan outcome (the
 			// framework no longer ships a default). Decide based on the FINAL
 			// strategy after overrides — if a test overrides to side-effect, we
@@ -244,6 +242,15 @@ describe("runWorkflow", () => {
 	});
 
 	it("rejects a name already claimed in the index, without starting a session", async () => {
+		// The holder must exist on disk — claimName treats an entry whose run
+		// file is gone as stale (re-claimable), not as a collision.
+		writeHeader(tmpDir, {
+			runId: "prior-run",
+			workflow: "tiny",
+			input: "x",
+			ts: "2026-06-11T00:00:00Z",
+			name: "auth",
+		});
 		addNameToIndex(tmpDir, "auth", "prior-run");
 		const chain = createMockSessionChain({ cwd: tmpDir, steps: [] });
 		const result = await runWorkflow(chain.ctx, {
@@ -295,6 +302,7 @@ describe("runWorkflow", () => {
 			stagesCompleted: 1,
 			lastArtifact: ".rpiv/artifacts/research/r.md",
 			error: undefined,
+			termination: { status: "completed" },
 		});
 		expect(chain.ctx.newSession).toHaveBeenCalledTimes(1);
 		expect(chain.sentMessages).toEqual(["/skill:research add dark mode"]);
@@ -437,7 +445,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: phaseHeadingsFanout },
+				implement: { loop: fanout({ units: phaseHeadingsFanout }) },
 			}),
 			input: "x",
 		});
@@ -468,10 +476,10 @@ describe("runWorkflow", () => {
 		expect(stages.slice(1).every((s) => s.status === "completed")).toBe(true);
 	});
 
-	it("uses FanoutUnit.id in the audit row when set, falling back to label otherwise", async () => {
-		// Mixed-id FanoutFn: phase 1 has an id, phase 2 does not. The audit
-		// row should prefer `id` per-unit so post-hoc tooling joins on a
-		// stable key when one was supplied.
+	it("uses the unit's id in the row's stage decoration when set, falling back to label otherwise", async () => {
+		// Mixed-id units: phase 1 has an id, phase 2 does not. The decorated
+		// `stage` string should prefer `id` per-unit so post-hoc tooling joins
+		// on a stable key when one was supplied.
 		const planRelPath = ".rpiv/artifacts/plans/p.md";
 		mkdirSync(join(tmpDir, ".rpiv", "artifacts", "plans"), { recursive: true });
 		writeFileSync(join(tmpDir, planRelPath), "# Plan\n\n## Phase 1: alpha\n## Phase 2: beta\n");
@@ -492,7 +500,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: mixedIdFanout },
+				implement: { loop: fanout({ units: mixedIdFanout }) },
 			}),
 			input: "x",
 		});
@@ -706,7 +714,7 @@ describe("runWorkflow", () => {
 
 		const result = await runWorkflow(chain.ctx, {
 			workflow: wf("rip", ["research", "implement"], {
-				implement: { fanout: phaseHeadingsFanout },
+				implement: { loop: fanout({ units: phaseHeadingsFanout }) },
 			}),
 			input: "x",
 		});
@@ -799,7 +807,6 @@ describe("runWorkflow", () => {
 			const upstreamHandle = fsHandle("/tmp/upstream.md");
 			let stage3InputKind: string | undefined;
 			let stage3InputArtifacts: number | undefined;
-			let stage3Primary: unknown;
 
 			const workflow = defineWorkflow({
 				name: "terminal-script-isolation",
@@ -817,7 +824,6 @@ describe("runWorkflow", () => {
 						run: (ctx: ScriptContext) => {
 							stage3InputKind = ctx.input?.kind;
 							stage3InputArtifacts = ctx.input?.artifacts?.length;
-							stage3Primary = ctx.state.primaryArtifact;
 							return { kind: "report", artifacts: [], data: { ok: true } };
 						},
 					}),
@@ -836,9 +842,8 @@ describe("runWorkflow", () => {
 			expect(stage3InputKind).toBe("side-effect");
 			expect(stage3InputArtifacts).toBe(0);
 
-			// The rolling primary-artifact slot was cleared by terminal.script
-			// (`inheritsArtifacts: false`), so stage 3 reads `undefined`.
-			expect(stage3Primary).toBeUndefined();
+			// The cleared primary slot is observable only via `ctx.input` and
+			// `result.lastArtifact` — `RunView` (T3) doesn't leak the slot itself.
 
 			// Final run.lastArtifact reflects whatever stage 3 produced (nothing
 			// here) — confirms terminal.script's clear isn't sticky once a
@@ -1098,14 +1103,14 @@ describe("runWorkflow", () => {
 
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("ic", ["implement"], {
-					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
+					implement: { sessionPolicy: "continue", loop: fanout({ units: phaseHeadingsFanout }) },
 				}),
 				input: "x",
 				host: chain.pi,
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/cannot combine fanout with sessionPolicy.*continue/);
+			expect(result.error).toMatch(/cannot combine loop with sessionPolicy.*continue/);
 
 			// JSONL now carries a row attributed to the failing stage —
 			// no orphan header-only file.
@@ -1161,14 +1166,14 @@ describe("runWorkflow", () => {
 			// gates only on missing pi) lets the run reach the mid-chain throw.
 			const result = await runWorkflow(chain.ctx, {
 				workflow: wf("midthrow", ["research", "implement"], {
-					implement: { sessionPolicy: "continue", fanout: phaseHeadingsFanout },
+					implement: { sessionPolicy: "continue", loop: fanout({ units: phaseHeadingsFanout }) },
 				}),
 				input: "x",
 				host: mockPi.pi,
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/cannot combine fanout with sessionPolicy.*continue/);
+			expect(result.error).toMatch(/cannot combine loop with sessionPolicy.*continue/);
 
 			const { stages } = readState(tmpDir);
 			const completedRows = stages.filter((s) => s.status === "completed");
@@ -1756,7 +1761,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1792,7 +1797,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1826,7 +1831,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1872,7 +1877,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1911,7 +1916,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1944,7 +1949,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -1967,6 +1972,42 @@ describe("runWorkflow", () => {
 				fromStage: "code-review",
 				decision: "commit",
 			});
+			// Matched branch (eq(0) hit) — no fallback, so no note (C12).
+			expect(routingDecisions[0]!.note).toBeUndefined();
+		});
+
+		it("routing row carries gate's fallback note when no branch matched (C12)", async () => {
+			writeArtifact(tmpDir, ".rpiv/artifacts/research/r.md");
+			// No severeIssueCount in the frontmatter → Number(undefined) = NaN →
+			// no branch matches → gate takes `otherwise` and attaches the note.
+			writeArtifact(tmpDir, ".rpiv/artifacts/code-review/cr.md", "---\ntitle: review\n---\n\nContent");
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/research/r.md")] },
+					{ branch: [mockAssistantMessage("Wrote .rpiv/artifacts/code-review/cr.md")] },
+					{ branch: [mockAssistantMessage("Committed.")] },
+				],
+			});
+
+			const workflow = wf(
+				"flow",
+				["research", "code-review", "revise", "commit"],
+				{},
+				{
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
+				},
+			);
+
+			const result = await runWorkflow(chain.ctx, { workflow, input: "x" });
+			expect(result.success).toBe(true);
+
+			const dir = join(tmpDir, ".rpiv", "workflows", "runs");
+			const runId = readdirSync(dir)[0]!.replace(".jsonl", "");
+			const routingDecisions = readRoutingDecisions(tmpDir, runId);
+			expect(routingDecisions).toHaveLength(1);
+			expect(routingDecisions[0]).toMatchObject({ decision: "commit" });
+			expect(routingDecisions[0]!.note).toMatch(/no branch matched value NaN.*"commit"/);
 		});
 
 		// -------------------------------------------------------------------
@@ -2120,7 +2161,7 @@ describe("runWorkflow", () => {
 				["research", "code-review", "revise", "commit"],
 				{},
 				{
-					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }),
+					"code-review": gate("severeIssueCount", { revise: gt(0), commit: eq(0) }, "commit"),
 				},
 			);
 
@@ -2238,9 +2279,8 @@ describe("runWorkflow", () => {
 
 			// 2 completed stages (a, b) + 1 status:"failed" row marking where the
 			// guard halted the chain. Each row carries its own stageNumber — no
-			// stageNumber is reused (precedent `3a8b07b`), no completed row is
-			// rewritten in place (precedent `1f87ad6`). Filter on `stageNumber`
-			// to skip routing-decision rows.
+			// stageNumber is reused, no completed row is rewritten in place.
+			// Filter on `stageNumber` to skip routing-decision rows.
 			const { stages } = readState(tmpDir);
 			const stageRows = stages.filter((s) => typeof s.stageNumber === "number");
 			expect(stageRows).toHaveLength(3);
@@ -2493,6 +2533,42 @@ describe("runWorkflow", () => {
 			expect(stages.some((s) => /stale/.test(String(s.errMsg ?? "")))).toBe(false);
 		});
 
+		it("a throwing outcome snapshot warns ONCE per run and the stages still complete (C19)", async () => {
+			// Pre-fix the bare `catch {}` silently disabled diffing for the whole
+			// run with zero diagnostics. The stage must still run (snapshot is
+			// best-effort) but the FIRST failure surfaces a warning.
+			const throwingSnapshotOutcome: Outcome = {
+				collector: {
+					snapshot: () => {
+						throw new Error("custom snapshot bug");
+					},
+					collect: () => ({ kind: "ok", artifacts: [{ handle: fsHandle("out.md"), role: "primary" }] }),
+				},
+			};
+			const chain = createMockSessionChain({
+				cwd: tmpDir,
+				steps: [{ branch: [mockAssistantMessage("one")] }, { branch: [mockAssistantMessage("two")] }],
+			});
+
+			const result = await runWorkflow(chain.ctx, {
+				workflow: wf("snap", ["research", "design"], {
+					research: { outcome: throwingSnapshotOutcome },
+					design: { outcome: throwingSnapshotOutcome },
+				}),
+				input: "x",
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.stagesCompleted).toBe(2);
+			const warns = chain.notifications.filter(
+				(n) => n.level === "warning" && /outcome snapshot for research threw/.test(n.msg),
+			);
+			expect(warns).toHaveLength(1);
+			expect(warns[0]?.msg).toContain("custom snapshot bug");
+			// Second stage's identical failure stays silent — one warning per run.
+			expect(chain.notifications.filter((n) => /outcome snapshot/.test(n.msg))).toHaveLength(1);
+		});
+
 		it("skips the check when pi is not provided (no registry to consult)", async () => {
 			// Pi-less programmatic invocation opts out of this defense layer —
 			// same fail-soft posture the rest of the pi-optional surface uses.
@@ -2533,12 +2609,12 @@ describe("runWorkflow", () => {
 				onStageError: (stage: unknown, error: unknown, ctx: unknown) =>
 					void calls.push(["onStageError", [stage, error, ctx]]),
 				onRoute: (from: unknown, to: unknown, ctx: unknown) => void calls.push(["onRoute", [from, to, ctx]]),
-				onFanoutStart: (stage: unknown, units: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutStart", [stage, units, ctx]]),
-				onFanoutUnitStart: (stage: unknown, unit: unknown, i: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutUnitStart", [stage, unit, i, ctx]]),
-				onFanoutUnitEnd: (stage: unknown, unit: unknown, i: unknown, ctx: unknown) =>
-					void calls.push(["onFanoutUnitEnd", [stage, unit, i, ctx]]),
+				onLoopStart: (stage: unknown, info: unknown, ctx: unknown) =>
+					void calls.push(["onLoopStart", [stage, info, ctx]]),
+				onUnitStart: (stage: unknown, unit: unknown, ctx: unknown) =>
+					void calls.push(["onUnitStart", [stage, unit, ctx]]),
+				onUnitEnd: (stage: unknown, unit: unknown, output: unknown, ctx: unknown) =>
+					void calls.push(["onUnitEnd", [stage, unit, output, ctx]]),
 				onWorkflowEnd: (result: unknown, ctx: unknown) => void calls.push(["onWorkflowEnd", [result, ctx]]),
 			};
 			return { calls, lifecycle };
@@ -2632,7 +2708,7 @@ describe("runWorkflow", () => {
 			expect(to).toBe("stop");
 		});
 
-		it("onFanoutStart + onFanoutUnitStart/End fire in correct order for a 3-unit fanout", async () => {
+		it("onLoopStart + onUnitStart/End fire in correct order for a 3-unit fanout loop", async () => {
 			const planRel = ".rpiv/artifacts/plans/p.md";
 			writeArtifact(tmpDir, planRel, "# Plan\n## Phase 1:\n## Phase 2:\n## Phase 3:\n");
 			const chain = createMockSessionChain({
@@ -2655,19 +2731,24 @@ describe("runWorkflow", () => {
 			};
 			const { calls, lifecycle } = recorder();
 			await runWorkflow(chain.ctx, {
-				workflow: wf("rip", ["research", "implement"], { implement: { fanout: phaseFanout } }),
+				workflow: wf("rip", ["research", "implement"], { implement: { loop: fanout({ units: phaseFanout }) } }),
 				input: "x",
 				lifecycle,
 			});
-			const fanoutNames = names(calls).filter((n) => n.startsWith("onFanout") || n === "onStageStart");
-			// Expected fanout sequence within the implement stage:
-			//   onStageStart(implement) → onFanoutStart → onFanoutUnitStart x onFanoutUnitEnd interleaved.
-			const impl = fanoutNames.slice(fanoutNames.indexOf("onFanoutStart") - 1);
+			const loopNames = names(calls).filter(
+				(n) => n === "onLoopStart" || n === "onUnitStart" || n === "onUnitEnd" || n === "onStageStart",
+			);
+			// Expected loop sequence within the implement stage:
+			//   onStageStart(implement) → onLoopStart → (onUnitStart → onUnitEnd) × 3.
+			const impl = loopNames.slice(loopNames.indexOf("onLoopStart") - 1);
 			expect(impl[0]).toBe("onStageStart");
-			expect(impl[1]).toBe("onFanoutStart");
-			// Three unit-start + unit-end pairs after fanout start.
-			expect(impl.filter((n) => n === "onFanoutUnitStart")).toHaveLength(3);
-			expect(impl.filter((n) => n === "onFanoutUnitEnd")).toHaveLength(3);
+			expect(impl[1]).toBe("onLoopStart");
+			// Three unit-start + unit-end pairs after loop start.
+			expect(impl.filter((n) => n === "onUnitStart")).toHaveLength(3);
+			expect(impl.filter((n) => n === "onUnitEnd")).toHaveLength(3);
+			// Units pair start-before-end: the first post-loopStart event is a unit start.
+			expect(impl[2]).toBe("onUnitStart");
+			expect(impl[3]).toBe("onUnitEnd");
 		});
 
 		it("onWorkflowEnd fires exactly once as the last event with the result envelope", async () => {
@@ -2768,7 +2849,7 @@ describe("runWorkflow", () => {
 			};
 
 			it("two registered bundles both receive every event in registration order", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const order: string[] = [];
 				const bundleA = { onStageEnd: () => void order.push("A") };
 				const bundleB = { onStageEnd: () => void order.push("B") };
@@ -2785,7 +2866,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("registerLifecycle returns a disposer that removes the bundle", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				const dispose = registerLifecycle({ onStageEnd: () => void seen.push("registered") });
 				dispose();
@@ -2795,7 +2876,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("per-call options.lifecycle fires AFTER globally-registered bundles", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const order: string[] = [];
 				const disposeGlobal = registerLifecycle({ onStageEnd: () => void order.push("global") });
 				try {
@@ -2812,7 +2893,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("a throw in one bundle doesn't stop other bundles or the run", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				const dispose = registerLifecycle({
 					onStageEnd: () => {
@@ -2837,7 +2918,7 @@ describe("runWorkflow", () => {
 			});
 
 			it("registration made mid-run does NOT receive the in-flight event but DOES receive the next", async () => {
-				const { registerLifecycle } = await import("./lifecycle.js");
+				const { registerLifecycle } = await import("./events.js");
 				const seen: string[] = [];
 				let lateDispose: (() => void) | undefined;
 				const dispose = registerLifecycle({
@@ -2899,6 +2980,7 @@ describe("runWorkflow", () => {
 				stagesCompleted: 1,
 				lastArtifact: ".rpiv/artifacts/research/r.md",
 				error: undefined,
+				termination: { status: "completed" },
 			});
 			expect(chain.sentMessages).toEqual(["/skill:research add dark mode"]);
 			// A JSONL run file was written under the resolved runId.
@@ -3116,7 +3198,7 @@ describe("totalStages denominator (countReachableNodes)", () => {
 					c: { kind: "side-effect", sessionPolicy: "fresh" },
 				},
 				// gate attaches .targets = ["b", "c"]; BFS reaches both.
-				edges: { a: gate("count", { b: gt(0), c: eq(0) }), b: "stop", c: "stop" },
+				edges: { a: gate("count", { b: gt(0), c: eq(0) }, "c"), b: "stop", c: "stop" },
 			},
 			input: "x",
 		});

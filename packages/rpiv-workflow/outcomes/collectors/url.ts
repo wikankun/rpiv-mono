@@ -14,6 +14,7 @@ import { url } from "../../handle.js";
 import type { ArtifactCollector } from "../../output-spec.js";
 import { defineCollector } from "../../output-spec.js";
 import { lastMatchInBranch } from "../../transcript.js";
+import { requireOpt } from "./require-opt.js";
 
 /**
  * Conservative URL matcher — `https?://` plus non-whitespace, stopping
@@ -29,6 +30,12 @@ export interface UrlCollectorOpts {
 }
 
 export function urlCollector(opts: UrlCollectorOpts = {}): ArtifactCollector {
+	requireOpt(
+		"urlCollector",
+		"pattern",
+		"must be a RegExp when provided",
+		opts.pattern === undefined || opts.pattern instanceof RegExp,
+	);
 	const pattern = opts.pattern ?? DEFAULT_URL_PATTERN;
 	return defineCollector({
 		collect: (ctx) => {

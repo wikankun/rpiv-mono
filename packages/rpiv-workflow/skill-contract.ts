@@ -4,8 +4,8 @@
  * A contract declares what a skill consumes and produces, as data — the
  * keystone that lets an agent reason about composition without scanning prose.
  * The contract is the SKILL's property (declared once in its frontmatter),
- * injected into this framework via `registerSkillContracts` / a provider
- * (see `skill-contracts.ts`). This package never reads skill files or parses
+ * registered into this framework via `registerSkillContracts` / a provider
+ * (see `skill-contracts/`). This package never reads skill files or parses
  * YAML — the primary consumer (rpiv-pi) supplies already-parsed contracts.
  *
  * Three field tiers, by who understands them:
@@ -22,27 +22,22 @@
  */
 
 import type { JsonSchemaObject } from "./json-schema.js";
+import type { SchemaCompatResult } from "./schema-compat.js";
 
-/**
- * Result of a conservative structural compatibility check between a producer's
- * output schema and a consumer's input schema. Co-located with
- * `CompositionComparator` (which returns this type) so the contract vocabulary
- * is self-contained — consumers don't need to reach into `json-schema.ts` or
- * `schema-compat.ts` for the result type.
- */
-export interface SchemaCompatResult {
-	ok: boolean;
-	reason?: string;
-}
+// `SchemaCompatResult` lives with the compat engine (schema-compat.ts) that
+// defines its semantics — re-exported here so the contract vocabulary stays
+// self-contained for consumers (`CompositionComparator` returns it).
+export type { SchemaCompatResult } from "./schema-compat.js";
 
 /**
  * Where a contract came from, in descending authority. `declared` = the skill's
- * own frontmatter (truth); `harvested` = derived from how workflow stages use
- * the skill (a cross-check / lint); `inferred` = future JSONL/LLM sources
- * (deferred). Absence (no contract at all) is modelled by the skill simply not
- * being present in the registry — there is no `missing` source.
+ * own frontmatter (truth) — every externally REGISTERED contract
+ * (`registerSkillContracts` / a provider) carries this source; `harvested` =
+ * derived from how workflow stages use the skill (a cross-check / lint).
+ * Absence (no contract at all) is modelled by the skill simply not being
+ * present in the registry — there is no `missing` source.
  */
-export type ContractSource = "declared" | "harvested" | "inferred";
+export type ContractSource = "declared" | "harvested";
 
 /**
  * A named-channel reference a skill reads (`reads:` / `state.named`). v1 records
@@ -97,13 +92,15 @@ export type SkillContractMap = ReadonlyMap<string, SkillContract>;
 /**
  * A consumer-supplied adjudicator for one named channel's `meta` compatibility.
  * The framework INVOKES it but never reads inside `meta` — the channel's
- * ontology lives entirely with the consumer. Registered per channel
- * via `registerCompositionComparator(channelName, comparator)` and consulted by
- * the three adjudication points (`canCompose`/`legalNextSkills`,
- * `checkEdgeSchemaCompat`, `ensureContractInputValid`) for any consumer
- * declaring `consumes.reads[channelName]`. Conservative by contract: return
- * `{ ok: true }` whenever there is nothing to compare (absent meta on either
- * side) so a missing tag degrades, never HALTs.
+ * ontology lives entirely with the consumer. Registered per channel via
+ * `registerCompositionComparator(channelName, comparator)` and invoked through
+ * ONE shared rule, `adjudicateChannel` (skill-contracts/composition.ts), at
+ * its two consumption points: `canCompose`/`legalNextSkills` (advisory query)
+ * and `checkReadsChannelCompat` (the load gate). The shared gate fires only
+ * for consumers declaring `consumes.reads[channelName]` with a `meta`
+ * requirement. Conservative by contract: return `{ ok: true }` whenever there
+ * is nothing to compare (absent meta on either side) so a missing tag
+ * degrades, never HALTs.
  */
 export type CompositionComparator = (
 	produces: ProducesSpec,

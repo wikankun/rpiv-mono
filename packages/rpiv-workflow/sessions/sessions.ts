@@ -1,6 +1,7 @@
 /**
- * Session execution — one Pi session per workflow stage / fanout unit.
- * `runStageSession` and `runFanoutSession` are the two public entries.
+ * Session execution — one Pi session per workflow stage / loop unit.
+ * `runStageSession` is the only public entry (loop units run through it too,
+ * threading their identity via `StageSession.unit`).
  *
  * The fresh-vs-continue policy split is owned by `SessionPolicyHandler`
  * (see `spawn.ts`): `FRESH_HANDLER` and `CONTINUE_HANDLER` implement
@@ -13,119 +14,119 @@
  *                     outcome helpers (collector → parser pipeline).
  *   - spawn.ts      — SessionPolicyHandler + FRESH/CONTINUE handlers +
  *                     handlerFor.
+ *   - reattach.ts   — session-backed resume (promotion + reattach); reuses
+ *                     postStage / recordStageSuccess / the halt helpers
+ *                     exported below instead of duplicating them.
  */
 
 import {
 	type AuditCtx,
-	fanoutRowStage,
-	nowIso,
+	currentStageRef,
+	failedArgs,
 	recordCancellation,
-	recordStage,
 	recordStopFailure,
 	recordTerminalFailure,
+	terminate,
 } from "../audit.js";
-import { applyCompletedStage } from "../internal-utils.js";
-import { buildLifecycleContext, skillStageRef } from "../lifecycle.js";
+import { persistStageSuccess } from "../audit-rows.js";
+import { lifecycleCtxFromSession, skillStageRef, type UnitEvent } from "../events.js";
 import {
-	ERR_AUDIT_WRITE_FAILED,
-	ERR_VALIDATION_FAILED,
-	MSG_AUDIT_WRITE_FAILED,
+	FAIL_AUDIT_WRITE,
+	FAIL_VALIDATION_EXHAUSTED,
 	MSG_STAGE_COMPLETE,
 	MSG_STAGE_FAILED,
-	MSG_VALIDATION_EXHAUSTED,
+	MSG_UNIT_COMPLETE,
 } from "../messages.js";
 import type { Output } from "../output.js";
-import { type BranchEntry, classifyStop, readBranch, type StopSignal } from "../transcript.js";
-import type { FanoutSession, SessionContext, StageSession, WorkflowHostContext } from "../types.js";
+import type { SessionRef } from "../state/index.js";
+import { type BranchEntry, classifyStop, readBranch, readSessionRef, type StopSignal } from "../transcript.js";
+import type { StageSession, WorkflowHostContext } from "../types.js";
 import { produceAndValidateOutput } from "./extraction.js";
-import { FRESH_HANDLER, handlerFor } from "./spawn.js";
+import { handlerFor } from "./spawn.js";
 
 // ===========================================================================
 // PUBLIC ENTRIES — what the orchestrator calls
 // ===========================================================================
 
-/** Execute one DAG stage in its own session. */
+/** Execute one DAG stage (or loop unit) in its own session. */
 export async function runStageSession(ctx: WorkflowHostContext, s: StageSession): Promise<void> {
 	const handler = handlerFor(s.stage.sessionPolicy);
 	const { cancelled } = await handler.spawn(ctx, s.prompt, (sessionCtx) => postStage(sessionCtx, s), s.continueHost);
-	if (cancelled) await recordCancellation(ctx, auditFor(s));
-}
-
-/** Execute one fanout-unit iteration. Always fresh. */
-export async function runFanoutSession(ctx: WorkflowHostContext, s: FanoutSession): Promise<void> {
-	const { cancelled } = await FRESH_HANDLER.spawn(ctx, s.prompt, (sessionCtx) => postFanout(sessionCtx, s));
-	if (cancelled) await recordCancellation(ctx, auditFor(s));
+	// Pre-open cancellation — no session ever backed this activation.
+	if (cancelled) recordCancellation(ctx, auditFor(s, null));
 }
 
 // ===========================================================================
 // POST-PROCESSING — runs after the agent loop settles
 // ===========================================================================
 
-/** Stage post-processing: classify outcome → produce & validate output → persist → chain. */
-async function postStage(ctx: WorkflowHostContext, s: StageSession): Promise<void> {
+/**
+ * Stage post-processing: classify outcome → produce & validate output →
+ * persist → chain. Exported to the `reattach.ts` companion — a reattached
+ * session's continuation runs this exact pipeline, byte-identical to live.
+ *
+ * The backing `SessionRef` is captured ONCE at entry — every row this
+ * pipeline can write (success, stop-failure, extraction/validation failure)
+ * carries the same provenance value.
+ */
+export async function postStage(ctx: WorkflowHostContext, s: StageSession): Promise<void> {
 	const handler = handlerFor(s.stage.sessionPolicy);
 	const offset = handler.branchOffset(s.branchOffset);
+	const session = readSessionRef(ctx, offset);
 	const outcome = readSessionOutcome(ctx, offset);
-	if (outcome.stop !== "stop") return haltStage(ctx, s, outcome.stop);
+	if (outcome.stop !== "stop") return haltStage(ctx, s, outcome.stop, session);
 
 	const result = await produceAndValidateOutput(ctx, s, outcome.branch, offset);
-	if (result.kind === "fatal") return haltStageWithExtractionError(ctx, s, result.message);
-	if (result.kind === "validation-exhausted") return haltStageWithValidationFailure(ctx, s, result.failureSummary);
+	if (result.kind === "fatal") return haltStageWithExtractionError(ctx, s, result.message, session);
+	if (result.kind === "validation-exhausted")
+		return haltStageWithValidationFailure(ctx, s, result.failureSummary, session);
 
-	if (!(await recordStageSuccess(ctx, s, result.output))) return;
-	await s.onSuccess(ctx, result.output.artifacts[0]);
-}
-
-/** Fanout-unit post-processing: classify outcome → persist bare row → chain. */
-async function postFanout(ctx: WorkflowHostContext, s: FanoutSession): Promise<void> {
-	const outcome = readSessionOutcome(ctx, undefined);
-	if (outcome.stop !== "stop") return haltFanout(ctx, s, outcome.stop);
-
-	if (!(await recordFanoutSuccess(ctx, s))) return;
-	await s.onSuccess(ctx);
+	if (!(await recordStageSuccess(ctx, s, result.output, session))) return;
+	// The validated Output goes to the continuation directly — loop drivers
+	// thread it into accumulated / feedForward without state back-reads.
+	await s.onSuccess(ctx, result.output);
 }
 
 // ===========================================================================
 // HALT HELPERS — turn a halt reason into the right audit-layer call
 // ===========================================================================
 
-async function haltStage(ctx: WorkflowHostContext, s: StageSession, stop: Exclude<StopSignal, "stop">): Promise<void> {
-	await recordStopFailure(ctx, auditFor(s), stop, `${s.skill} failed`, s.onFailure);
+async function haltStage(
+	ctx: WorkflowHostContext,
+	s: StageSession,
+	stop: Exclude<StopSignal, "stop">,
+	session: SessionRef | null,
+): Promise<void> {
+	await recordStopFailure(ctx, auditFor(s, session), stop, `${s.skill} failed`, s.onFailure);
 }
 
-async function haltStageWithExtractionError(ctx: WorkflowHostContext, s: StageSession, message: string): Promise<void> {
+async function haltStageWithExtractionError(
+	ctx: WorkflowHostContext,
+	s: StageSession,
+	message: string,
+	session: SessionRef | null,
+): Promise<void> {
 	await recordTerminalFailure(
 		ctx,
-		auditFor(s),
+		auditFor(s, session),
 		{ status: "failed", notifyMsg: MSG_STAGE_FAILED(s.skill), notifyLevel: "error", errMsg: message },
 		s.onFailure,
 	);
 }
 
-async function haltStageWithValidationFailure(
+/** Exported to the `reattach.ts` companion — a promotion's validation-exhausted halt is identical to live. */
+export async function haltStageWithValidationFailure(
 	ctx: WorkflowHostContext,
 	s: StageSession,
 	failureSummary: string,
+	session: SessionRef | null,
 ): Promise<void> {
 	await recordTerminalFailure(
 		ctx,
-		auditFor(s),
-		{
-			status: "failed",
-			notifyMsg: MSG_VALIDATION_EXHAUSTED(s.skill),
-			notifyLevel: "error",
-			errMsg: ERR_VALIDATION_FAILED(s.skill, failureSummary),
-		},
+		auditFor(s, session),
+		failedArgs(FAIL_VALIDATION_EXHAUSTED(s.skill, failureSummary)),
 		s.onFailure,
 	);
-}
-
-async function haltFanout(
-	ctx: WorkflowHostContext,
-	s: FanoutSession,
-	stop: Exclude<StopSignal, "stop">,
-): Promise<void> {
-	await recordStopFailure(ctx, auditFor(s), stop, `${s.skill} unit ${s.unitIndex} (${s.label}) failed`);
 }
 
 // ===========================================================================
@@ -133,81 +134,74 @@ async function haltFanout(
 // ===========================================================================
 
 /**
- * Write + counter-increment guard shared by `recordStageSuccess` and
- * `recordFanoutSuccess`. Returns `true` iff the JSONL row landed.
- * Output assignment lives here so callers get the same "output is
- * set iff the row that carried it landed" invariant.
- */
-function tryRecordStage(s: SessionContext, row: { stage: string; skill?: string; output?: Output }): boolean {
-	const assigned = recordStage(
-		s.cwd,
-		s.runId,
-		{
-			stage: row.stage,
-			skill: row.skill,
-			status: "completed",
-			ts: nowIso(),
-			output: row.output,
-		},
-		s.state,
-	);
-	if (assigned === undefined) return false;
-	if (row.output) s.state.output = row.output;
-	s.state.stagesCompleted++;
-	return true;
-}
-
-/**
  * Returns true on successful write — caller gates `onSuccess` on this so the
  * chain advances only when the audit row landed. On failure, leaves
- * `state.output` / `state.primaryArtifact` at their prior values and sets
- * `state.termination.error` to halt the run.
+ * `state.output` / `state.primaryArtifact` at their prior values ("output is
+ * set iff the row that carried it landed") and sets `state.termination.error`
+ * to halt the run. Persistence + state apply run through
+ * `persistStageSuccess` (audit-rows.ts) — the ONE success pipeline shared
+ * with the script path: the row reuses the activation's pre-allocated number
+ * so `output.meta.stageNumber` and the row agree, and unit rows carry the
+ * structured identity fields alongside the decorated display `stage`.
+ *
+ * Single stages keep the `onStageEnd` + `MSG_STAGE_COMPLETE` contract
+ * verbatim. Loop units fire `onUnitEnd` (NEVER `onStageEnd` — that's reserved
+ * for single-stage and loop-level semantics) with a labeled toast, the ref
+ * carrying the PARENT stage name so listeners key on graph identity, not the
+ * display decoration.
+ *
+ * Exported to the `reattach.ts` companion — promotion persists through this
+ * exact pipeline (one success path, live and adopted alike).
  */
-async function recordStageSuccess(ctx: WorkflowHostContext, s: StageSession, output: Output): Promise<boolean> {
-	if (tryRecordStage(s, { stage: s.stageName, skill: s.skill, output })) {
-		applyCompletedStage(s.state, s.stage, s.stageName, output);
-		ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
-		await s.lifecycle.fire(
-			ctx,
-			"onStageEnd",
-			skillStageRef(s.stageName, s.state.lastAllocatedStageNumber, s.skill),
+export async function recordStageSuccess(
+	ctx: WorkflowHostContext,
+	s: StageSession,
+	output: Output,
+	session: SessionRef | null,
+): Promise<boolean> {
+	const persisted = persistStageSuccess(
+		s.state,
+		{
+			cwd: s.cwd,
+			runId: s.runId,
+			stage: s.stageName,
+			skill: s.skill,
 			output,
-			lifecycleCtxFromSession(s),
-		);
+			session,
+			unit: s.unit,
+			preAllocated: s.allocatedStageNumber,
+		},
+		s.stage,
+	);
+	if (persisted) {
+		if (s.unit) {
+			ctx.ui.notify(MSG_UNIT_COMPLETE(s.skill, s.unit.label), "info");
+			await s.lifecycle.fire(
+				ctx,
+				"onUnitEnd",
+				// Same allocator base as every other ref of this activation; the
+				// ref's NAME stays the parent stage key (graph identity).
+				skillStageRef(s.unit.parent, s.allocatedStageNumber ?? s.state.lastAllocatedStageNumber, s.skill),
+				unitEventOf(s),
+				output,
+				lifecycleCtxFromSession(s),
+			);
+		} else {
+			ctx.ui.notify(MSG_STAGE_COMPLETE(s.skill), "info");
+			await s.lifecycle.fire(ctx, "onStageEnd", currentStageRef(s), output, lifecycleCtxFromSession(s));
+		}
 		return true;
 	}
-	ctx.ui.notify(MSG_AUDIT_WRITE_FAILED(s.skill), "error");
-	s.state.termination.error = ERR_AUDIT_WRITE_FAILED(s.skill);
+	const auditFailure = FAIL_AUDIT_WRITE(s.skill);
+	ctx.ui.notify(auditFailure.toast, "error");
+	terminate(s.state, { status: "failed", error: auditFailure.error });
 	return false;
 }
 
-async function recordFanoutSuccess(ctx: WorkflowHostContext, s: FanoutSession): Promise<boolean> {
-	const stageLabel = fanoutRowStage(s);
-	if (tryRecordStage(s, { stage: stageLabel, skill: s.skill })) {
-		await s.lifecycle.fire(
-			ctx,
-			"onFanoutUnitEnd",
-			skillStageRef(s.stageName, s.stageIndex + 1, s.skill),
-			{ prompt: s.prompt, label: s.label, ...(s.id !== undefined && { id: s.id }) },
-			s.unitIndex,
-			lifecycleCtxFromSession(s),
-		);
-		return true;
-	}
-	s.state.termination.error = ERR_AUDIT_WRITE_FAILED(stageLabel);
-	return false;
-}
-
-/** Build a `LifecycleContext` from any SessionContext-shaped object. */
-function lifecycleCtxFromSession(s: SessionContext) {
-	return buildLifecycleContext({
-		cwd: s.cwd,
-		runId: s.runId,
-		workflow: s.runIdentity.workflow,
-		totalStages: s.runIdentity.totalStages,
-		trigger: s.runIdentity.trigger,
-		state: s.state,
-	});
+/** Public `UnitEvent` payload from the session's `UnitRef` + dispatched skill. */
+function unitEventOf(s: StageSession): UnitEvent {
+	const u = s.unit!;
+	return { role: u.role, index: u.index, unitId: u.id, label: u.label, skill: s.skill };
 }
 
 // ===========================================================================
@@ -240,12 +234,21 @@ function readSessionOutcome(ctx: WorkflowHostContext, branchOffset: number | und
 // Helpers
 // ===========================================================================
 
-const auditFor = (s: StageSession | FanoutSession): AuditCtx => ({
+const auditFor = (s: StageSession, session: SessionRef | null): AuditCtx => ({
 	cwd: s.cwd,
 	runId: s.runId,
 	state: s.state,
-	stageName: "unitIndex" in s ? fanoutRowStage(s) : s.stageName,
+	stageName: s.stageName,
 	skill: s.skill,
+	// The Pi session backing this activation — `null` only for pre-open
+	// cancellation (the one writer here that never entered a session).
+	session,
 	lifecycle: s.lifecycle,
 	runIdentity: s.runIdentity,
+	// The activation's pre-allocated stage number (set once output production
+	// began) — a failure row reuses it instead of burning a second number.
+	allocatedStageNumber: s.allocatedStageNumber,
+	// Loop units thread their identity onto failure/cancellation rows so failed
+	// trailers carry the structured fields the resume drift guard consumes.
+	...(s.unit ? { unit: s.unit } : {}),
 });
